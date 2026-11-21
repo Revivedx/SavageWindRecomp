@@ -1302,8 +1302,8 @@ void build_items(void) {
     for (int id = 0; id < ACT_COUNT; id++)
         if (!act_hidden(id) && act_name(id)) bind(BIND_ACTION + id, act_name(id));
     // the game's menus: what the Switch buttons do outside the actions, listed by function (never by button name)
-    for (int sl : {BIND_PLUS, BIND_MINUS, BIND_UP, BIND_LEFT, BIND_RIGHT, BIND_A, BIND_B, BIND_X, BIND_Y, BIND_L, BIND_R,
-                   BIND_ZL, BIND_ZR, BIND_RSTICK})
+    for (int sl : {BIND_PLUS, BIND_MINUS, BIND_UP, BIND_LEFT, BIND_RIGHT, BIND_DOWN, BIND_A, BIND_B, BIND_X, BIND_Y,
+                   BIND_L, BIND_R, BIND_ZL, BIND_ZR, BIND_RSTICK})
         bind(sl, bind_input_name(sl));
     // Esc and F2 are hard-wired (the game can always be paused, the cursor freed): shown greyed, never rebound
     v.push_back(button(P_BINDS, "Pause menu / back", "Fixed: this key always works.", "", A_FIXED, 0));

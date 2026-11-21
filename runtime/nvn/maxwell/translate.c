@@ -1753,6 +1753,8 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
             unsigned bytes = size < 4 ? 4 : size == 5 ? 8 : size >= 6 ? 16 : 4;
             sp(&c->body, "      ok = ok && gmem_addr != 0ul && gmem_size >= %uu && (ga & ~3ul) <= gmem_size - %uu;\n", bytes, bytes);
         }
+        if (c->glsl && c->stage == STAGE_COMPUTE && maxwell_gmem_snap && !store)  // (a copied constant buffer: see GLD)
+            sp(&c->body, "      ok = ok || ga - 0x%llxul < 0x%xul;\n", (unsigned long long)maxwell_gmem_size, GSNAP_CS_SPAN);
         static const char *const ld_small[] = {"uint(gmem[ga])", "uint(int(char(gmem[ga])))",
                                                "uint(*(device ushort *)(gmem + ga))", "uint(int(*(device short *)(gmem + ga)))"};
         int nw = size == 5 ? 2 : size >= 6 ? 4 : 1;
@@ -2283,7 +2285,21 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
                c->uses_gmem_store ? "" : "readonly ");
         if (split) sp(&s, "#define GSPLIT 0x%xu\n#define GLD0(i) ((i) < GSPLIT ? gmem_.w[(i)] : gmem2_.w[(i) - GSPLIT])\n", (unsigned)(GMEM_SPLIT >> 2));
         else sp(&s, "#define GLD0(i) gmem_.w[(i)]\n");
-        if (c->uses_gmem_store || !maxwell_gmem_snap) {
+        if (stage == STAGE_COMPUTE && maxwell_gmem_snap) {
+            // A compute shader reads its constant buffers through global memory, by the addresses the driver's block
+            // gives it (cb0). Those are copied at translation into the buffer here (exec.c gsnap_cs_prepare), and
+            // the block gives addresses past the heap's window for them: such a read comes from the copies (and
+            // never past them), the rest and every store in place.
+            sp(&s, "layout(std430, set = %d, binding = %d) readonly buffer GSnap { uint w[]; } gsnap_;\n", set, GSNAP_BUFFER_INDEX);
+            sp(&s, "uint GLD(uint i) {\n"
+                   "  if (i < 0x%xu) return GLD0(i);\n"
+                   "  return gsnap_.w[min(i - 0x%xu, uint(gsnap_.w.length()) - 1u)];\n}\n",
+               (unsigned)(maxwell_gmem_size >> 2), (unsigned)(maxwell_gmem_size >> 2));
+            if (split)
+                sp(&s, "#define GST(i, v) { uint gi_ = (i); if (gi_ < GSPLIT) gmem_.w[gi_] = (v); else gmem2_.w[gi_ - GSPLIT] = (v); }\n");
+            else
+                sp(&s, "#define GST(i, v) { gmem_.w[(i)] = (v); }\n");
+        } else if (c->uses_gmem_store || !maxwell_gmem_snap) {
             sp(&s, "#define GLD(i) GLD0(i)\n");
             if (split)
                 sp(&s, "#define GST(i, v) { uint gi_ = (i); if (gi_ < GSPLIT) gmem_.w[gi_] = (v); else gmem2_.w[gi_ - GSPLIT] = (v); }\n");

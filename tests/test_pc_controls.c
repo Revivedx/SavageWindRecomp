@@ -91,6 +91,7 @@ bool motion_pad_sensor_only(SDL_Gamepad *p) { (void)p; return false; }
 SDL_JoystickID motion_sensor_pad(void) { return 0; }
 void motion_device_sensor_event(const SDL_Event *e) { (void)e; }
 bool framepace_dialogue_ui(void) { return false; }
+bool framepace_in_event(void) { return false; }
 void watch_arm(void) { abort(); }
 
 static void update(void) { input_mouse_update((SDL_Window *)(uintptr_t)1); }

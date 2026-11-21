@@ -5170,12 +5170,12 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
             // Full-width panes slide between pause pages: keep their projection wide throughout the move, so test the
             // width, not the position.
             bool frame_end = !tall && hud_frame_end(g, mv, rc, m00, shape);
-            // Taller map views are cropped to their 16:9 frame at presentation (output_scale.c).
-            // Stretching a scrollable pane here separates its pan/zoom from the icons over it.
+            // Map views keep their 16:9 coordinate space (cropped/centred at presentation in output_scale.c).
+            // Stretching a scrollable pane here separates its pan/zoom from the icons and terrain over it.
             bool stretched = false;
             if (lo < 1e8f && (tall ? lo <= -edge + 0.01f && hi >= edge - 0.01f && lo >= -over && hi <= over
                                     : (hi - lo >= 2 / shape - 0.02f && hi - lo <= 2 * over) || frame_end) &&
-                !(tall && framepace_map_ui())) {
+                !framepace_map_ui()) {
                 if (tall) m11 /= shape;
                 else m00 *= shape;
                 stretched = true;
@@ -5274,6 +5274,10 @@ static bool fxaa_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out
     return true;
 }
 
+// (a dispatch's constant buffers, copied: gsnap_cs_prepare) the address the compute shader is given for each, 0: its
+// own; and the buffer the copies are in
+static struct { uint64_t addr[16]; VkDescriptorBufferInfo bi; } gsnap_cs;
+
 // Constant buffer k of a stage (renderer.m bind_cbufs), copied into transient memory.
 static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32_t gx, uint32_t gy, uint32_t gz) {
     static const uint8_t zeros[0x10000];
@@ -5283,7 +5287,8 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
             drv[0x200 / 4] = gx; drv[0x204 / 4] = gy; drv[0x208 / 4] = gz;
             for (int i = 0; i < 16; i++) {
                 uint32_t *u = &drv[(0x210 + 16 * i) / 4];
-                u[0] = (uint32_t)st.ubuf[5][i].addr; u[1] = (uint32_t)(st.ubuf[5][i].addr >> 32); u[2] = (uint32_t)st.ubuf[5][i].size;
+                uint64_t ua = gsnap_cs.addr[i] ? gsnap_cs.addr[i] : st.ubuf[5][i].addr;
+                u[0] = (uint32_t)ua; u[1] = (uint32_t)(ua >> 32); u[2] = (uint32_t)st.ubuf[5][i].size;
                 uint32_t *e = &drv[(0x310 + 16 * i) / 4];
                 e[0] = (uint32_t)st.sbuf[5][i].addr; e[1] = (uint32_t)(st.sbuf[5][i].addr >> 32); e[2] = (uint32_t)st.sbuf[5][i].size;
             }
@@ -7329,6 +7334,69 @@ static bool gsnap_linear_hit(Range r) {  // (render targets also written into th
     return hit;
 }
 
+// A compute shader has no constant buffer bindings of its own: the driver's block (cbuf_info, k == 0) gives it their
+// addresses and it reads them through global memory, so they were read in place, when the GPU got to the dispatch,
+// while every other stage's are copied at translation. With the GPU overlap that can be a frame after the game was
+// told the frame is done, and it has reused the memory by then. In the Lost Woods at 240 fps (RTX 5070 Ti, the GPU the
+// limit: ~190 fps at 2560x1440, DLSS ultra quality, render scale 125%) the mist's two particle shaders then ran on
+// whatever the game had since put where two of their constant buffers were, and marked every particle of the emitter
+// dead: the mist flickered, redrawn from nothing in another shape 4 to 6 times a second in play (with the upscaler off
+// at 200%, standing still: 24 to 36
+// emitters wiped in 35 s, each time with the frame before's dispatch not done when this one was translated).
+// So the constant buffers a compute shader reads (the addresses it takes from the driver's block: rows 0x21 + i of
+// its cbuf 0, ShaderInfo.cbuf_rows) are copied with the dispatch, one after the other into the buffer bound at
+// GSNAP_BUFFER_INDEX, and the driver's block gives it addresses past the heap's window instead, HEAP_BASE +
+// maxwell_gmem_size + the copy's place: its global memory reads of those come from that buffer (translate.c GLD),
+// at one comparison a read. Not ranges a storing shader had bound: GPU data, which keeps its own address. When none
+// is copied, the binding is one empty buffer per submission, as gsnap_info's.
+// In play there, the copies on and off every 10 s in one run: 194.7 fps with them and 193.3 without (median frame
+// 5.07 and 5.11 ms), 186 KB in ~195 copies a frame, 0.018 ms of the render thread. No emitter wiped with them.
+// (Tried first: the shader walking a table of the copied ranges at every read, as the HUD's shaders do. With every
+// bound buffer copied, 190 -> 170 fps, 2.2 MB in 250 copies a frame and a fifth more GPU time in the dispatches; with
+// only the buffers read and the table skipped for reads outside the span they lie in, 187.6 -> 183.6.)
+// Only with the overlap on (maxwell_gmem_snap). SAVAGEWIND_VK_GSNAP_CS=0: off (read in place, as before).
+static void gsnap_cs_prepare(const ShaderInfo *si) {  // (dispatch_compute, before the stage's set is made)
+    static int on = -1;
+    if (on < 0) on = !getenv("SAVAGEWIND_VK_GSNAP_CS") || atoi(getenv("SAVAGEWIND_VK_GSNAP_CS"));
+    memset(&gsnap_cs, 0, sizeof gsnap_cs);
+    if (!si->uses_gmem || !maxwell_gmem_snap) return;  // (its translation has no such buffer)
+    uint64_t lo = HEAP_BASE, hi = HEAP_BASE + kernel_heap_size(), total = 0, at[16];
+    Range r[16] = {{0}};
+    uint32_t read = !on ? 0 : si->cbuf_rows_all & 1 ? 0xffff : (uint32_t)(si->cbuf_rows[0][0] >> 0x21) & 0xffff;
+    for (int i = 0; i < 16 && read >> i; i++) {
+        Range q = st.ubuf[5][i];
+        if (!(read >> i & 1) || !q.addr || !q.size || (q.addr & 3) || q.addr < lo || q.addr >= hi) continue;
+        if (q.size > 0x10000) q.size = 0x10000;  // (a constant buffer's most: 16 of them fill GSNAP_CS_SPAN)
+        if (q.addr + q.size > hi) q.size = hi - q.addr;
+        q.size &= ~3ull;
+        if (!q.size || gsnap_gpu_hit(q) || gsnap_linear_hit(q)) continue;
+        r[i] = q, at[i] = total;
+        total += (q.size + 15) & ~15ull;
+    }
+    if (!total) {
+        static uint64_t eseq = ~0ull;
+        static VkDescriptorBufferInfo ebi;
+        uint64_t sq = vk_pending_seq();
+        if (eseq != sq) {
+            VkSpan e = vk_transient(16, 256);
+            memset(e.ptr, 0, 16);
+            ebi = (VkDescriptorBufferInfo){e.buf, e.off, 16};
+            eseq = sq;
+        }
+        gsnap_cs.bi = ebi;
+        return;
+    }
+    VkSpan span = vk_transient(total, 256);
+    for (int i = 0; i < 16; i++) {
+        if (!r[i].size) continue;
+        uint64_t padded = (r[i].size + 15) & ~15ull;
+        memcpy((uint8_t *)span.ptr + at[i], (const void *)(uintptr_t)r[i].addr, r[i].size);
+        memset((uint8_t *)span.ptr + at[i] + r[i].size, 0, padded - r[i].size);
+        gsnap_cs.addr[i] = HEAP_BASE + maxwell_gmem_size + at[i];
+    }
+    gsnap_cs.bi = (VkDescriptorBufferInfo){span.buf, span.off, total};
+}
+
 // The ranges a read-only stage's global memory reads are copied from (translate.c GLD: up to GSNAP_N): its storage
 // buffers, each with SAVAGEWIND_VK_GSNAP_EXT bytes after it. BOTW's HUD text shader reads its glyphs past the size its storage
 // buffer is bound with: copied at the bound size (~500 bytes) the prompt still broke, with the bytes after it it
@@ -7336,6 +7404,7 @@ static bool gsnap_linear_hit(Range r) {  // (render targets also written into th
 // final image only. SAVAGEWIND_VK_GSNAP_EXT=<KB>: the bytes after (16).
 #define GSNAP_N 4
 static VkDescriptorBufferInfo gsnap_info(int stage) {
+    if (stage == 5) return gsnap_cs.bi;  // (a compute shader's constant buffers: gsnap_cs_prepare)
     static struct { uint64_t seq; int n; Range r[GSNAP_N]; VkDescriptorBufferInfo bi; } cache[32];
     static int cpos;
     static uint64_t maxsz, ext, t_log;
@@ -8306,6 +8375,7 @@ static void dispatch_compute(uint32_t gx, uint32_t gy, uint32_t gz) {
         LOG("\n");
     }
     nfeedback = 0;
+    gsnap_cs_prepare(cp->si);
     VkDescriptorSet ds = stage_set(&cp->p, cp->p.set_layout[0], 0, 5, cp->si, NULL, NULL, gx, gy, gz, NULL, NULL, NULL);
     rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, cp->pipe);
     rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, cp->p.layout, 0, 1, &ds, 0, NULL);
