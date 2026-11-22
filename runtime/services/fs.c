@@ -79,9 +79,14 @@ static RomImage images[1 + AOC_MAX];  // [0] the game's, [index] add-on content
 static RomImage *R = &images[0];
 static FsInventoryClipLayout inventory_clip_layout;
 static _Atomic bool inventory_clip_layout_valid;
+static _Atomic bool game_image_open;  // images[0] is open and indexed (fs_game_files_open)
+static pthread_mutex_t game_file_lock = PTHREAD_MUTEX_INITIALIZER;  // held while fs_game_file reads images[0]
 
 // Reboot: the next boot builds its own index / overlay when the game opens the RomFS again.
 RT_ON_RESET(fs_reset) {
+    pthread_mutex_lock(&game_file_lock);  // (first: no fs_game_file reads the image while it closes, or after)
+    atomic_store_explicit(&game_image_open, false, memory_order_release);
+    pthread_mutex_unlock(&game_file_lock);
     for (int k = 0; k <= AOC_MAX; k++) {
         RomImage *m = &images[k];
         for (int i = 0; i < m->ov_n; i++) {
@@ -1608,23 +1613,27 @@ static uint64_t romfs_file_start(uint64_t off) {
     return ~0ull;
 }
 
+// The game's own RomFS image is open (the game opens it soon after it starts; a reboot closes it): fs_game_file can read
+// it from any thread
+bool fs_game_files_open(void) { return atomic_load_explicit(&game_image_open, memory_order_acquire); }
+
 // A whole file of the game's own RomFS image, as the image has it (not the overlay folder's), malloc'd (free it); NULL
-// if it isn't there. For host features that read the player's game data (runtime/items.c).
+// if it isn't there, or the image isn't open. For host features that read the player's game data (runtime/items.c,
+// runtime/collectibles_table.c), from any thread: a reboot waits for a read in progress before it closes the image.
 uint8_t *fs_game_file(const char *path, size_t *out_n) {
     RomImage *m = &images[0];
-    if (!m->img) return NULL;
-    for (int k = 0; k < m->rom_nfiles; k++) {
+    uint8_t *d = NULL;
+    pthread_mutex_lock(&game_file_lock);
+    for (int k = 0; fs_game_files_open() && k < m->rom_nfiles; k++) {
         if (strcmp(m->rom_files[k].path, path)) continue;
         size_t n = m->rom_files[k].size;
-        uint8_t *d = malloc(n ? n : 1);
-        if (d && romfs_image_pread(m->img, d, n, m->rom_files[k].off) == (ssize_t)n) {
-            *out_n = n;
-            return d;
-        }
-        free(d);
-        return NULL;
+        d = malloc(n ? n : 1);
+        if (d && romfs_image_pread(m->img, d, n, m->rom_files[k].off) == (ssize_t)n) *out_n = n;
+        else free(d), d = NULL;
+        break;
     }
-    return NULL;
+    pthread_mutex_unlock(&game_file_lock);
+    return d;
 }
 
 // Path of the file of image m containing image offset `off` (NULL if none).
@@ -1726,6 +1735,7 @@ static Service *open_image(int k, const char *dir, const char *name) {
         R = m;
         rom_index();
         R = &images[0];
+        if (!k) atomic_store_explicit(&game_image_open, true, memory_order_release);
     }
     Storage *st = calloc(1, sizeof *st);
     st->img = m;

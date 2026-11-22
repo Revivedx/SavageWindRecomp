@@ -226,6 +226,7 @@ typedef struct {
     int item_multiplier;     // 1, 2, 4 or 8: multiply stackable item pickups (runtime/items.c)
     bool free_sprint;        // sprinting takes no stamina while no enemy is fighting Link (runtime/free_sprint.c)
     bool sure_footed;        // a running horse doesn't stop dead and rear when it hits something (runtime/sure_footed.c)
+    bool collectibles_map;   // the Korok seeds and shrines not found yet on the game's map (runtime/collectibles_map.c)
     int weather;             // WEATHER_COUNT: the game's, rain or thunderstorms kept out, or one weather held (weather.c)
     bool god_mode;           // Link takes no damage
     bool one_hit_kill;       // whatever else takes damage loses all its life at once

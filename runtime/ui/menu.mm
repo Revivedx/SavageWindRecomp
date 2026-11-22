@@ -34,8 +34,10 @@ extern "C" bool vk_feedback_once(void);  // runtime/nvn/vulkan/exec.c (Video > S
 extern "C" {
 #include "../amiibo.h"
 #include "../bookmarks.h"
+#include "../collectibles.h"
 #include "../control.h"
 #include "../control_places.h"
+#include "../game_sites.h"
 #include "../hle.h"
 #include "../items.h"
 #include "../settings.h"
@@ -446,6 +448,7 @@ static ImGuiContext *g_ctx;  // ours: the start screen (back to it after a reboo
 static ImFont *g_hint_font, *g_hint_buttons;
 static bool g_hint_font_attempted;
 static uint32_t g_hint_generation;
+static unsigned g_hint_names;  // (collectibles_names_generation: the region names whose letters the hint font has)
 static ImFont *g_font, *g_font_big;
 static ImFont *g_font_mono;  // the console (columns line up); NULL: the normal font
 static ImFont *g_menu_font, *g_menu_font_big;  // the menu window (Fira Sans); everything else keeps g_font
@@ -542,7 +545,9 @@ static void load_fonts(void) {
     if (!g_font_big) g_font_big = g_font;
     if (!g_menu_font || !g_menu_font_big) g_menu_font = g_font, g_menu_font_big = g_font_big;
     g_hint_font = g_hint_buttons = nullptr;
-    g_hint_font_attempted = g_romfs_dir && (g_settings.quick_sort || g_settings.quick_drop || g_settings.quick_replace);
+    g_hint_font_attempted = g_romfs_dir && (g_settings.quick_sort || g_settings.quick_drop || g_settings.quick_replace ||
+                                            g_settings.collectibles_map);
+    g_hint_names = collectibles_names_generation();  // (before the load: names that arrive during it make it again)
     if (g_hint_font_attempted) quick_hint_fonts_load(io.Fonts, &g_hint_font, &g_hint_buttons);
     g_hint_generation = icons_generation;
 }
@@ -551,10 +556,14 @@ static void load_fonts(void) {
 extern "C" void vk_imgui_fonts_changed(void);  // (runtime/nvn/vulkan/imgui_glue.cpp)
 extern "C" const char *vk_hdr_icc_description(void);  // (runtime/nvn/vulkan/device.c)
 static void fonts_follow_language(void) {
-    bool need_hint_fonts = (g_settings.quick_sort || g_settings.quick_drop || g_settings.quick_replace) && g_romfs_dir && !g_hint_font_attempted;
-    bool icons_changed = (g_settings.quick_sort || g_settings.quick_drop || g_settings.quick_replace) && g_hint_generation != glyphs_font_generation();
+    bool hint_fonts = g_settings.quick_sort || g_settings.quick_drop || g_settings.quick_replace || g_settings.collectibles_map;
+    bool need_hint_fonts = hint_fonts && g_romfs_dir && !g_hint_font_attempted;
+    bool icons_changed = hint_fonts && g_hint_generation != glyphs_font_generation();
+    // (Collectible hints on the map: the regions' names arrive from the game files after the fonts were made)
+    bool names_changed = g_settings.collectibles_map && g_hint_font_attempted &&
+                         g_hint_names != collectibles_names_generation();
     int current_fonts_gen = ui_lang_generation() * 10007 + ui_dynamic_generation();
-    if (g_fonts_lang == current_fonts_gen && !need_hint_fonts && !icons_changed) return;
+    if (g_fonts_lang == current_fonts_gen && !need_hint_fonts && !icons_changed && !names_changed) return;
     load_fonts();
 #ifdef SW_METAL
     ImGui_ImplMetal_DestroyFontsTexture();  // (NewFrame makes it again)
@@ -1669,6 +1678,26 @@ static std::string item_desc(const GameItem *it) {
     return d + "\n\n" + it->actor;
 }
 
+// Cheats > Collectible hints on the map (runtime/collectibles.h): the switch. The hints themselves are drawn over the
+// game's map (collect_map_draw) while D-pad Down is held.
+static void cheats_collectibles(void) {
+    bool map_ok = !strcmp(g_game_version, "1.9.0");  // (the map's offsets are 1.9.0's)
+    if (!map_ok) opt_disable_next();
+    int key = g_bind_key[BIND_DOWN];  // (the keyboard's key for D-pad Down, as bound in Controls)
+    char desc[768];
+    if (key) snprintf(desc, sizeof desc, tr("Hold D-pad Down or %s on the game's map to see faint circles around the Korok "
+                                            "seeds and shrines you haven't found yet, and how many the region under the "
+                                            "cursor has. Only in regions whose tower you have activated."),
+                      tr(bind_key_label(key)));
+    opt_toggle("Collectible hints on the map", &g_settings.collectibles_map, false,
+               !map_ok ? "Faint circles around the Korok seeds and shrines you haven't found yet, on the game's map. "
+                         "Needs version 1.9.0 of the game."
+               : key ? desc
+                     : "Hold D-pad Down on the game's map to see faint circles around the Korok seeds and shrines you "
+                       "haven't found yet, and how many the region under the cursor has. Only in regions whose tower "
+                       "you have activated.");
+}
+
 // The Cheats tab (in game only): any of the game's items, in any amount, into the pouch through the game's own item
 // get (runtime/items.h; the console's give command does the same). Cheats, and labelled so: the game's own menus
 // stay as they are.
@@ -1681,6 +1710,7 @@ static void tab_cheats(void) {
     opt_begin("##cheats", ImGui::GetFontSize() / 34);
     opt_section(tr("Cheats"));
     cheats_options();
+    cheats_collectibles();
     hint(tr("These are cheats: they put items in your pouch. The list comes from your game files; nothing of the game is shipped."));
     if (!items_available()) {
         hint(tr("Items are added in game only."));
@@ -1915,6 +1945,279 @@ static void perf_cell(const char *fmt, float v) {
     if (v < 0) ImGui::TextDisabled("-");
     else ImGui::Text(fmt, v);
 }
+// ------------------------------------------------------------------ Collectible hints on the map (runtime/collectibles.h)
+// Cheats > Collectible hints on the map. While D-pad Down is held on the game's map (the raw input BIND_DOWN, so it
+// follows the player's binding; the map itself does nothing with the d-pad), soft circles fade in around the Korok seeds
+// and shrines not found yet in the regions whose tower is activated, and the region under the map's cursor shows its
+// counts top right, in the style of the game's own "Current Location" label. A real spot is somewhere inside its circle
+// (an offset fixed per item), not at its centre. Drawn only: the points come from the reader's last read, taken again a
+// few times a second. While the map is up, a prompt for it ("Hints" and the button) sits on the map's own prompt bar.
+// Numbers in the panel are in a 2560x1440 picture's pixels (the mockups'), times u; its text is about a tenth larger than
+// the mockups' Fira Sans, as the game's own font is narrower.
+#define COLLECT_R 70.f        // a hint circle's radius, in world units
+#define COLLECT_FADE_S .25f   // the fade in and out, seconds
+extern "C" uint64_t input_buttons_now(void);  // (runtime/hle/input.c)
+static float g_collect_alpha;  // the hints' fade: 0 hidden .. 1 shown
+
+static bool collect_map_held(void) { return (input_buttons_now() >> BIND_DOWN) & 1; }
+
+// The map is up with the option on, and the hints can show: the records are being read or have been (not game files
+// without the Korok seeds and shrines as expected, nor records that couldn't be read). Polled even then, so they are
+// read while the map is up, there when the button is held, and a failed read is tried again.
+static bool collect_map_on(CollectMapView *v, bool *ready) {
+    if (!collectibles_map_view(v)) return false;
+    CollectState s = collectibles_poll();
+    *ready = s == COLLECT_READY;
+    return s == COLLECT_READING || s == COLLECT_READY;
+}
+
+static bool collect_map_shown(void) {
+    CollectMapView v;
+    bool ready;
+    if (!collect_map_on(&v, &ready)) {
+        g_collect_alpha = 0;
+        return false;
+    }
+    return true;  // (the prompt shows while the map is up)
+}
+
+static ImU32 collect_col(int r, int g, int b, float a) { return IM_COL32(r, g, b, (int)(fminf(fmaxf(a, 0), 1) * 255 + .5f)); }
+
+// A hint's centre, from the real spot: fixed per item (seeded by its flag's hash), up to 0.75 of the radius away
+static void collect_offset(uint32_t seed, float *dx, float *dz) {
+    uint32_t h = seed;  // (murmur3's finaliser: neighbouring hashes land far apart)
+    h ^= h >> 16, h *= 0x85ebca6bu, h ^= h >> 13, h *= 0xc2b2ae35u, h ^= h >> 16;
+    float a = (h & 0xffff) / 65536.f * 6.2831853f, d = COLLECT_R * .75f * sqrtf((h >> 16) / 65536.f);
+    *dx = d * cosf(a), *dz = d * sinf(a);
+}
+
+// A soft disc: strongest in the middle, falling as (1 - d)^0.8 to a third, kept at that third to the edge (the chosen
+// mockup's fill). Rings of vertices with their own alpha; overlapping discs add up.
+static void collect_disc(ImDrawList *dl, ImVec2 c, float r, int cr, int cg, int cb, float a) {
+    static const float ring[] = {.25f, .5f, .747f, .97f, 1}, fall[] = {.794f, .574f, .333f, .333f, 0};
+    const int rings = 5, seg = (int)fminf(48, fmaxf(16, r * .4f));
+    float cs[48], sn[48];
+    for (int i = 0; i < seg; i++) cs[i] = cosf(i * 6.2831853f / seg), sn[i] = sinf(i * 6.2831853f / seg);
+    ImVec2 uv = dl->_Data->TexUvWhitePixel;
+    dl->PrimReserve(seg * 3 + (rings - 1) * seg * 6, 1 + rings * seg);
+    unsigned base = dl->_VtxCurrentIdx;
+    dl->PrimWriteVtx(c, uv, collect_col(cr, cg, cb, a));
+    for (int k = 0; k < rings; k++)
+        for (int i = 0; i < seg; i++)
+            dl->PrimWriteVtx(ImVec2(c.x + cs[i] * r * ring[k], c.y + sn[i] * r * ring[k]), uv, collect_col(cr, cg, cb, a * fall[k]));
+    for (int i = 0; i < seg; i++) {
+        int j = (i + 1) % seg;
+        dl->PrimWriteIdx((ImDrawIdx)base), dl->PrimWriteIdx((ImDrawIdx)(base + 1 + i)), dl->PrimWriteIdx((ImDrawIdx)(base + 1 + j));
+    }
+    for (int k = 0; k + 1 < rings; k++)
+        for (int i = 0; i < seg; i++) {
+            unsigned j = (i + 1) % seg, in = base + 1 + k * seg, out = in + seg;
+            dl->PrimWriteIdx((ImDrawIdx)(in + i)), dl->PrimWriteIdx((ImDrawIdx)(out + i)), dl->PrimWriteIdx((ImDrawIdx)(out + j));
+            dl->PrimWriteIdx((ImDrawIdx)(in + i)), dl->PrimWriteIdx((ImDrawIdx)(out + j)), dl->PrimWriteIdx((ImDrawIdx)(in + j));
+        }
+}
+
+// A haze: col inside a..b, fading to nothing over `feather` around it (the panel's soft dark backing)
+static void collect_haze(ImDrawList *dl, ImVec2 a, ImVec2 b, float feather, ImU32 col) {
+    ImVec2 uv = dl->_Data->TexUvWhitePixel;
+    ImVec2 in[4] = {a, ImVec2(b.x, a.y), b, ImVec2(a.x, b.y)};
+    ImVec2 out[4] = {ImVec2(a.x - feather, a.y - feather), ImVec2(b.x + feather, a.y - feather),
+                     ImVec2(b.x + feather, b.y + feather), ImVec2(a.x - feather, b.y + feather)};
+    dl->PrimReserve(5 * 6, 8);
+    unsigned base = dl->_VtxCurrentIdx;
+    for (int i = 0; i < 4; i++) dl->PrimWriteVtx(in[i], uv, col);
+    for (int i = 0; i < 4; i++) dl->PrimWriteVtx(out[i], uv, col & ~IM_COL32_A_MASK);
+    static const int quads[5][4] = {{0, 1, 2, 3}, {0, 1, 5, 4}, {1, 2, 6, 5}, {2, 3, 7, 6}, {3, 0, 4, 7}};
+    for (auto &q : quads) {
+        dl->PrimWriteIdx((ImDrawIdx)(base + q[0])), dl->PrimWriteIdx((ImDrawIdx)(base + q[1])), dl->PrimWriteIdx((ImDrawIdx)(base + q[2]));
+        dl->PrimWriteIdx((ImDrawIdx)(base + q[0])), dl->PrimWriteIdx((ImDrawIdx)(base + q[2])), dl->PrimWriteIdx((ImDrawIdx)(base + q[3]));
+    }
+}
+
+// The game's own font for a text when it has every letter of it (quick_hint_font.mm loads it from the player's files),
+// else the menu's
+static ImFont *collect_font(const char *text, ImFont *fallback) {
+    if (!g_hint_font) return fallback;
+    for (const char *p = text; *p;) {
+        unsigned code;
+        int n = ImTextCharFromUtf8(&code, p, nullptr);
+        if (!n) break;
+        p += n;
+        if (!g_hint_font->FindGlyphNoFallback((ImWchar)code)) return fallback;
+    }
+    return g_hint_font;
+}
+
+// Text slanted as the game's italic (quick_inventory_hint_draw; slant 0: upright), with a glow: faint copies of it
+// around. Its width.
+static float collect_text(ImDrawList *dl, ImFont *font, float size, ImVec2 pos, ImU32 col, ImU32 glow, float glow_r,
+                          const char *text, float slant = .18f) {
+    auto draw = [&](ImVec2 p, ImU32 c) {
+        int start = dl->VtxBuffer.Size;
+        dl->AddText(font, size, p, c, text);
+        float base = p.y + size * .8f;
+        for (int j = start; slant && j < dl->VtxBuffer.Size; j++) dl->VtxBuffer[j].pos.x += (base - dl->VtxBuffer[j].pos.y) * slant;
+    };
+    if (glow & IM_COL32_A_MASK)
+        for (int ring = 1; ring <= 2; ring++)
+            for (int k = 0; k < 10; k++) {
+                float t = (k + ring * .5f) * 6.2831853f / 10, d = glow_r * ring * .5f;
+                draw(ImVec2(pos.x + cosf(t) * d, pos.y + sinf(t) * d), glow);
+            }
+    draw(pos, col);
+    return font->CalcTextSizeA(size, FLT_MAX, 0, text).x;
+}
+
+// Our own icons (not the game's): a leaf for the Korok seeds, a temple front for the shrines; centre c, size s
+static void collect_leaf(ImDrawList *dl, ImVec2 c, float s, ImU32 col) {
+    const float ca = cosf(-.6109f), sa = sinf(-.6109f);  // (tilted 35 degrees)
+    auto at = [&](float w, float t) { return ImVec2(c.x + (w * ca - t * sa) * s, c.y + (w * sa + t * ca) * s); };
+    ImVec2 pts[42];
+    for (int i = 0; i < 21; i++) {
+        float t = -1 + i / 10.f, w = .48f * sqrtf(fmaxf(0, 1 - t * t)) * (1.15f - .3f * t);
+        pts[i] = at(w, t), pts[41 - i] = at(-w, t);
+    }
+    dl->AddConvexPolyFilled(pts, 42, col);
+    dl->AddLine(at(0, -.8f), at(0, 1.f), IM_COL32(4, 22, 34, (col >> IM_COL32_A_SHIFT) & 0xff), fmaxf(1.5f, s / 7));
+    dl->AddLine(at(0, 1.f), at(0, 1.5f), col, fmaxf(1.5f, s / 5));
+}
+
+static void collect_temple(ImDrawList *dl, ImVec2 c, float s, ImU32 col) {
+    float w = fmaxf(1.5f, s / 4.5f);
+    dl->AddTriangleFilled(ImVec2(c.x - s, c.y - .45f * s), ImVec2(c.x, c.y - s), ImVec2(c.x + s, c.y - .45f * s), col);
+    dl->AddRectFilled(ImVec2(c.x - .7f * s, c.y - .35f * s), ImVec2(c.x - .7f * s + w, c.y + .7f * s), col);
+    dl->AddRectFilled(ImVec2(c.x + .7f * s - w, c.y - .35f * s), ImVec2(c.x + .7f * s, c.y + .7f * s), col);
+    dl->AddRectFilled(ImVec2(c.x - .18f * s, c.y - .1f * s), ImVec2(c.x + .18f * s, c.y + .7f * s), col);
+    dl->AddRectFilled(ImVec2(c.x - s, c.y + .75f * s), ImVec2(c.x + s, c.y + .75f * s + w), col);
+}
+
+static void collect_check(ImDrawList *dl, ImVec2 c, float s, ImU32 col, float w) {
+    ImVec2 pts[3] = {ImVec2(c.x - s, c.y), ImVec2(c.x - .35f * s, c.y + .65f * s), ImVec2(c.x + s, c.y - .8f * s)};
+    dl->AddPolyline(pts, 3, col, 0, w);
+}
+
+// The tower region under the map's cursor: its name, a fading underline, and its Korok seeds and shrines found, top
+// right inside the map's canvas (over its top edge: clear of the slate's frame). A region with everything found turns
+// to a dusty blue with a check after its name.
+static void collect_panel(ImDrawList *dl, int region, const CollectCounts &c, float x, float y, float u, float alpha) {
+    static const char *named;  // (the menu's font is given the letters of each new name, for a name the game's lacks)
+    const char *name = collectibles_region_name(region);
+    if (!name) return;
+    if (name != named) ui_register_glyphs(name), named = name;
+    bool done = c.koroks == c.koroks_total && c.shrines_found == c.shrines_total;
+    ImU32 text = done ? collect_col(150, 185, 200, alpha) : collect_col(238, 250, 255, alpha);
+    ImU32 glow = done ? collect_col(30, 90, 130, .16f * alpha) : collect_col(40, 170, 255, .2f * alpha);
+    ImU32 line = done ? collect_col(150, 185, 200, .82f * alpha) : collect_col(120, 225, 255, .82f * alpha);
+    ImU32 icon = done ? collect_col(150, 185, 200, alpha) : collect_col(120, 225, 255, alpha);
+    ImU32 row_glow = done ? 0 : collect_col(40, 170, 255, .1f * alpha);
+    for (int k = 0; k < 3; k++)  // (layers: a soft edge with round corners, as a blurred box)
+        collect_haze(dl, ImVec2(x + (20 - 10 * k) * u, y + (30 - 10 * k) * u), ImVec2(x + (510 + 10 * k) * u, y + (190 + 10 * k) * u),
+                     (30 + 30 * k) * u, collect_col(0, 10, 20, .26f * alpha));
+    ImFont *big = collect_font(name, g_menu_font_big);
+    float tw = collect_text(dl, big, 70 * u, ImVec2(x, y - 4 * u), text, glow, 9 * u, name);
+    if (done) {
+        collect_check(dl, ImVec2(x + tw + 40 * u, y + 40 * u), 18 * u, collect_col(30, 90, 130, .5f * alpha), 11 * u);
+        collect_check(dl, ImVec2(x + tw + 40 * u, y + 40 * u), 18 * u, text, 7 * u);
+    }
+    float x0 = x - 10 * u, x1 = x + 520 * u, q = (x1 - x0) * .25f, ly = y + 92 * u;
+    ImU32 none = line & ~IM_COL32_A_MASK;
+    dl->AddRectFilledMultiColor(ImVec2(x0, ly), ImVec2(x0 + q, ly + 2 * u), none, line, line, none);
+    dl->AddRectFilled(ImVec2(x0 + q, ly), ImVec2(x1 - q, ly + 2 * u), line);
+    dl->AddRectFilledMultiColor(ImVec2(x1 - q, ly), ImVec2(x1, ly + 2 * u), line, none, none, line);
+    const char *labels[2] = {tr("Korok seeds"), tr("Shrines")};
+    int found[2] = {c.koroks, c.shrines_found}, total[2] = {c.koroks_total, c.shrines_total};
+    for (int i = 0; i < 2; i++) {
+        float ry = y + (120 + i * 58) * u;
+        if (i == 0) collect_leaf(dl, ImVec2(x + 22 * u, ry + 24 * u), 17 * u, icon);
+        else collect_temple(dl, ImVec2(x + 22 * u, ry + 24 * u), 17 * u, icon);
+        collect_text(dl, collect_font(labels[i], g_menu_font), 44 * u, ImVec2(x + 62 * u, ry - 2 * u), text, row_glow, 5 * u,
+                     labels[i]);
+        char v[32];
+        snprintf(v, sizeof v, "%d / %d", found[i], total[i]);
+        ImFont *f = collect_font(v, g_menu_font);
+        float vw = f->CalcTextSizeA(44 * u, FLT_MAX, 0, v).x;
+        collect_text(dl, f, 44 * u, ImVec2(x + 520 * u - vw, ry - 2 * u), text, row_glow, 5 * u, v);
+    }
+}
+
+// The hints' prompt on the map's prompt bar, left of its first prompt and in its look (upright cyan text with a glow,
+// then the button): "Hints" and the game's own D-pad Down icon, which nvn/glyphs.c redraws for the player's binding and
+// device as it does the bar's own icons. Without the game's icons: the bound key or button by name, in a badge.
+static void collect_prompt(ImDrawList *dl, const CollectMapView &v, float cx, float cy, float s, float u) {
+    if (v.bar[2] < v.bar[0]) return;
+    const char *label = tr("Hints");
+    ImFont *font = collect_font(label, g_menu_font);
+    float fs = 38 * u, y = cy - (v.bar[1] + v.bar[3]) * .5f * s, tw = font->CalcTextSizeA(fs, FLT_MAX, 0, label).x;
+    ImU32 cyan = IM_COL32(45, 192, 255, 255);
+    char name[64] = "";
+    float iw = 36 * u;
+    if (!g_hint_buttons) {
+        bool keyboard = input_last_device() == DEVICE_KEYBOARD;
+        snprintf(name, sizeof name, "%s", keyboard ? tr(bind_key_label(g_bind_key[BIND_DOWN]))
+                                                   : tr(bind_pad_label(g_bind_pad[BIND_DOWN], input_pad_family())));
+        iw = fmaxf(iw, g_menu_font->CalcTextSizeA(fs * .7f, FLT_MAX, 0, name).x + 16 * u);
+    }
+    // where the leftmost prompt's label starts: its picture's right edge less the padding, its button and the gap before
+    // it (10, 21.5 and 7 units), and the label's width (the game's font at our size measures as the bar draws it)
+    float lw = v.bar_text[0] ? collect_font(v.bar_text, g_menu_font)->CalcTextSizeA(fs, FLT_MAX, 0, v.bar_text).x : 40 * s;
+    float x = cx + (v.bar[2] - 10 - 21.5f - 7) * s - lw - 94 * u - (tw + 19 * u + iw);
+    collect_text(dl, font, fs, ImVec2(x, y - fs * .5f - 2 * u), cyan, IM_COL32(45, 192, 255, 14), 5 * u, label, 0);
+    float ix = x + tw + 19 * u;
+    if (g_hint_buttons) {
+        dl->AddText(g_hint_buttons, 64 * u, ImVec2(ix - 7 * u, y - 32 * u), cyan, "\xee\x81\xa1");  // (U+E061: D-pad Down)
+    } else {
+        dl->AddRectFilled(ImVec2(ix, y - 18 * u), ImVec2(ix + iw, y + 18 * u), cyan, 6 * u);
+        ImVec2 ts = g_menu_font->CalcTextSizeA(fs * .7f, FLT_MAX, 0, name);
+        dl->AddText(g_menu_font, fs * .7f, ImVec2(ix + (iw - ts.x) * .5f, y - ts.y * .5f), IM_COL32(4, 22, 34, 255), name);
+    }
+}
+
+static void collect_map_draw(ImGuiIO &io) {
+    CollectMapView v;
+    bool ready;
+    if (!collect_map_on(&v, &ready)) return;
+    float dt = fminf(fmaxf(io.DeltaTime, 0), 1 / 30.f);
+    g_collect_alpha = fminf(fmaxf(g_collect_alpha + (ready && collect_map_held() ? dt : -dt) / COLLECT_FADE_S, 0), 1);
+    float s = fminf(io.DisplaySize.x / 1280.f, io.DisplaySize.y / (720.f + 2 * output_ui_extra_y())), u = s * .5f;
+    float cx = io.DisplaySize.x * .5f, cy = io.DisplaySize.y * .5f, k0 = v.scale[0] * v.zoom, k1 = v.scale[1] * v.zoom;
+    ImDrawList *dl = ImGui::GetBackgroundDrawList();
+    collect_prompt(dl, v, cx, cy, s, u);
+    if (g_collect_alpha <= 0) return;
+    float a = g_collect_alpha * g_collect_alpha * (3 - 2 * g_collect_alpha);  // (eased)
+    static CollectPoint pts[1024];
+    static int n;
+    static double taken;
+    double now = SDL_GetTicks() / 1000.0;
+    if (now - taken > 0.25) n = collectibles_missing(pts, (int)(sizeof pts / sizeof *pts)), taken = now;
+    auto screen = [&](float x, float z) { return ImVec2(cx + (x * k0 + v.translate[0]) * s, cy - (-z * k1 + v.translate[1]) * s); };
+    ImVec2 lo(cx - v.half[0] * s, cy - v.half[1] * s), hi(cx + v.half[0] * s, cy + v.half[1] * s);
+    dl->PushClipRect(lo, hi, true);
+    float r = COLLECT_R * k0 * s, near = COLLECT_R * COLLECT_R;
+    const char *label = NULL;  // (the kind of the circle under the cursor nearest its centre)
+    for (int i = 0; i < n; i++) {
+        float dx, dz;
+        collect_offset(pts[i].seed, &dx, &dz);
+        float x = pts[i].x + dx, z = pts[i].z + dz;
+        ImVec2 p = screen(x, z);
+        if (p.x < lo.x - r || p.x > hi.x + r || p.y < lo.y - r || p.y > hi.y + r) continue;
+        if (pts[i].kind == COLLECT_KOROK) collect_disc(dl, p, r, 235, 240, 215, .30f * a);
+        else collect_disc(dl, p, r, 255, 175, 80, .42f * a);
+        float cdx = v.cursor[0] - x, cdz = v.cursor[1] - z, d = cdx * cdx + cdz * cdz;
+        if (d < near) near = d, label = pts[i].kind == COLLECT_KOROK ? "Korok seed" : "Shrine";
+    }
+    if (label) {  // (beside the cursor's frame, right: the game's own label for a place goes left)
+        ImVec2 c = screen(v.cursor[0], v.cursor[1]);
+        label = tr(label);
+        collect_text(dl, collect_font(label, g_menu_font), 36 * u, ImVec2(c.x + 95 * u, c.y - 22 * u),
+                     collect_col(238, 250, 255, a), collect_col(40, 170, 255, .16f * a), 6 * u, label);
+    }
+    dl->PopClipRect();
+    int region = collectibles_region_at(v.cursor[0], v.cursor[1]);
+    CollectCounts c;
+    if (region >= 0 && collectibles_counts(region, &c) && c.tower)
+        collect_panel(dl, region, c, cx + 420 * u, lo.y + 10 * u, u, a);
+}
+
 // ------------------------------------------------------------------ photo mode (hle/freecam.c, hle/photo.c)
 // While the free camera is on: a strip at the bottom with its keys (or the controller's). A picture saved: a notice
 // with a thumbnail in the bottom-right corner for a few seconds. Neither is in the picture (that is the game image).
@@ -2492,7 +2795,8 @@ static bool menu_draws(bool *pointer_hover = NULL, float *pointer_box = NULL, bo
     if (pointer_hover) *pointer_hover = hover;
     if (gyro_show) *gyro_show = gyro_on;
     return g_open.load() || g_kbd.load() == 1 || g_sizes.load() || console_is_open() || gyro_on || hover ||
-           g_settings.perf_overlay != PERF_OFF || act_log_enabled() || quick_inventory_sort_hint() || quick_drop_hint_state();
+           g_settings.perf_overlay != PERF_OFF || act_log_enabled() || quick_inventory_sort_hint() || quick_drop_hint_state() ||
+           collect_map_shown();
 }
 
 bool menu_render_needed(void) { return menu_draws(); }
@@ -2578,6 +2882,7 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
     if (g_settings.perf_overlay != PERF_OFF) perf_overlay_draw(io, scale);
     if (act_log_enabled()) act_overlay_draw(io, scale);
     if (!open && !kbd && !sizes && !con && (quick_inventory_sort_hint() || quick_drop_hint_state())) quick_inventory_hint_draw(io);
+    if (!open && !kbd && !sizes && !con) collect_map_draw(io);
     if (!open && !kbd && !sizes && !con) photo_overlay_draw(io, scale);
     if (!open && !kbd && !sizes && !con && gyro_scene_show) gyro_scene_draw(io, scale, gyro_scene);
 

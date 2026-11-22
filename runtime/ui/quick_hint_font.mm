@@ -11,6 +11,7 @@ extern "C" {
 #include "../services/archive.h"
 #include "../nvn/tegra.h"
 #include "../nvn/glyphs.h"
+#include "../collectibles.h"
 }
 
 namespace {
@@ -145,7 +146,12 @@ void quick_hint_fonts_load(ImFontAtlas *atlas, ImFont **text, ImFont **buttons) 
     if (!archive) return;
     std::vector<unsigned> chars;
     for (unsigned c = 32; c < 127; c++) chars.push_back(c);
-    for (const char *label : {tr("Sort"), tr("Drop"), tr("Back"), tr("Replace")}) {
+    // (and Cheats > Collectible hints on the map's labels, with the tower regions' names in the game's language)
+    std::vector<const char *> labels = {tr("Sort"), tr("Drop"), tr("Back"), tr("Replace"), tr("Korok seeds"), tr("Shrines"),
+                                         tr("Korok seed"), tr("Shrine"), tr("Hints")};
+    for (int i = 0; i < COLLECT_REGIONS; i++)
+        if (const char *name = collectibles_region_name(i)) labels.push_back(name);
+    for (const char *label : labels) {
         while (*label) {
             unsigned code; int n = ImTextCharFromUtf8(&code, label, nullptr);
             if (!n) break;
@@ -155,6 +161,7 @@ void quick_hint_fonts_load(ImFontAtlas *atlas, ImFont **text, ImFont **buttons) 
     }
     std::vector<unsigned> icons;
     for (unsigned c = 0xe040; c <= 0xe043; c++) icons.push_back(c);
+    icons.push_back(0xe061);  // (D-pad Down: Cheats > Collectible hints on the map's prompt)
     std::vector<Cell> cells;
     for (int i = 0; i < 2; i++) {
         uint32_t base, lo, hi;

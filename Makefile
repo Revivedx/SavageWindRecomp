@@ -559,6 +559,20 @@ $(B)/test_game_place: tests/test_game_place.c runtime/game_place.c runtime/game_
 	@mkdir -p $(dir $@)
 	$(CC) -O1 -Iruntime -o $@ $<
 
+# Cheats > Collectible hints on the map: the table built from the player's own game files, the same as
+# tools/gen_collectibles.py builds it. The player supplies RomFS locally; nothing of it is distributed.
+$(B)/test_collectibles_table: tests/test_collectibles_table.c runtime/collectibles_table.c runtime/collectibles_table.h \
+                              runtime/services/formats.c runtime/services/archive.c $(RT_HDRS)
+	@mkdir -p $(dir $@)
+	$(CC) -O1 -Iruntime -o $@ $(filter %.c,$^)
+
+test-collectibles: $(B)/test_collectibles_table
+	@test -n "$(ROMFS)" || { echo 'Set ROMFS to your own extracted game RomFS directory.'; exit 2; }
+	$(B)/test_collectibles_table "$(ROMFS)" > $(B)/collectibles_c.txt
+	$(firstword $(PY) python3) tools/gen_collectibles.py "$(ROMFS)" $(B)/collectibles_c.txt
+
+.PHONY: test-collectibles
+
 $(B)/test_discord_rpc: tests/test_discord_rpc.c runtime/discord_rpc.c runtime/discord_rpc.h
 	@mkdir -p $(dir $@)
 	$(CC) -O1 -Iruntime -o $@ $<
