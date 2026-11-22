@@ -9340,7 +9340,8 @@ have_pipe:
     float rs0[4] = {vp_sx, vp_sy, vp_ox, vp_oy};
     uint64_t prof_t1_ = profd ? SDL_GetTicksNS() : 0;
     ProfZone pz6 = PZ_NOW();
-    fxaa_off = !g_settings.game_fxaa && fxaa_shader(g_cur_fs_hash);  // (Video > Game's FXAA: fxaa_patch)
+    // (Video > Game's FXAA: fxaa_patch; off under an upscaler that anti-aliases, rt_temporal_upscaler)
+    fxaa_off = fxaa_shader(g_cur_fs_hash) && (!g_settings.game_fxaa || rt_temporal_upscaler());
     if (fxaa_off) {
         static uint64_t logged[2];
         int i = g_cur_fs_hash == logged[0] ? -1 : !logged[0] ? 0 : g_cur_fs_hash == logged[1] ? -1 : !logged[1] ? 1 : -1;
@@ -10347,7 +10348,7 @@ static void cpost_pass(VkCommandBuffer cb, const char *cs, const VkImageView *sr
 // size in the window (its crop is drawn into the viewport).
 static VkImageView post_process(VkCommandBuffer cb, TexBackend *b, double ow_d, double oh_d) {
     VkImageView v = raw_view(b);
-    bool smaa = rt_antialias() == AA_SMAA && !rt_fsr3() && !rt_xess();  // (FSR 3, XeSS anti-alias the scene themselves)
+    bool smaa = rt_antialias() == AA_SMAA && !rt_temporal_upscaler();  // (FSR 3 / 4, XeSS, DLSS anti-alias the scene themselves)
     uint32_t ow = (uint32_t)lround(ow_d), oh = (uint32_t)lround(oh_d);
     if (ow > 16384) ow = 16384;
     if (oh > 16384) oh = 16384;

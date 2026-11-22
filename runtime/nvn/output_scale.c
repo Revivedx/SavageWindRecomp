@@ -132,7 +132,13 @@ int upscale_quality_now(void) {
     return upscale_mode_offered(q) ? q : (q == UPQ_NATIVE || q == UPQ_DYNAMIC ? UPQ_QUALITY : UPQ_PERFORMANCE);
 }
 
+// The temporal upscalers. They anti-alias the scene themselves (from several frames): while one is on, Video >
+// Anti-aliasing is off, the game's FXAA and SMAA included (vulkan/exec.c), and the menus show the row greyed with the
+// upscaler's name. The setting is kept.
 bool rt_temporal_upscaler(void) { return rt_fsr3() || rt_xess() || rt_dlss(); }
+const char *rt_temporal_upscaler_name(void) {
+    return rt_fsr4() ? "FSR 4" : rt_fsr3() ? "FSR 3" : rt_xess() ? "XeSS" : rt_dlss() ? "DLSS" : NULL;
+}
 
 // FSR 3 / 4, XeSS and DLSS take no scene larger than the window (vulkan/exec.c scene_post skips them then, and the
 // camera's jitter, there for them, would reach the screen unresolved): with one of them the render scale goes up to

@@ -124,6 +124,8 @@ T("Only with an upscaler: choose one above first.", "ใช้ได้เมื
 T("Renders smaller, then upscales. Coming in a later version.", "เรนเดอร์เล็กลงแล้วขยาย จะมาในเวอร์ชันถัดไป")
 T("Anti-aliasing", "แอนตี้เอลิแอสซิง")
 T("Smooths jagged edges. Best at a lower resolution.", "ทำให้ขอบหยักเรียบ เหมาะกับความละเอียดต่ำ")
+T("The upscaler already smooths edges, so this is off.", "ตัวขยายภาพทำให้ขอบเรียบอยู่แล้ว จึงปิดตัวเลือกนี้")
+T("Off while FSR 3, FSR 4, XeSS or DLSS is on: they smooth edges themselves.", "ปิดอยู่ขณะใช้ FSR 3, FSR 4, XeSS หรือ DLSS เพราะตัวเหล่านี้ทำให้ขอบเรียบเอง")
 T("Anisotropic filtering", "การกรองแบบแอนไอโซทรอปิก")
 T("Render scale", "สเกลการเรนเดอร์")
 T("Below 100%: faster, blurrier. Above 100%: renders bigger, then shrinks to the window. Smoothest edges.", "ต่ำกว่า 100%: เร็วขึ้น แต่เบลอขึ้น เกิน 100%: เรนเดอร์ใหญ่ขึ้นแล้วย่อลงให้พอดีหน้าต่าง ขอบเรียบที่สุด")

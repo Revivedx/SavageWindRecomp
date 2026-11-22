@@ -476,6 +476,8 @@ T("To the desktop, or back to the Savage Wind start screen.", "デスクトッ�
 T("Fills the screen. Also F11 or Alt+Enter.", "画面全体に表示します。F11かAlt+Enterでも切り替えられます。")
 T("Frame rate and system load in a corner. Also F10.", "フレームレートとシステム負荷を隅に表示。F10でも切り替え可能。")
 T("Smooths jagged edges. Best at a lower resolution.", "ギザギザを滑らかにします。低い解像度で効果的です。")
+T("The upscaler already smooths edges, so this is off.", "アップスケーラーがすでに輪郭を滑らかにするため、これはオフです。")
+T("Off while FSR 3, FSR 4, XeSS or DLSS is on: they smooth edges themselves.", "FSR 3、FSR 4、XeSS、DLSSの使用中はオフです。これらは自分で輪郭を滑らかにします。")
 T("On: no stutter, but some effects appear late.", "ON：カクつきませんが、一部の効果が遅れて表示されます。")
 T("The game's volume. 100% is its own level.", "ゲームの音量です。100%がゲーム本来の音量です。")
 T("Echo in caves, shrines and big rooms.", "洞窟、祠、広い部屋での反響音です。")

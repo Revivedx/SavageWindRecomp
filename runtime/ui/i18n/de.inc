@@ -476,6 +476,8 @@ T("To the desktop, or back to the Savage Wind start screen.", "Zum Desktop oder 
 T("Fills the screen. Also F11 or Alt+Enter.", "Füllt den Bildschirm. Auch F11 oder Alt+Enter.")
 T("Frame rate and system load in a corner. Also F10.", "Bildrate und Systemlast in einer Ecke. Auch F10.")
 T("Smooths jagged edges. Best at a lower resolution.", "Glättet gezackte Kanten. Am besten bei geringerer Auflösung.")
+T("The upscaler already smooths edges, so this is off.", "Die Hochskalierung glättet die Kanten schon selbst, daher ist dies aus.")
+T("Off while FSR 3, FSR 4, XeSS or DLSS is on: they smooth edges themselves.", "Aus, solange FSR 3, FSR 4, XeSS oder DLSS an ist: Sie glätten die Kanten selbst.")
 T("On: no stutter, but some effects appear late.", "EIN: kein Ruckeln, aber manche Effekte erscheinen später.")
 T("The game's volume. 100% is its own level.", "Die Lautstärke des Spiels. 100% ist sein eigener Pegel.")
 T("Echo in caves, shrines and big rooms.", "Echo in Höhlen, Schreinen und großen Räumen.")

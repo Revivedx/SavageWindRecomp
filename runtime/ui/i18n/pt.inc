@@ -476,6 +476,8 @@ T("To the desktop, or back to the Savage Wind start screen.", "Para a área de t
 T("Fills the screen. Also F11 or Alt+Enter.", "Ocupa a tela inteira. Também F11 ou Alt+Enter.")
 T("Frame rate and system load in a corner. Also F10.", "Taxa de quadros e carga do sistema num canto. Também F10.")
 T("Smooths jagged edges. Best at a lower resolution.", "Suaviza bordas serrilhadas. Melhor em resolução mais baixa.")
+T("The upscaler already smooths edges, so this is off.", "O upscaler já suaviza as bordas, por isso isto fica desligado.")
+T("Off while FSR 3, FSR 4, XeSS or DLSS is on: they smooth edges themselves.", "Desligado enquanto FSR 3, FSR 4, XeSS ou DLSS estiverem ligados: eles próprios suavizam as bordas.")
 T("On: no stutter, but some effects appear late.", "SIM: sem travamentos, mas alguns efeitos aparecem com atraso.")
 T("The game's volume. 100% is its own level.", "O volume do jogo. 100% é o nível original.")
 T("Echo in caves, shrines and big rooms.", "Eco em cavernas, santuários e salas grandes.")

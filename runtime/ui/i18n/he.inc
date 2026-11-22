@@ -123,6 +123,8 @@ T("Only with an upscaler: choose one above first.", "רק עם הגדלת רזו
 T("Ultra Quality is the sharpest, Ultra Performance the fastest.", "איכות מרבית: הכי חד. ביצועים מרביים: הכי מהיר.")
 T("Anti-aliasing", "החלקת קצוות")
 T("Smooths jagged edges. Best at a lower resolution.", "מחליק קצוות משוננים. הכי מועיל ברזולוציה נמוכה.")
+T("The upscaler already smooths edges, so this is off.", "הגדלת הרזולוציה כבר מחליקה את הקצוות, ולכן זה כבוי.")
+T("Off while FSR 3, FSR 4, XeSS or DLSS is on: they smooth edges themselves.", "כבוי כל עוד FSR 3, FSR 4, XeSS או DLSS פועלים: הם מחליקים את הקצוות בעצמם.")
 T("Anisotropic filtering", "סינון אניזוטרופי")
 T("Render scale", "קנה מידה של רינדור")
 T("Below 100%: faster, blurrier. Above 100%: renders bigger, then shrinks to the window. Smoothest edges.", "מתחת ל-100%: מהיר יותר, מטושטש יותר. מעל 100%: מרנדר גדול יותר ואז מקטין לחלון. הקצוות החלקים ביותר.")

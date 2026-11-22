@@ -476,6 +476,8 @@ T("To the desktop, or back to the Savage Wind start screen.", "Naar het bureaubl
 T("Fills the screen. Also F11 or Alt+Enter.", "Vult het scherm. Ook F11 of Alt+Enter.")
 T("Frame rate and system load in a corner. Also F10.", "Framerate en systeembelasting in een hoek. Ook F10.")
 T("Smooths jagged edges. Best at a lower resolution.", "Strijkt kartelranden glad. Het best bij een lagere resolutie.")
+T("The upscaler already smooths edges, so this is off.", "De opschaling maakt de randen al glad, dus dit staat uit.")
+T("Off while FSR 3, FSR 4, XeSS or DLSS is on: they smooth edges themselves.", "Uit zolang FSR 3, FSR 4, XeSS of DLSS aan staat: die maken de randen zelf glad.")
 T("On: no stutter, but some effects appear late.", "AAN: geen haperingen, maar sommige effecten verschijnen later.")
 T("The game's volume. 100% is its own level.", "Het volume van het spel. 100% is het eigen niveau.")
 T("Echo in caves, shrines and big rooms.", "Echo in grotten, heiligdommen en grote zalen.")

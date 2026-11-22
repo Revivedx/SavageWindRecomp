@@ -1075,8 +1075,16 @@ static void tab_display(void) {
                            "edges and blends only along them, so textures stay sharp. Most useful with an upscaler.")) +
             " " + tr("TAA: blends each frame with the ones before it, following the game's motion, so edges stay "
                      "smooth and stop shimmering; slightly softer, use it with Sharpening.");
-        int row = settings_aa_row();
-        if (opt_choice("Anti-aliasing", &row, aa, AA_ROW_COUNT, AA_ROW_FXAA, d.c_str())) settings_aa_row_set(row);
+        if (rt_temporal_upscaler()) {  // (FSR 3 / 4, XeSS, DLSS smooth edges themselves: the row shows the upscaler, greyed)
+            const char *one[] = {rt_temporal_upscaler_name()};
+            int z = 0;
+            d += std::string(" ") + tr("Off while FSR 3, FSR 4, XeSS or DLSS is on: they smooth edges themselves.");
+            opt_disable_next();
+            opt_choice("Anti-aliasing", &z, one, 1, 0, d.c_str());
+        } else {
+            int row = settings_aa_row();
+            if (opt_choice("Anti-aliasing", &row, aa, AA_ROW_COUNT, AA_ROW_FXAA, d.c_str())) settings_aa_row_set(row);
+        }
     }
     // the wet lighting passes' sun glare (maxwell/translate.c maxwell_wet_lighting)
     opt_toggle("Wet grass fix", &g_settings.wet_fix, false,
@@ -2066,7 +2074,7 @@ static void perf_overlay_draw(ImGuiIO &io, float scale) {
     }
     // (FSR 3 / 4 and DLSS anti-alias the scene themselves: the setting does nothing then)
     int aa = rt_antialias();
-    line += std::string(" | ") + tr("Anti-aliasing") + ": " + (rt_fsr4() ? tr("FSR 4") : rt_fsr3() ? tr("FSR 3") : rt_dlss() ? tr("DLSS") : rt_xess() ? tr("XeSS") : aa == AA_TAA ? tr("TAA") : aa == AA_SMAA ? tr("SMAA") : g_settings.game_fxaa ? "FXAA" : tr("Off"));
+    line += std::string(" | ") + tr("Anti-aliasing") + ": " + (rt_temporal_upscaler() ? tr(rt_temporal_upscaler_name()) : aa == AA_TAA ? tr("TAA") : aa == AA_SMAA ? tr("SMAA") : g_settings.game_fxaa ? "FXAA" : tr("Off"));
     ImGui::TextDisabled("%s", line.c_str());
     line.clear();
 #ifndef SW_METAL

@@ -828,6 +828,23 @@ void build_items(void) {
 #else
                        [](const Item &) { return settings_aa_row(); },
                        [](const Item &, int x) { settings_aa_row_set(x); }, AA_ROW_FXAA));
+    // Under an upscaler that smooths edges itself (rt_temporal_upscaler) the row has one value, that upscaler, greyed; the
+    // choice made before stays stored and comes back without it.
+    v.back().count = [](const Item &) { return rt_temporal_upscaler() ? 1 : N(k_aa); };
+    v.back().label = [](const Item &, int x) {
+        const char *u = rt_temporal_upscaler_name();
+        return tr(u ? u : k_aa[x]);
+    };
+    v.back().get = [](const Item &) { return rt_temporal_upscaler() ? 0 : settings_aa_row(); };
+    v.back().set = [](const Item &, int x) {
+        if (!rt_temporal_upscaler()) settings_aa_row_set(x);
+    };
+    v.back().value_off = [](const Item &, int) { return rt_temporal_upscaler(); };
+    v.back().reset = [](const Item &) { settings_aa_row_set(AA_ROW_FXAA); };  // (also under the upscaler)
+    v.back().desc_fn = [](const Item &) {  // (one line)
+        return rt_temporal_upscaler() ? tr("The upscaler already smooths edges, so this is off.")
+                                : tr("Smooths jagged edges. Best at a lower resolution.");
+    };
 #endif
     v.push_back(choice(P_VIDEO_ADV, "Upscaler", "Off: full resolution. AMD FSR 1: renders smaller, then upscales.",
                        [](const Item &) { return N(k_ups_value); }, ups_label,

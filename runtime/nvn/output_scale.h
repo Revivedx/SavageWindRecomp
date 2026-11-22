@@ -40,6 +40,7 @@ bool upscale_mode_offered(int q);   // mode q can be chosen now (Ultra Performan
 bool upscale_mode_is_dlaa(int q);   // mode q is named DLAA in the menus: Native with DLSS chosen
 int upscale_quality_now(void);      // the mode in use: the setting, or Performance where it is not offered
 bool rt_temporal_upscaler(void);  // FSR 3 / 4, XeSS or DLSS: the upscalers that rebuild the image from several frames
+const char *rt_temporal_upscaler_name(void);  // its name ("FSR 4", "FSR 3", "XeSS", "DLSS"), or NULL
 // Video > Render scale: whether value r (RSCALE_*) can be chosen now (with a temporal upscaler up to 100%, in its Native
 // or DLAA mode 100%), and the one in use
 bool render_scale_offered(int r);

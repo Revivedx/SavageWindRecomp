@@ -476,6 +476,8 @@ T("To the desktop, or back to the Savage Wind start screen.", "바탕 화면으�
 T("Fills the screen. Also F11 or Alt+Enter.", "화면 전체를 채웁니다. F11이나 Alt+Enter로도 전환됩니다.")
 T("Frame rate and system load in a corner. Also F10.", "프레임 레이트와 시스템 부하를 구석에 표시합니다. F10으로도 전환.")
 T("Smooths jagged edges. Best at a lower resolution.", "계단 현상을 부드럽게 합니다. 낮은 해상도에서 효과적입니다.")
+T("The upscaler already smooths edges, so this is off.", "업스케일러가 이미 가장자리를 부드럽게 하므로 이 기능은 꺼져 있습니다.")
+T("Off while FSR 3, FSR 4, XeSS or DLSS is on: they smooth edges themselves.", "FSR 3, FSR 4, XeSS, DLSS를 쓰는 동안에는 꺼집니다. 이들이 직접 가장자리를 부드럽게 합니다.")
 T("On: no stutter, but some effects appear late.", "ON: 끊김이 없지만 일부 효과가 늦게 나타납니다.")
 T("The game's volume. 100% is its own level.", "게임의 음량입니다. 100%가 게임 본래의 음량입니다.")
 T("Echo in caves, shrines and big rooms.", "동굴, 사당, 넓은 방에서의 울림입니다.")

@@ -476,6 +476,8 @@ T("To the desktop, or back to the Savage Wind start screen.", "回到桌面，�
 T("Fills the screen. Also F11 or Alt+Enter.", "填滿整個螢幕。也可以按F11或Alt+Enter。")
 T("Frame rate and system load in a corner. Also F10.", "在角落顯示影格速率和系統負載。也可以按F10。")
 T("Smooths jagged edges. Best at a lower resolution.", "平滑鋸齒邊緣。在較低解析度下效果最好。")
+T("The upscaler already smooths edges, so this is off.", "放大方式已經會平滑邊緣，所以此項關閉。")
+T("Off while FSR 3, FSR 4, XeSS or DLSS is on: they smooth edges themselves.", "開啟FSR 3、FSR 4、XeSS或DLSS時關閉：它們會自己平滑邊緣。")
 T("On: no stutter, but some effects appear late.", "ON：不會卡頓，但部分效果會延遲出現。")
 T("The game's volume. 100% is its own level.", "遊戲的音量。100%為遊戲原本的音量。")
 T("Echo in caves, shrines and big rooms.", "洞窟、神廟和大房間中的回音。")
