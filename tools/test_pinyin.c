@@ -57,11 +57,14 @@ int main(void) {
     pinyin_text("アカリ", py, sizeof py);  // (kana: no reading, the bytes are kept)
     check(!strcmp(py, "アカリ"), "kana kept", py);
 
-    // ü is written u in the table, and typed u or v (a Chinese IME's ü key is v)
+    // Both spellings match ü. Ordinary u and a literal Latin v stay distinct.
     pinyin_text("女", py, sizeof py);
-    check(!strcmp(py, "nu"), "ü -> u (女)", py);
+    check(!strcmp(py, "nV"), "ü -> V (女)", py);
     expect("女", "nv", true);
-    expect("女", "nu", true);
+    expect("女", "NU", true);
+    expect("鲈鱼", "lvyv", false);
+    expect("Valve", "value", false);
+    expect("Valve", "VALVE", true);
 
     // An empty search matches everything, as has_text
     expect("烤鲈鱼", "", true);
@@ -77,6 +80,13 @@ int main(void) {
     char emoji[8] = {0};
     check(pinyin_text("\xf0\x9f\x98\x80", emoji, sizeof emoji) && !memcmp(emoji, "\xf0\x9f\x98\x80", 4),
           "above U+FFFF has no reading: kept", emoji);
+
+    // A name near the MSBT reader's limit can need more than 256 bytes of pinyin.
+    char name[160] = "", long_py[sizeof name * PINYIN_UTF8_EXPANSION];
+    for (size_t n = 0; n + sizeof "双" <= sizeof name; n += sizeof "双" - 1)
+        memcpy(name + n, "双", sizeof "双");
+    check(pinyin_text(name, long_py, sizeof long_py) && strlen(long_py) == 370,
+          "53 long syllables fit the item name bound", NULL);
 
     // The table is what tools/gen_pinyin_table.py describes: sorted codepoints, readings inside the pool
     if (failures) {

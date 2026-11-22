@@ -9,6 +9,8 @@
 
 #include "pinyin_data.inc"
 
+_Static_assert(PINYIN_REQUIRED_EXPANSION <= PINYIN_UTF8_EXPANSION, "pinyin table exceeds the output capacity bound");
+
 // The reading of a codepoint, NULL when the table has none
 static const char *reading_of(uint32_t cp) {
     int lo = 0, hi = PINYIN_CODEPOINTS - 1;
@@ -41,12 +43,10 @@ static void put(char *out, size_t cap, size_t *at, bool *fits, char c) {
     else *fits = false;
 }
 
-// A letter of the table and one of the search: the case is ignored, and a v typed for ü matches the u the table
-// writes (a Chinese IME's ü key is v; the other way round would fold the v of every Latin name)
+// pinyin_text lowercases literal ASCII, so only a reading containing ü can emit V.
 static bool same_letter(unsigned char have, unsigned char want) {
-    if (have >= 'A' && have <= 'Z') have = (unsigned char)(have - 'A' + 'a');
     if (want >= 'A' && want <= 'Z') want = (unsigned char)(want - 'A' + 'a');
-    return have == want || (have == 'u' && want == 'v');
+    return have == 'V' ? want == 'u' || want == 'v' : have == want;
 }
 
 bool pinyin_text(const char *utf8, char *out, size_t cap) {

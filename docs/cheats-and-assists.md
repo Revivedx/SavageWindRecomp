@@ -61,8 +61,9 @@ Savage Wind was started with `-dev` (see [Teleport and console cheats](#teleport
 **Searching a Chinese name** goes by the name's pinyin. The search is typed on the on-screen keyboard, which a
 controller drives and which has no input method, so the hanzi themselves can't be typed there: type the readings
 instead, without tones, run together or apart. `luyu` finds 鲈鱼, `kaoluyu` 烤鲈鱼, `bingleng` the frozen fish, and `yu`
-every name with 鱼 in it. With a keyboard the hanzi can be typed directly, as before; ü is also typed `v`, as in a
-pinyin input method.
+every name with 鱼 in it. Type `u` or `v` for ü. Search uses one reading per character, so words with a different
+reading in context may need a shorter query. With a physical keyboard and an input method, you can also type the
+hanzi directly.
 
 If the pouch is full, you get as many as fit, and the tab says how many were added. If you are in a menu or a
 cutscene, the request waits until you are back in play. The item list comes from your own game files; nothing of the

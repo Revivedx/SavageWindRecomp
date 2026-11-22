@@ -35,7 +35,7 @@
   (public domain / MIT), [shaderc](https://github.com/google/shaderc)
   (Apache 2.0), [Zig](https://ziglang.org) (MIT), [Capstone](https://www.capstone-engine.org) (BSD),
   [Unicorn](https://www.unicorn-engine.org) (GPL 2.0), [python-lz4](https://github.com/python-lz4/python-lz4) (BSD).
-- [Unicode Han Database (Unihan)](https://www.unicode.org/Public/UCD/latest/ucd/Unihan.zip) - the readings behind the
+- [Unicode Han Database (Unihan 18.0.0)](https://www.unicode.org/Public/18.0.0/ucd/Unihan.zip) - the readings behind the
   menus' pinyin search, `kMandarin` of `Unihan_Readings.txt` (`runtime/pinyin_data.inc`, `tools/gen_pinyin_table.py`;
   Unicode License v3, `third_party/unihan/LICENSE.txt`).
 - Colour LUTs from [FreshLUTs](https://freshluts.com), CC0 1.0, renamed: "Savage Wind" is

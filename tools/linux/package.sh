@@ -45,6 +45,7 @@ cp third_party/fonts/NotoSansThai/NotoSansThai-Medium.ttf "$APPDIR/usr/bin/"  # 
 cp third_party/fonts/NotoSansThai/OFL.txt "$APPDIR/usr/bin/NotoSansThai-OFL.txt"
 cp third_party/fonts/NotoSansHebrew/NotoSansHebrew-Medium.ttf "$APPDIR/usr/bin/"  # (Hebrew menus, OFL)
 cp third_party/fonts/NotoSansHebrew/OFL.txt "$APPDIR/usr/bin/NotoSansHebrew-OFL.txt"
+cp third_party/unihan/LICENSE.txt "$APPDIR/usr/bin/Unihan-LICENSE.txt"
 cp third_party/FidelityFX/LICENSE.txt "$APPDIR/usr/bin/FidelityFX-LICENSE.txt"  # (AMD FidelityFX SDK, MIT: frame generation)
 mkdir "$APPDIR/usr/bin/colour-luts" && cp third_party/luts/*.cube third_party/luts/README.md "$APPDIR/usr/bin/colour-luts/"  # (CC0: Video > Colour)
 cp README.md LICENSE "$APPDIR/usr/bin/"  # (licenses and source links of the bundled components: README "License")

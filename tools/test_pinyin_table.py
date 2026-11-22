@@ -16,7 +16,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TABLE = os.path.join(ROOT, 'runtime/pinyin_data.inc')
 
 # What a few characters of the table read, and so what a player can type to find them
-KNOWN = {'\u9c7c': 'yu', '\u9c88': 'lu', '\u5973': 'nu', '\u70e4': 'kao', '\u51b0': 'bing', '\u4e00': 'yi'}
+KNOWN = {'\u9c7c': 'yu', '\u9c88': 'lu', '\u5973': 'nV', '\u70e4': 'kao', '\u51b0': 'bing', '\u4e00': 'yi'}
 
 failures = []
 
@@ -39,7 +39,7 @@ def readings(text):
     m = re.search(r'g_pinyin_readings\[\]\s*=\s*(.*?);', text, re.S)
     if not m:
         raise SystemExit('%s: no g_pinyin_readings' % TABLE)
-    body = re.sub(r'["\s]', '', m.group(1))  # (the pool is plain a-z, a \\0 between the readings)
+    body = re.sub(r'["\s]', '', m.group(1))  # (the pool is a-z and V, a \\0 between the readings)
     check('\\' not in body.replace('\\0', ''), 'the pool holds an escape other than \\0')
     words = body.split('\\0')
     check(words and words[-1] == '', 'the pool does not end with \\0')
@@ -67,7 +67,7 @@ def table(text):
         check(reading is not None, 'offset %d of U+%04x is not a reading start' % (off, cp))
         if reading is None:
             continue
-        check(re.fullmatch(r'[a-z]+', reading) is not None, 'U+%04x reads %r: not plain a-z' % (cp, reading))
+        check(re.fullmatch(r'[a-zV]+', reading) is not None, 'U+%04x reads %r: expected a-z or V' % (cp, reading))
         check(off + len(reading) < pool_size, 'U+%04x reads past the pool' % cp)
         out[cp] = reading
     return out

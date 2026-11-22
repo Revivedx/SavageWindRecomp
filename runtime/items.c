@@ -78,6 +78,8 @@ static int byml_get_int(const Byml *b, uint32_t node, const char *key, int def) 
 }
 
 // ---- MSBT: the label's text, UTF-16 to UTF-8, control tags left out
+enum { ITEM_NAME_BYTES = 160 };
+
 static void utf8_put(char **o, char *end, uint32_t c) {
     char *p = *o;
     if (c < 0x80) { if (p + 1 < end) *p++ = (char)c; }
@@ -112,7 +114,7 @@ static void msbt_read(const uint8_t *d, size_t n) {
             if (len > 5 && !memcmp(d + p + 1 + len - 5, "_Name", 5) && idx < ntxt) {
                 size_t t0 = txt + rd32(d + txt + 4 + 4 * idx);
                 size_t t1 = idx + 1 < ntxt ? txt + rd32(d + txt + 8 + 4 * idx) : txt + txt_size;
-                char buf[160], *o = buf;
+                char buf[ITEM_NAME_BYTES], *o = buf;
                 for (size_t q = t0; q + 1 < t1 && q + 1 < n;) {
                     uint16_t c = rd16(d + q);
                     q += 2;
@@ -258,8 +260,6 @@ static void list_read(void) {
         if (!name) continue;
         GameItem *it = &g_items[g_nitems++];
         it->actor = copy(actor, strlen(actor)), it->name = name, it->cat = cat;
-        char py[256];  // (the MSBT reader stops a name at 160 bytes: the readings always fit)
-        if (pinyin_text(name, py, sizeof py)) it->pinyin = copy(py, strlen(py));
         it->stack = cat == ITEMCAT_ARROW || cat == ITEMCAT_MATERIAL;
         it->value = cat <= ITEMCAT_SHIELD ? byml_get_int(&b, a, "generalLife", 1) * 100 : 1;
         it->attack = byml_get_int(&b, a, "attackPower", 0);
@@ -281,7 +281,12 @@ static void list_read(void) {
     for (int i = 0; i < g_nitems; i++)
         if (!w || g_items[w - 1].cat != g_items[i].cat || strcmp(g_items[w - 1].name, g_items[i].name)) g_items[w++] = g_items[i];
     g_nitems = w;
-    for (int i = 0; i < g_nitems; i++) ui_register_glyphs(g_items[i].name);
+    for (int i = 0; i < g_nitems; i++) {
+        GameItem *it = &g_items[i];
+        char py[ITEM_NAME_BYTES * PINYIN_UTF8_EXPANSION];
+        if (pinyin_text(it->name, py, sizeof py)) it->pinyin = copy(py, strlen(py));
+        ui_register_glyphs(it->name);
+    }
     LOG("[items] %d items can be added\n", g_nitems);
     free(d);
 }
@@ -474,20 +479,32 @@ static bool has_text(const char *s, const char *t) {  // (ignoring case)
     return false;
 }
 
+static bool item_has_text(const GameItem *it, const char *text) {
+    return has_text(it->name, text) || has_text(it->actor, text);
+}
+
+static bool item_has_pinyin(const GameItem *it, const char *text) {
+    return it->pinyin && pinyin_match(it->pinyin, text);
+}
+
 bool items_matches(int i, const char *text) {
     const GameItem *it = items_at(i);
-    return it && (has_text(it->name, text) || has_text(it->actor, text) || (it->pinyin && pinyin_match(it->pinyin, text)));
+    return it && (item_has_text(it, text) || item_has_pinyin(it, text));
 }
 
 static void cmd_give(int argc, char **argv, ControlReply *r) {
     if (argc < 2 || argc > 3) { control_fail(r, "Usage: give <actor, part of a name or its pinyin> [count]"); return; }
     int count = argc == 3 ? atoi(argv[2]) : 1, i = 0, n = items_count();
     while (i < n && strcmp(g_items[i].actor, argv[1])) i++;
-    if (i == n) {  // not an actor: the items whose name, actor or pinyin has this in it. One is given, several are listed
+    if (i == n) {  // keep old name/actor queries working even when a new pinyin match also exists
         int found = 0, first = n;
-        for (int k = 0; k < n; k++) {
-            if (!items_matches(k, argv[1])) continue;
-            if (!found++) first = k;
+        bool (*matches)(const GameItem *, const char *);
+        for (int pass = 0; pass < 2 && !found; pass++) {
+            matches = pass == 0 ? item_has_text : item_has_pinyin;
+            for (int k = 0; k < n; k++) {
+                if (!matches(&g_items[k], argv[1])) continue;
+                if (!found++) first = k;
+            }
         }
         if (!found) { control_fail(r, "No item has this in its name, actor or pinyin"); return; }
         if (found > 1) {
@@ -496,7 +513,7 @@ static void cmd_give(int argc, char **argv, ControlReply *r) {
             size_t at = 0;
             int shown = 0;
             for (int k = first; k < n && shown < 30; k++) {
-                if (!items_matches(k, argv[1])) continue;
+                if (!matches(&g_items[k], argv[1])) continue;
                 control_text(r, "%s  %s", g_items[k].actor, g_items[k].name);
                 if (at < sizeof list) at += (size_t)snprintf(list + at, sizeof list - at, "%s%s", shown ? " " : "", g_items[k].actor);
                 shown++;
