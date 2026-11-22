@@ -11,6 +11,9 @@
 //    `layout(std430, set=S, binding=17) [readonly] buffer GMem { uint w[]; } gmem_;`, 32-bit words relative to
 //    maxwell_gmem_base. `readonly` unless the shader stores (needs vertexPipeline/fragmentStoresAndAtomics then);
 //    byte / short stores are atomicAnd + atomicOr on the containing word.
+//    With maxwell_gmem_snap, binding GSNAP_BUFFER_INDEX (21) too: a read-only vertex or fragment stage's copied
+//    ranges (`buffer GSnap { uvec4 gs_r[4]; uint w[]; }`), or a compute shader's constant buffers' copies (`buffer
+//    GSnap { uint w[]; }`, read at the GSNAP_CS_SPAN past the heap's window).
 //  - rscale table -> binding 18: `uniform RScale { vec4 rscale[65]; };` (std140, the MSL buffer 18 contents).
 //  - per-draw tint -> binding 19: `uniform Tint { vec4 ltint[2]; };` (fragment, when uses_tint).
 //  - texture slot i (ShaderInfo.tex[i]) -> binding 32 + i, a combined image sampler: sampler1D/2D/3D/Cube/
@@ -98,11 +101,15 @@ typedef struct {
 #define GMEM_BUFFER_INDEX 17
 #define GMEM2_BUFFER_INDEX 20       // (Vulkan) the heap past GMEM_SPLIT: a second binding
 #define GMEM_SPLIT 0x68000000ull    // bytes in the first binding; both stay under 2 GB for the whole heap (HEAP_MAX)
-#define GSNAP_BUFFER_INDEX 21       // (Vulkan, read-only global memory) ranges of it copied at translation: exec.c gsnap
+#define GSNAP_BUFFER_INDEX 21       // (Vulkan, read-only global memory) ranges of it copied at translation: exec.c gsnap;
+                                    // in a compute shader, its constant buffers' copies (GSNAP_CS_SPAN)
+#define GSNAP_CS_SPAN 0x100000u     // ... read at addresses up to this far past the heap's window (maxwell_gmem_base +
+                                    // maxwell_gmem_size): exec.c gsnap_cs_prepare
 #define GATHER_BIAS_ID 100          // (Vulkan) the specialization constant glsl_gather moves its coordinates by (exec.c vk_gather_spec)
 extern uint64_t maxwell_gmem_base, maxwell_gmem_size;
 // Set by the Vulkan backend before translating: global memory in two bindings (maxStorageBufferRange below the heap),
-// read-only global memory through the copied ranges at GSNAP_BUFFER_INDEX (exec.c gsnap), or (maxwell_gmem_bda: even
+// read-only global memory through the copied ranges at GSNAP_BUFFER_INDEX (exec.c gsnap; a compute shader, storing or
+// not, reads its constant buffers' copies there), or (maxwell_gmem_bda: even
 // two bindings can't cover the heap, Turnip's 128 MB) through its buffer device address: binding GMEM_BUFFER_INDEX is
 // then a uniform buffer { uint64_t address, size } and every access is checked against that size. All change
 // translations.

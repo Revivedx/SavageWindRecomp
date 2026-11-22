@@ -542,8 +542,10 @@ static void names_and_groups(void) {
     assert(!strcmp(bind_input_name(BIND_PLUS), "Pause menu") && !strcmp(bind_input_name(BIND_MINUS), "Map (Sheikah Slate)"));
     assert(!strcmp(bind_input_name(BIND_UP), "Quick menu: runes") && !strcmp(bind_input_name(BIND_LEFT), "Quick menu: shields"));
     assert(!strcmp(bind_input_name(BIND_RIGHT), "Quick menu: weapons"));
+    assert(!strcmp(bind_input_name(BIND_DOWN), "Magnesis: pull closer"));
     // no listed input is called by its Switch button
-    static const char *const raw[] = {"A", "B", "X", "Y", "L", "R", "ZL", "ZR", "Plus", "Minus", "D-pad Left", "D-pad Up", "D-pad Right"};
+    static const char *const raw[] = {"A", "B", "X", "Y", "L", "R", "ZL", "ZR", "Plus", "Minus", "D-pad Left", "D-pad Up",
+                                      "D-pad Right", "D-pad Down"};
     for (int slot = 0; slot < BIND_PAD_COUNT; slot++)
         for (unsigned i = 0; i < sizeof raw / sizeof *raw; i++) assert(strcmp(bind_input_name(slot), raw[i]));
 }
@@ -606,6 +608,69 @@ static void swap_ab_sets_the_xbox_convention(void) {
     bind_reset(BIND_DEV_PAD);
 }
 
+static void guard_rebind_updates_hidden_lock_on(void) {
+    // Rebinding action 13 ("Guard / lock on") to R2 (SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER / rtrigger)
+    // must also make hidden action 29 (lock-on) follow R2 instead of staying on L2 (#1016).
+    act_reset();
+    int r2 = SDL_GAMEPAD_BUTTON_EAST;
+    int l2 = g_act_pad[13];
+    assert(l2 != r2);
+    act_set(BIND_DEV_PAD, 13, r2);
+    host(0, 0, 1u << r2);
+    act_poll(true);
+    assert(hold(13) == 1 && hold(29) == 1);
+    host(0, 0, 1u << l2);
+    act_poll(true);
+    assert(hold(13) == 0 && hold(29) == 0);
+    host(0, 0, 0);
+    act_poll(true);
+    act_reset();
+}
+
+// Magnesis: pull closer (the raw D-pad Down, #967) moved to G: Call horse and Throw distance, at their factory
+// defaults on D-pad Down, keep 4 (they answer from their own bindings now), while the raw input, which the game reads
+// for Magnesis and for the hidden actions on D-pad Down, is G. The same for an action on L when Menu: previous tab moves.
+static void a_moved_menu_input_leaves_its_actions(void) {
+    act_reset();
+    bind_reset(BIND_DEV_KEY);
+    const int CALL_HORSE = 35, THROW_DISTANCE = 37, HIDDEN_DOWN = 22, AIM_RUNE = 33;
+    host(0, 0, 0);
+    act_poll(true);
+    assert(hold(CALL_HORSE) == -1 && hold(THROW_DISTANCE) == -1 && hold(HIDDEN_DOWN) == -1);
+    bind_settings_load("act_schema", "2");  // (a raw line is not a legacy one to migrate into the actions)
+    bind_settings_load("bind_key_down", "G");  // (the ini path: refreshes the actions)
+    assert(g_bind_key[BIND_DOWN] == SDL_SCANCODE_G && act_is_default(CALL_HORSE) && act_is_default(THROW_DISTANCE));
+    key_down[SDL_SCANCODE_4] = 1;
+    host(0, 0, 0);
+    act_poll(true);
+    assert(hold(CALL_HORSE) == 1 && trig(CALL_HORSE) == 1 && hold(THROW_DISTANCE) == 1);
+    assert(hold(HIDDEN_DOWN) == -1);  // (no row of its own: the game goes on reading the raw input)
+    key_down[SDL_SCANCODE_4] = 0;
+    key_down[SDL_SCANCODE_G] = 1;
+    host(0, 0, 0);
+    act_poll(true);
+    assert(hold(CALL_HORSE) == 0 && hold(THROW_DISTANCE) == 0);
+    key_down[SDL_SCANCODE_G] = 0;
+    host(0, 0, 0);
+    act_poll(true);
+    // L on the controller: Aim rune keeps the left bumper when Menu: previous tab moves to the right one
+    assert(hold(AIM_RUNE) == -1);
+    bind_settings_load("bind_pad_l", "rshoulder");
+    host(0, 0, 1u << SDL_GAMEPAD_BUTTON_LEFT_SHOULDER);
+    act_poll(true);
+    assert(hold(AIM_RUNE) == 1);
+    host(0, 0, 1u << SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER);
+    act_poll(true);
+    assert(hold(AIM_RUNE) == 0);
+    host(0, 0, 0);
+    act_poll(true);
+    // back to the defaults: the game's own answers again
+    bind_reset(BIND_DEV_KEY);
+    bind_reset(BIND_DEV_PAD);
+    assert(hold(CALL_HORSE) == -1 && hold(AIM_RUNE) == -1);
+    act_reset();
+}
+
 int main(void) {
     static const uint32_t k_masks_190[ACT_COUNT] = {
         0x1, 0x2, 0x8, 0x10, 0x8, 0x1, 0x8, 0x2, 0x8, 0x2, 0x8, 0x8, 0x2, 0x4, 0x2, 0x40, 0x1, 0x80, 0x20, 0x8, 0x2,
@@ -631,6 +696,8 @@ int main(void) {
     swap_ab_sets_the_xbox_convention();
     names_and_groups();
     a_conversation_answer_does_not_jump();
+    guard_rebind_updates_hidden_lock_on();
+    a_moved_menu_input_leaves_its_actions();
     puts("action bindings: default fallthrough, custom host bindings, schema migration, held / pressed, menus, shared keys, pad capture, contexts, A / B swap, reset and ini passed");
     return 0;
 }

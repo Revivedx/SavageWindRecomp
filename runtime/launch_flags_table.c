@@ -438,6 +438,7 @@ const LfInfo LF_TABLE[] = {
     {"SAVAGEWIND_VK_GMEM_SPLIT", LF_KIND_TEXT, LF_GROUP_OTHER, "", ""},
     {"SAVAGEWIND_VK_GPL", LF_KIND_SWITCH, LF_GROUP_PLAY, "1", "Turns pipeline libraries on where they are held back for your graphics driver."},
     {"SAVAGEWIND_VK_GSNAP", LF_KIND_TEXT, LF_GROUP_OTHER, "", ""},
+    {"SAVAGEWIND_VK_GSNAP_CS", LF_KIND_NUMBER, LF_GROUP_OTHER, "", ""},
     {"SAVAGEWIND_VK_GSNAP_EXT", LF_KIND_TEXT, LF_GROUP_OTHER, "", ""},
     {"SAVAGEWIND_VK_GSNAP_MAX", LF_KIND_TEXT, LF_GROUP_OTHER, "", ""},
     {"SAVAGEWIND_VK_GSNAP_VERTS", LF_KIND_NUMBER, LF_GROUP_OTHER, "", ""},
@@ -530,4 +531,4 @@ const LfInfo LF_TABLE[] = {
     {"SAVAGEWIND_XLATE_VERIFY", LF_KIND_TEXT, LF_GROUP_DEV, "", ""},
     {"SAVAGEWIND_YAZ0", LF_KIND_NUMBER, LF_GROUP_OTHER, "", ""},
 };
-const int LF_TABLE_N = 526;
+const int LF_TABLE_N = 527;

@@ -14,13 +14,18 @@ left stick to 40%. Tilt holds the mouse clutch and enables the existing sensorle
 buttons and keys combine per direction, only while `gyro_keys_live()`; simultaneous opposite directions cancel.
 Walk, Tilt, gyro and game action bindings allow shared inputs on both devices. Assigning one never changes another
 slot, including raw Switch menu buttons; rebinding a raw slot also leaves these shared bindings intact. Legacy
-host slots still swap among themselves on the same device, including the raw Switch buttons (0 to 15).
+host slots still swap among themselves on the same device, including the raw Switch buttons (0 to 15). An action on
+the page whose Switch input is not a face button (L, R, ZL, ZR, a stick press, the D-pad) answers from its own bindings
+once that raw input differs from its defaults: in play the game reads those raw inputs for factory-default actions, so
+without this Call horse moved with Magnesis: pull closer and Aim rune with Menu: previous tab. The face buttons need
+none of it (in play `act_gameplay_buttons` builds them from the actions); hidden actions, with no row of their own,
+go on following the raw input.
 
 The game's title, pause and map menus still use the raw Switch layer, including legacy raw-button rebinds. The runtime
 overlay and launcher keep their fixed navigation shortcuts. The separate UI update can use `bind_input_name`,
 and `bind_input_group` ("gyro" or NULL). Raw Switch inputs are named by what they do (`bind_input_name(BIND_A)` is
 "Menu: confirm"), never by the button. No slots are hidden by these helpers; the page and overlay simply do not list
-left stick press and D-pad Down (their functions are the actions Crouch, Call horse and Throw distance). Use `bind_pad_slot` for controller availability and `bind_is_default_slot` for defaults, including
+left stick press (its function is the action Crouch). Use `bind_pad_slot` for controller availability and `bind_is_default_slot` for defaults, including
 `BIND_ACTION + id`; do not test for a stored `ACT_FOLLOW`.
 
 ## The Key bindings page
@@ -53,6 +58,7 @@ actions are rows of their own, bound to the same raw slots with the same default
 | Quick menu: runes | D-pad up | D-pad up | hold for the rune quick menu |
 | Quick menu: shields | D-pad left | D-pad left | shield quick menu |
 | Quick menu: weapons | D-pad right | D-pad right | weapon quick menu |
+| Magnesis: pull closer | D-pad down | D-pad down | pulls the object Magnesis holds closer (D-pad up pushes it away) |
 | Menu: confirm | A | A | selects in the game's menus |
 | Menu: back | B | B | goes back |
 | Menu: Hero's Path | X | X | Hero's Path in the map |
@@ -61,8 +67,9 @@ actions are rows of their own, bound to the same raw slots with the same default
 | Menu: previous / next tab 2 | ZL / ZR | ZL / ZR | the same, in the menus that use the triggers |
 | Menu: inspect / zoom | right stick click | right stick click | inspect an item, zoom the map |
 
-Left stick click (Crouch, a menu use) and D-pad down (Call horse, Throw distance) have no function of their own beyond
-the actions, so they are not listed; they keep their slots and defaults. Two greyed rows, Esc and F2, are fixed
+Left stick click (Crouch, a menu use) has no function of its own beyond the action, so it is not listed; it keeps its
+slot and default. D-pad down's own is Magnesis pulling closer (#967); Call horse and Throw distance, its actions, keep
+their own bindings when it moves. Two greyed rows, Esc and F2, are fixed
 and cannot be rebound: Esc is Plus in play and B in menus, F2 frees the mouse cursor. F1 opens the Savage Wind overlay
 (controller: Back + Start or Home / Guide), unless the game is started with `SAVAGEWIND_OVERLAY=0`; that overlay's
 own page lists it greyed too.
@@ -147,7 +154,10 @@ before the next poll is kept for the next query, so a short tap is not lost.
   actions retain the game's option.
 - Raw Switch injection (`SAVAGEWIND_INPUT` or a control-endpoint button) reaches factory-default actions through the
   game, but customized actions require host key/controller injection.
-- The button icons the game draws follow the Switch layer and the controller family, not the per-action bindings.
+- The button icons the game draws follow the Switch layer and the controller family. With Controls > Prompts follow
+  action bindings, the face buttons' characters follow the actions in play: the button every action of that Switch
+  button is on, Activate rune's while a rune is out, Cycle accelerate's and Cycle brake's on the Master Cycle Zero
+  (#967). The other buttons' icons (D-pad, L, R...) show their raw inputs.
 - The 13 ids the game never asks about (1, 4, 6, 7, 8, 16, 20 to 24, 29, 30) are not on the page. No id above 40 is used:
   all 175 query sites (157 calls and 18 tail branches, in 91 functions) pass a constant from 0 to 40.
 
