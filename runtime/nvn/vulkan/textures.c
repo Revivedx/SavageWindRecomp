@@ -965,11 +965,22 @@ static void idle_expire(void) {  // (gpu lock held)
         g_kept_bytes += bytes;
     }
     while (g_kept_bytes > KEEP_BUDGET) {
-        TexBackend *old = NULL;
-        for (int i = 0; i < g_nidle; i++)
-            if (g_idle[i]->kept && (!old || g_idle[i]->idle_frame < old->idle_frame)) old = g_idle[i];
-        if (!old) break;
-        free_backend(old);
+        // Evict up to 32 oldest kept entries per scan of g_idle to avoid O(N^2) scans during area transitions.
+        TexBackend *batch[32];
+        int nb = 0;
+        for (int i = 0; i < g_nidle; i++) {
+            TexBackend *t = g_idle[i];
+            if (!t->kept) continue;
+            if (nb == 32 && t->idle_frame >= batch[31]->idle_frame) continue;
+            int pos = nb < 32 ? nb++ : 31;
+            while (pos > 0 && batch[pos - 1]->idle_frame > t->idle_frame) {
+                batch[pos] = batch[pos - 1];
+                pos--;
+            }
+            batch[pos] = t;
+        }
+        if (!nb) break;
+        for (int i = 0; i < nb && g_kept_bytes > KEEP_BUDGET; i++) free_backend(batch[i]);
     }
     static uint64_t last_log;
     if (due > expire_max && now - last_log > 600) {

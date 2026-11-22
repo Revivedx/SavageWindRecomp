@@ -11023,6 +11023,15 @@ static void fg_run(void *arg) {
     if (!fg_dispatch(j->cb, &j->cfg, &j->f)) atomic_store(&fg_failed, 1);
 }
 
+// Camera motion vectors computed by dlss_scene this frame can be reused by vk_fg_generate when camera & depth match.
+static struct {
+    uint64_t frame;
+    TexBackend *db, *mv;
+    double prev_vp[16];
+    bool has_prev_link;
+    float prev_link[3];
+} cam_mv_cache = { .frame = ~0ull };
+
 // At the game's present (device.c), outside the window image's rendering: the frame between the previous one and
 // t (b: its image), or NULL (not wanted, or this frame lacks what it needs: the next one starts over).
 TexBackend *vk_fg_generate(NvnTexture *t, TexBackend *b) {
@@ -11066,8 +11075,7 @@ TexBackend *vk_fg_generate(NvnTexture *t, TexBackend *b) {
         TexBackend *db = vk_tex(fg.cand[best].depth, true);
         vk_end_pass();
         VkCommandBuffer cb = vk_cmd();
-        TexBackend *mv = fg_image(1, db->width, db->height, VK_FORMAT_R16G16_SFLOAT, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
-        gp_mark(cb, "frame generation: motion vectors");
+        TexBackend *mv = NULL;
         bool link = fg.cand[best].has_link && !reset && fg.have_prev_link;
         // The scene's per-object motion vectors (mvec.c: everything that moves, jitter taken out) when they were made
         // this frame, at the depth's size, with SAVAGEWIND_FG_OBJECT_VECTORS=1: in place of the camera's and Link's box.
@@ -11077,7 +11085,17 @@ TexBackend *vk_fg_generate(NvnTexture *t, TexBackend *b) {
                     mvec_vectors_img->height == db->height;
         if (!mvec_for_framegen()) objv = false;  // (the default: they break up foliage, mvec.c mvec_for_framegen)
         if (objv) mv = mvec_vectors_img, ok = true;
-        else ok = cam_motion(cb, m, fg.prev_vp, link ? fg.cand[best].link : NULL, fg.prev_link, db, mv);
+        else if (!reset && cam_mv_cache.frame == renderer_present_count() && cam_mv_cache.db == db && cam_mv_cache.mv &&
+                 memcmp(cam_mv_cache.prev_vp, fg.prev_vp, sizeof fg.prev_vp) == 0 &&
+                 cam_mv_cache.has_prev_link == link &&
+                 (!link || memcmp(cam_mv_cache.prev_link, fg.prev_link, sizeof fg.prev_link) == 0)) {
+            mv = cam_mv_cache.mv;
+            ok = true;
+        } else {
+            mv = fg_image(1, db->width, db->height, VK_FORMAT_R16G16_SFLOAT, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
+            gp_mark(cb, "frame generation: motion vectors");
+            ok = cam_motion(cb, m, fg.prev_vp, link ? fg.cand[best].link : NULL, fg.prev_link, db, mv);
+        }
         if (ok) {
             TexBackend *hl = fg_image(0, b->width, b->height, srgb_of(unorm_of(b->format)), VK_IMAGE_USAGE_TRANSFER_DST_BIT);
             {   // (testing) SAVAGEWIND_FG_INPUTS_AT=<n>: the n-th generated frame's HUD-less image and motion vectors
@@ -11179,9 +11197,13 @@ static bool dlss_wanted(void) { return g_settings.upscaler == UPSCALE_DLSS && vk
 // this camera-vector path: its xess_scene (below) hands the same images to libxess.dll.
 static TexBackend *dlss_scene(VkCommandBuffer cb, TexBackend *color, uint32_t ow, uint32_t oh) {
     const VkFormat of = VK_FORMAT_R16G16B16A16_SFLOAT;  // (NGX writes a storage image, whatever the scene's format)
-    VkFormatProperties fp;
-    vkGetPhysicalDeviceFormatProperties(g_vk.phys, of, &fp);
-    if (!(fp.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT)) return NULL;
+    static int of_storage = -1;
+    if (of_storage < 0) {
+        VkFormatProperties fp;
+        vkGetPhysicalDeviceFormatProperties(g_vk.phys, of, &fp);
+        of_storage = (fp.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT) != 0;
+    }
+    if (!of_storage) return NULL;
     int best = cam_best(color->width, color->height);
     TexBackend *db = best >= 0 ? vk_tex(fg.cand[best].depth, true) : scene_depth ? vk_tex(scene_depth, true) : NULL;
     if (!db || !db->image || !(db->aspect & VK_IMAGE_ASPECT_DEPTH_BIT) || db->width != color->width ||
@@ -11222,6 +11244,14 @@ static TexBackend *dlss_scene(VkCommandBuffer cb, TexBackend *color, uint32_t ow
         else {
             gp_mark(cb, "DLSS: motion vectors");
             moved = cam_motion(cb, m, dl.prev_vp, link ? fg.cand[best].link : NULL, dl.prev_link, db, mv);
+            if (moved && !reset) {
+                cam_mv_cache.frame = frame;
+                cam_mv_cache.db = db;
+                cam_mv_cache.mv = mv;
+                memcpy(cam_mv_cache.prev_vp, dl.prev_vp, sizeof cam_mv_cache.prev_vp);
+                cam_mv_cache.has_prev_link = link;
+                if (link) memcpy(cam_mv_cache.prev_link, dl.prev_link, sizeof cam_mv_cache.prev_link);
+            }
         }
         static uint64_t k;
         if (lg && k++ % 60 < 4)
@@ -11243,7 +11273,19 @@ static TexBackend *dlss_scene(VkCommandBuffer cb, TexBackend *color, uint32_t ow
     dl.have_prev = moved;
     dl.frame = frame;
     TexBackend *o = post_image_ex(34, ow, oh, of, VK_IMAGE_USAGE_STORAGE_BIT);  // (NGX writes it as a storage image)
-    vk_full_barrier(cb);
+    {
+        VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+                               .srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT |
+                                               VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT |
+                                               VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
+                                               VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                               .srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT,
+                               .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
+                                               VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                               .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT};
+        VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &mb};
+        rec_CmdPipelineBarrier2(cb, &di);
+    }
     gp_mark(cb, "DLSS: %ux%u -> %ux%u", color->width, color->height, ow, oh);
     uint32_t w = color->width, h = color->height;
     float flip = nvn_window_origin() == 0 ? -1.0f : 1.0f;  // (the game's NDC y to clip y, as fsr3_scene's)

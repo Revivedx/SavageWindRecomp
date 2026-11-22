@@ -322,6 +322,8 @@ static NgxParam *g_params;
 static NgxHandle *g_feature;
 static unsigned g_in_w, g_in_h, g_out_w, g_out_h, g_quality;
 static VkFormat g_color_format, g_output_format;
+static float g_mv_sx, g_mv_sy;
+static bool g_mv_scale_set;
 
 static void release_feature(void) {
     if (g_feature) N.release(g_feature);
@@ -329,6 +331,8 @@ static void release_feature(void) {
     g_feature = NULL, g_params = NULL;
     g_in_w = g_in_h = g_out_w = g_out_h = g_quality = 0;
     g_color_format = g_output_format = VK_FORMAT_UNDEFINED;
+    g_mv_sx = g_mv_sy = 0.0f;
+    g_mv_scale_set = false;
 }
 
 bool vk_dlss_available(void) { return g_available; }
@@ -422,6 +426,11 @@ static void dlss_run(void *arg) {
         }
         g_in_w = cw; g_in_h = ch; g_out_w = ow; g_out_h = oh;
         g_quality = j->quality; g_color_format = cf; g_output_format = of;
+        p_setf(g_params, "Sharpness", 0.0f);
+        p_setu(g_params, "DLSS.Render.Subrect.Dimensions.Width", cw);
+        p_setu(g_params, "DLSS.Render.Subrect.Dimensions.Height", ch);
+        p_setf(g_params, "DLSS.Pre.Exposure", 1.0f);
+        p_setf(g_params, "DLSS.Exposure.Scale", 1.0f);
     }
     NgxResourceVK in_color = j->color, in_depth = j->depth, in_motion = j->motion, out = j->out;
     NgxParam *p = g_params;
@@ -431,14 +440,14 @@ static void dlss_run(void *arg) {
     p_setp(p, "MotionVectors", &in_motion);
     p_setf(p, "Jitter.Offset.X", j->jitter_x);
     p_setf(p, "Jitter.Offset.Y", j->jitter_y);
-    p_setf(p, "Sharpness", 0.0f);
     p_seti(p, "Reset", j->reset ? 1 : 0);
-    p_setf(p, "MV.Scale.X", j->mv_scale_x == 0.0f ? 1.0f : j->mv_scale_x);  // (NGX takes them in render pixels)
-    p_setf(p, "MV.Scale.Y", j->mv_scale_y == 0.0f ? 1.0f : j->mv_scale_y);
-    p_setu(p, "DLSS.Render.Subrect.Dimensions.Width", cw);
-    p_setu(p, "DLSS.Render.Subrect.Dimensions.Height", ch);
-    p_setf(p, "DLSS.Pre.Exposure", 1.0f);
-    p_setf(p, "DLSS.Exposure.Scale", 1.0f);
+    float sx = j->mv_scale_x == 0.0f ? 1.0f : j->mv_scale_x;  // (NGX takes them in render pixels)
+    float sy = j->mv_scale_y == 0.0f ? 1.0f : j->mv_scale_y;
+    if (!g_mv_scale_set || sx != g_mv_sx || sy != g_mv_sy) {
+        p_setf(p, "MV.Scale.X", sx);
+        p_setf(p, "MV.Scale.Y", sy);
+        g_mv_sx = sx; g_mv_sy = sy; g_mv_scale_set = true;
+    }
     if (!ok(N.evaluate(j->cb, g_feature, p, NULL), "evaluate")) {
         release_feature();
         atomic_store(&g_failed, 1);
