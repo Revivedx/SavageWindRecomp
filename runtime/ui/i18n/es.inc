@@ -817,6 +817,7 @@ T("Pause menu", "Menú de pausa")
 T("Map (Sheikah Slate)", "Mapa (Piedra Sheikah)")
 T("Quick menu: shields", "Menú rápido: escudos")
 T("Quick menu: runes", "Menú rápido: runas")
+T("Magnesis: pull closer", "Magnesis: acercar")
 T("Quick menu: weapons", "Menú rápido: armas")
 
 T("Controller rumble", "Vibración del mando")

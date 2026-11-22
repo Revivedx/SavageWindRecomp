@@ -124,6 +124,7 @@ int act_prompt_host(int dev, int sw);
 // The game asked about action id in the last ms milliseconds (its HUD shows what it can do now: Activate rune while a
 // rune is out)
 bool act_asked_within(int id, unsigned ms);
+bool act_cycle_live(void);  // the game asks about Cycle accelerate (38) every frame: Link rides the Master Cycle Zero
 // The HUD's A prompt: 0 while it isn't shown, else a hash of its label (the same text: the same prompt, in any language)
 uint32_t act_a_prompt_label(void);
 // A pane of the HUD's A slot by name (DoCommand_00 > N_A_00 > ...), or 0

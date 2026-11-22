@@ -12,6 +12,8 @@ const int g_ntext_languages = 1, g_nvoice_languages = 1;
 int input_pad_family(void) { return 0; }
 bool fsr3_upscaler_enabled(void) { return false; }
 float winsize_refresh_rate(void) { return 0; }
+bool framepace_dialogue_ui(void) { return false; }  // (act_poll's conversation check)
+bool input_cam_live(void) { return false; }
 
 int main(int argc, char **argv) {
     assert(argc == 4 || argc == 5);

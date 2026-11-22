@@ -48,13 +48,14 @@ static const char *const k_ini[BIND_KEY_COUNT] = {
     "gyro_up", "gyro_down", "gyro_left", "gyro_right", "gyro_turn_left", "gyro_turn_right", "gyro_center", "fly",
 };
 // What each raw Switch input does apart from the 41 actions: the Key bindings page and the F1 overlay list these by
-// function, never by the Switch button. The two with no function of their own (left stick press, D-pad Down: the
-// actions Crouch, Call horse and Throw distance cover them) are not listed and keep their Switch names.
+// function, never by the Switch button. Left stick press has no function of its own (the action Crouch covers it): it
+// is not listed and keeps its Switch name. D-pad Down's own is Magnesis pulling the object closer (#967; Up, the runes'
+// quick menu, pushes it away).
 static const char *const k_names[BIND_KEY_COUNT] = {
     "Menu: confirm", "Menu: back", "Menu: Hero's Path", "Menu: sort / sensor",
     "Left stick press", "Menu: inspect / zoom", "Menu: previous tab", "Menu: next tab",
     "Menu: previous tab 2", "Menu: next tab 2", "Pause menu", "Map (Sheikah Slate)",
-    "Quick menu: shields", "Quick menu: runes", "Quick menu: weapons", "D-pad Down",
+    "Quick menu: shields", "Quick menu: runes", "Quick menu: weapons", "Magnesis: pull closer",
     "Move forward", "Move back", "Move left",
     "Move right", "Camera up", "Camera down", "Camera left", "Camera right", "Walk",
     "Tilt (hold)",
@@ -274,7 +275,12 @@ void bind_capture_cancel(void) {
 
 bool bind_capture_active(int *dev, int *slot, int *ms_left) {
     int d = cap_dev;
-    if (d >= 0 && SDL_GetTicks() >= cap_deadline) { result(4, d, cap_slot, -1); cap_dev = d = -1; }
+    if (d >= 0 && SDL_GetTicks() >= cap_deadline) {
+        // (a mouse whose own software sends a side button as something else arrives as nothing at all: #1036)
+        LOG("[input] binding %s: nothing pressed in %d s\n", bind_input_name(cap_slot), BIND_CAPTURE_MS / 1000);
+        result(4, d, cap_slot, -1);
+        cap_dev = d = -1;
+    }
     if (dev) *dev = d;
     if (slot) *slot = d >= 0 ? cap_slot : -1;
     if (ms_left) *ms_left = d >= 0 ? (int)(cap_deadline - SDL_GetTicks()) : 0;
@@ -344,6 +350,12 @@ bool bind_capture_event(const SDL_Event *e) {
     case SDL_EVENT_KEY_DOWN:
         if (e->key.repeat) return true;
         if (e->key.scancode == SDL_SCANCODE_ESCAPE) { bind_capture_cancel(); return true; }
+        // A key SDL has no scancode for (a mouse button its software turned into a key: #1036) would bind "(none)"
+        if (kd && e->key.scancode == SDL_SCANCODE_UNKNOWN) {
+            LOG("[input] binding %s: a key with no scancode (key code %#x) can't be bound\n", bind_input_name(cap_slot),
+                (unsigned)e->key.key);
+            return true;
+        }
         // F1 (menu), F9 (frame dump), F11 (fullscreen), F12 and the key left of 1 (the console), and PrintScreen
         // (screenshot) stay the overlay's; a controller capture ignores keys
         if (!kd || e->key.scancode == SDL_SCANCODE_F1 || e->key.scancode == SDL_SCANCODE_F9 ||
@@ -360,6 +372,8 @@ bool bind_capture_event(const SDL_Event *e) {
     case SDL_EVENT_TEXT_INPUT:
         return true;
     case SDL_EVENT_MOUSE_BUTTON_DOWN:  // a keyboard binding can be a mouse button (a controller capture ignores it)
+        if (kd && (e->button.button < SDL_BUTTON_LEFT || e->button.button > SDL_BUTTON_X2))
+            LOG("[input] binding %s: mouse button %d can't be bound\n", bind_input_name(cap_slot), e->button.button);
         if (!kd || e->button.button < SDL_BUTTON_LEFT || e->button.button > SDL_BUTTON_X2) return true;
         cap_dev = -1;
         assign(BIND_DEV_KEY, cap_slot, BIND_MOUSE + e->button.button);
@@ -523,13 +537,27 @@ bool act_is_default(int id) {
          g_act_key2[id] == ACT_NONE && g_act_pad2[id] == ACT_NONE);
 }
 
+// The raw Switch input b (not a face button) is bound to something other than its defaults. In play the game reads
+// those slots for actions at their factory defaults, so Call horse moved with Magnesis: pull closer and Aim rune with
+// Menu: previous tab. The face buttons need none of this: in play act_gameplay_buttons builds them from the actions.
+static bool raw_moved(int b) {
+    if (b < 0 || b >= BIND_PAD_COUNT || b == BIND_A || b == BIND_B || b == BIND_X || b == BIND_Y) return false;
+    return g_bind_key[b] != k_def_key[b] || g_bind_key2[b] != 0 || g_bind_pad[b] != k_def_pad[b] ||
+           g_bind_pad2[b] != -1;
+}
+
 static void act_refresh(void) {
     uint64_t custom = 0, diff = 0;
     for (int id = 0; id < ACT_COUNT; id++) {
         bool swapped = k_masks && k_masks[id] != k_masks_190[id];
         if (swapped) diff |= 1ull << id;
-        if (!act_is_default(id) || swapped) custom |= 1ull << id;
+        // (an action on the page keeps its own bindings when its Switch input moves; a hidden one, with no row of its
+        // own, goes on following that input)
+        if (!act_is_default(id) || swapped || (!act_hidden(id) && raw_moved(mask_button(k_masks_190[id]))))
+            custom |= 1ull << id;
     }
+    // Action 29 is the hidden Z-targeting/lock-on check sharing BIND_ZL with action 13 ("Guard / lock on", #1016).
+    if (custom >> 13 & 1) custom |= 1ull << 29;
     a_mask_diff = diff;
     a_custom = custom;
 }
@@ -610,6 +638,8 @@ uint64_t act_scan_keys(uint64_t key_buttons, int (*held)(int scancode)) {
         int k = g_act_key[id], k2 = g_act_key2[id];
         out |= (uint64_t)((k > 0 && held(k)) || (k2 > 0 && held(k2))) << id;
     }
+    if (!(a_explicit_key >> 29 & 1) && (custom >> 13 & 1))
+        out = (out & ~(1ull << 29)) | ((out >> 13 & 1ull) << 29);
     return out;
 }
 
@@ -627,6 +657,8 @@ uint64_t act_scan_pad(uint64_t pad_buttons, uint32_t host_buttons) {
                   (k2 >= 0 && k2 < PADB_HOST_COUNT && (host_buttons >> k2 & 1));
         out |= (uint64_t)on << id;
     }
+    if (!(a_explicit_pad >> 29 & 1) && (custom >> 13 & 1))
+        out = (out & ~(1ull << 29)) | ((out >> 13 & 1ull) << 29);
     return out;
 }
 

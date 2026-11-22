@@ -258,8 +258,8 @@ extern "C" void controls_bindings_draw(float scale) {
     // what no action covers: the game's menus and quick menus, then movement, camera and motion. Raw Switch buttons are
     // never listed by their name, only by what they do.
     ImGui::SeparatorText(tr("Menus"));
-    static const int menus[] = {BIND_PLUS, BIND_MINUS, BIND_UP, BIND_LEFT, BIND_RIGHT, BIND_A, BIND_B, BIND_X, BIND_Y,
-                                BIND_L, BIND_R, BIND_ZL, BIND_ZR, BIND_RSTICK, FIXED_ESC, FIXED_F2, FIXED_F1};
+    static const int menus[] = {BIND_PLUS, BIND_MINUS, BIND_UP, BIND_LEFT, BIND_RIGHT, BIND_DOWN, BIND_A, BIND_B, BIND_X,
+                                BIND_Y, BIND_L, BIND_R, BIND_ZL, BIND_ZR, BIND_RSTICK, FIXED_ESC, FIXED_F2, FIXED_F1};
     switch_table("##binds_menus", menus, (int)(sizeof menus / sizeof *menus), fam, cd, cs, ms);
     ImGui::SeparatorText(tr("Movement, camera and motion"));
     static const int other[] = {BIND_LS_UP, BIND_LS_DOWN, BIND_LS_LEFT, BIND_LS_RIGHT, BIND_RS_UP, BIND_RS_DOWN,

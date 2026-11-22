@@ -571,6 +571,10 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
     int next = 0, jobs = o->jobs < 1 ? 1 : o->jobs > 64 ? 64 : o->jobs;
     struct { PlatProc p; int unit; } run[64];
     int nrun = 0;
+    // A compile that ended with no message (the compiler itself crashed: out of memory with many at once, a scanner
+    // holding a file) is done again once, with half as many compiles at once from then on (#1023)
+    enum { MAX_RETRIES = 4 };
+    int retry[MAX_RETRIES], tried[MAX_RETRIES], nretry = 0, ntried = 0;
     unsigned long long done_bytes = 0;
     double shown = 0;
     {
@@ -620,7 +624,14 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
         for (int k = 0; k < units.n; k++) written += units.u[k].bytes;
 
         // compiles
-        while (nrun < jobs && next < units.n) {
+        while (nrun < jobs && nretry > 0) {
+            int i = retry[--nretry];
+            PlatProc p = start_compile(&t, &units.u[i]);
+            if (!p) { snprintf(why, why_size, "the compiler didn't start"); ok = false; break; }
+            run[nrun].p = p, run[nrun].unit = i;
+            nrun++;
+        }
+        while (ok && nrun < jobs && next < units.n) {
             if (next > 0 && gc_take(&units.u[next])) {  // (compiled by an earlier build: no compile)
                 done_bytes += units.u[next].bytes;
                 remove(units.u[next].src);
@@ -639,6 +650,16 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
             if (r != 0) {
                 char last[300];
                 log_tail(u->log, last, sizeof last);
+                bool again = !last[0] && ntried < MAX_RETRIES;
+                for (int i = 0; again && i < ntried; i++) again = tried[i] != run[k].unit;
+                if (again) {
+                    jobs = jobs > 1 ? jobs / 2 : 1;
+                    LOG("[gamebuild] compiling %s ended with no message (exit status %d): once more, %d at once from now\n",
+                        u->src, r, jobs);
+                    tried[ntried++] = retry[nretry++] = run[k].unit;
+                    run[k--] = run[--nrun];
+                    continue;
+                }
                 LOG("[gamebuild] compiling %s failed: %s\n", u->src, last);
                 log_gen_tail(u->log, r);  // (the compiler's errors: its last line is only "1 error generated", #123)
                 snprintf(why, why_size, "the game code didn't compile: %s", last);
@@ -650,7 +671,7 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
             run[k--] = run[--nrun];
         }
         if (!ok) break;
-        if (gens_done && next == units.n && nrun == 0) break;
+        if (gens_done && next == units.n && nrun == 0 && nretry == 0) break;
 
         // progress: the generator's share (its functions written), the compiler's (bytes of C compiled, of an
         // estimate of all of it while the generator still writes)
