@@ -1180,6 +1180,61 @@ def _tp_gate(gen, a):
             f'  /* {a:#x}: sub sp, sp, #0xa0 (is the ground around Link still loading?) */')
 
 
+# Gameplay > Keep crouch after camera (runtime/camera_stealth.c): when Link enters the Camera rune (`カメラ`), the
+# normal camera action clears his crouch bit and leaves him standing (`待機`) on exit. Record his crouch bit before
+# entering, route normal Camera exits back to crouch idle (`しゃがみ待機`) when enabled, and clear pending state on
+# Camera::leave() so non-normal exits (damage, demos, climbing, water) never leave stale state behind.
+def _adrp_add_cstr(gen, a):
+    w0, w1 = _word(gen, a), _word(gen, a + 4)
+    assert (w0 & 0x9f000000) == 0x90000000, hex(w0)
+    assert (w1 & 0xffc00000) == 0x91000000 and ((w1 >> 5) & 31) == (w0 & 31), (hex(w0), hex(w1))
+    va = adrp_page(w0, a) + ((w1 >> 10) & 0xfff)
+    off = va - gen.base
+    end = gen.nso.image.index(0, off)
+    return bytes(gen.nso.image[off:end]).decode('utf-8')
+
+
+def _camera_enter_start(gen, a):
+    assert _word(gen, a) == 0xf9400668, hex(_word(gen, a))  # ldr x8, [x19, #8]
+    assert _adrp_add_cstr(gen, a + 4) == 'カメラ'
+    return ('{ extern void rt_camera_stealth_enter(uint64_t, int); uint64_t p = LD64(c->x[19] + 8); '
+            'rt_camera_stealth_enter(p, p ? (int)((LD32(p + 0xcec) >> 2) & 1u) : 0); c->x[8] = p; }'
+            f'  /* {a:#x}: ldr x8, [x19, #8] (Camera entry: record crouch bit) */')
+
+
+def _camera_exit_finished(gen, a):
+    w = _word(gen, a)
+    assert (w & 0xfff8001f) == 0x37000000, hex(w)  # tbnz w0, #0, stand
+    assert _adrp_add_cstr(gen, a - 28) == 'カメラ'
+    stand = gen.lift(a).target
+    squat = gen.sites['camera_squat_idle']
+    assert _adrp_add_cstr(gen, stand) == '待機'
+    assert _adrp_add_cstr(gen, squat) == 'しゃがみ待機'
+    return (f'{{ extern int rt_camera_stealth_exit(uint64_t); if (c->x[0] & 1) {{ '
+            f'if (rt_camera_stealth_exit(LD64(c->x[19] + 8))) {{ goto L_{squat:x}; }} '
+            f'goto L_{stand:x}; }} }}'
+            f'  /* {a:#x}: tbnz w0, #0, {stand:#x} (Camera finished: restore crouch idle) */')
+
+
+def _camera_exit_active(gen, a):
+    w = _word(gen, a)
+    assert (w & 0xfc000000) == 0x14000000, hex(w)  # b stand
+    stand = gen.lift(a).target
+    squat = gen.sites['camera_squat_idle']
+    assert _adrp_add_cstr(gen, stand) == '待機'
+    assert _adrp_add_cstr(gen, squat) == 'しゃがみ待機'
+    return (f'{{ extern int rt_camera_stealth_exit(uint64_t); '
+            f'if (rt_camera_stealth_exit(LD64(c->x[19] + 8))) {{ goto L_{squat:x}; }} '
+            f'goto L_{stand:x}; }}'
+            f'  /* {a:#x}: b {stand:#x} (Camera active exit: restore crouch idle) */')
+
+
+def _camera_leave(gen, a):
+    assert _word(gen, a) == 0xf9400100, hex(_word(gen, a))  # ldr x0, [x8]
+    return ('{ extern void rt_camera_stealth_leave(void); rt_camera_stealth_leave(); c->x[0] = LD64(c->x[8]); }'
+            f'  /* {a:#x}: ldr x0, [x8] (Camera::leave: clear pending crouch state) */')
+
+
 PATCHES = {
     'ui_layout_draw': _ui_layout_draw,
     'ui_layout_pane': _ui_layout_pane,
@@ -1311,6 +1366,10 @@ PATCHES = {
     'battle_info_c': _battle_info(2),
     'horse_crash': _horse_crash,
     'horse_look_ahead': _horse_look_ahead,
+    'camera_enter_start': _camera_enter_start,
+    'camera_exit_finished': _camera_exit_finished,
+    'camera_exit_active': _camera_exit_active,
+    'camera_leave': _camera_leave,
     'item_tick': _item_tick,
 }
 

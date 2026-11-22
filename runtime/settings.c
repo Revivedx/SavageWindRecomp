@@ -451,6 +451,7 @@ void settings_load(void) {
         else if (!strcmp(key, "quick_drop")) g_settings.quick_drop = atoi(val) != 0;
         else if (!strcmp(key, "quick_sort")) g_settings.quick_sort = atoi(val) != 0;
         else if (!strcmp(key, "discord_rpc")) g_settings.discord_rpc = atoi(val) != 0;
+        else if (!strcmp(key, "camera_keep_stealth")) g_settings.camera_keep_stealth = atoi(val) != 0;
         else if (!strcmp(key, "dpad_move")) g_settings.dpad_move = atoi(val) != 0;
         else if (!strcmp(key, "menu_wrap")) g_settings.menu_wrap = atoi(val) != 0;
         else if (!strcmp(key, "prompts_follow")) g_settings.prompts_follow = atoi(val) != 0;
@@ -948,6 +949,7 @@ bool settings_save_to(const char *path) {
     int ts = g_settings.text_speed;
     fprintf(f, "text_speed = %s\n", k_text_speed[ts >= 0 && ts < TEXT_SPEED_COUNT ? ts : TEXT_SPEED_NORMAL]);
     fprintf(f, "menu_tip_seen = %d\n", g_settings.menu_tip_seen);
+    fprintf(f, "camera_keep_stealth = %d\n", g_settings.camera_keep_stealth);
     bind_settings_save(f);
     fclose(f);
     return true;

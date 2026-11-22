@@ -1056,6 +1056,11 @@ void build_items(void) {
 #endif
 
     // Gameplay
+    v.push_back(toggle(P_GAMEPLAY, "Keep crouch after camera",
+                       "Return to crouching after closing the Camera rune if you were crouched when opening it.",
+                       [](const Item &) { return (int)g_settings.camera_keep_stealth; },
+                       [](const Item &, int x) { g_settings.camera_keep_stealth = x; }, 0));
+
     v.push_back(toggle(P_GAMEPLAY, "Quick inventory sorting",
                        "Sort weapons, bows and shields in the quick selector. Requires game version 1.9.0.",
                        [](const Item &) { return (int)g_settings.quick_sort; },

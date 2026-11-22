@@ -66,7 +66,7 @@ static const Setting settings[] = {
     B(god_mode), B(one_hit_kill), I(damage_taken, 25, 400, NULL), I(damage_dealt, 25, 400, NULL),
     I(text_language, 0, 0, NULL), I(voice_language, 0, 0, NULL), B(save_backups), B(stick_cam_on), I(stick_cam_x, STICK_CAM_MIN, STICK_CAM_MAX, NULL),
     I(stick_cam_y, STICK_CAM_MIN, STICK_CAM_MAX, NULL), B(toggle_zl), B(toggle_zr), I(menu_text_size, 80, 150, NULL),
-    B(auto_continue), B(menu_tip_seen),
+    B(auto_continue), B(menu_tip_seen), B(camera_keep_stealth),
 };
 #undef B
 #undef I

@@ -241,6 +241,7 @@ typedef struct {
     bool auto_continue;  // Gameplay > Start at Continue: past the start screen into the latest save (hle/input.c)
     int text_speed;      // TEXT_SPEED_*: dialogue text appearance speed (Normal, Fast, Instant)
     bool menu_tip_seen;  // the start screen's one-time "how to open the menu" note was shown (first PLAY ever)
+    bool camera_keep_stealth;  // Gameplay > Keep crouch after camera (runtime/camera_stealth.c)
 } Settings;
 
 #define RUMBLE_STRENGTH_MIN 10

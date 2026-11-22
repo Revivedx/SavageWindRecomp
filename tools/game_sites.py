@@ -330,6 +330,24 @@ SITES = [
     # _horse_crash, _horse_look_ahead; Cheats > Sure-footed horse)
     Site('horse_crash', 'code', 'b9403428 7100111f 54000001/ff00001f d10303ff 6d072beb f90053f5 6d0823e9 a9097bfd', 0),
     Site('horse_look_ahead', 'code', 'd105c3ff fd00a3e8 f900affc a914fbfd a9164ff4 910523fd aa0103f4 aa0003f3', 0),
+    # Gameplay > Keep crouch after camera (tools/patches.py _camera_*; runtime/camera_stealth.c): crouch idle
+    # target in the Player AI selector, Camera entry, the two Camera -> Wait exit branches, and Camera::leave().
+    Site('camera_squat_idle', 'code',
+         'f9400008 f9431d08 d63f0100 36000000/fff8001f 90000001/9f00001f 91000021/ffc003ff 14000000/fc000000 '
+         'aa1303e0 94000000/fc000000 37000000/fff8001f', 4),
+    Site('camera_enter_start', 'code',
+         'f9400668 90000001/9f00001f 91000021/ffc003ff aa1303e0 b94c4109 121e7929 b90c4109 94000000/fc000000', 0),
+    Site('camera_exit_finished', 'code',
+         '90000008/9f00001f 91000108/ffc003ff 91004335 910483e1 a91223f5 aa1303e0 94000000/fc000000 37000000/fff8001f '
+         '90000008/9f00001f 91000108/ffc003ff 910023e1 aa1303e0 a900a3f5 94000000/fc000000 37000000/fff8001f '
+         '90000008/9f00001f 91000108/ffc003ff 91004335 910443e1 a91123f5 aa1303e0 94000000/fc000000 37000000/fff8001f '
+         '90000008/9f00001f 91000108/ffc003ff 910403e1 aa1303e0 a91023f5 94000000/fc000000 37000000/fff8001f '
+         '90000008/9f00001f 91000108/ffc003ff 91004335 9103c3e1', 7),
+    Site('camera_exit_active', 'code',
+         '36000000/fff8001f 14000000/fc000000 f9400268 aa1303e0 f9406908 d63f0100 f9400008 f9401108', 1),
+    Site('camera_leave', 'code',
+         '94000000/fc000000 14000000/fc000000 90000008/9f00001f 91000108/ffc003ff f9400100 14000000/fc000000 '
+         'a9be7bfd f9000bf3 910003fd aa0003f3 f9400400 94000000/fc000000 37000000/fff8001f 94000000/fc000000', 4),
     # the pouch taking arrows off for the player's bow (tools/patches.py _remove_arrows; Accessibility > Infinite arrows)
     Site('pouch_remove_arrows', 'code', 'd101c3ff a9017bfd a9026ffc a90367fa a9045ff8 a90557f6 a9064ff4 910043fd '
          '90000008/9f00001f aa0003f3 f9400108/ffc003ff aa0103e0', 0),
@@ -508,6 +526,7 @@ OPTIONAL_GROUPS = [
     ('stamina_store',),
     ('sprint_cost', 'sprint_press_cost', 'battle_info_field', 'battle_info_b', 'battle_info_c'),  # (Cheats > Free sprint: without them it does nothing)
     ('horse_crash', 'horse_look_ahead'),  # (Cheats > Sure-footed horse: without them it does nothing)
+    ('camera_squat_idle', 'camera_enter_start', 'camera_exit_finished', 'camera_exit_active', 'camera_leave'),
     ('tp_gate',),  # (a far teleport of the control endpoint: without it a long jump freezes the world)
     ('item_tick', 'pouch_item_get', 'pouch_mgr'),
     ('horse_cam_lr',),
@@ -731,6 +750,11 @@ KNOWN = {
         'battle_info_c': 0x7001349648,
         'horse_crash': 0x70006b16c4,
         'horse_look_ahead': 0x70006b4218,
+        'camera_squat_idle': 0x7000ca9ef0,
+        'camera_enter_start': 0x7000caa6f4,
+        'camera_exit_finished': 0x7000cabfb4,
+        'camera_exit_active': 0x7000cacfac,
+        'camera_leave': 0x7000ca3734,
         'item_tick': 0x7000cc4c3c,
         'pouch_item_get': 0x7000d921bc,
         'pouch_mgr': 0x7001e18570,
