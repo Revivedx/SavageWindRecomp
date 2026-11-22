@@ -160,7 +160,11 @@ const char *const k_modes[] = {"Ultra Quality", "Quality", "Balanced", "Performa
 const int k_modes_order[] = {UPQ_NATIVE, UPQ_ULTRA, UPQ_QUALITY, UPQ_BALANCED, UPQ_PERFORMANCE, UPQ_ULTRA_PERFORMANCE,
                              UPQ_DYNAMIC};
 int upscale_mode_base(void) {
-    return rt_fsr3() || rt_xess() ? 0 : 1;
+    return rt_fsr3() || rt_xess() || rt_dlss() ? 0 : 1;
+}
+// a mode's name: Native is DLAA with DLSS (NVIDIA's name for its 1x)
+const char *upscale_mode_name(int q) {
+    return upscale_mode_is_dlaa(q) ? "DLAA" : k_modes[q];
 }
 // (the last one, Dynamic, is the dynamic resolution)
 int upscale_mode_count(void) { return (int)(sizeof k_modes_order / sizeof k_modes_order[0]); }
@@ -849,7 +853,7 @@ void build_items(void) {
                        },
                        [](const Item &, int x) {
                            if (g_settings.upscaler == UPSCALE_OFF) return tr("Off");
-                           const char *name = k_modes[k_modes_order[x + upscale_mode_base()]];
+                           const char *name = upscale_mode_name(k_modes_order[x + upscale_mode_base()]);
                            return upscale_modes_available() ? tr(name) : soon(name);
                        },
                        [](const Item &) {

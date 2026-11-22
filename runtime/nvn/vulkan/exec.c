@@ -10666,7 +10666,9 @@ static void scene_post(Prog *pr, CmdRec *r) {
         // (else at its size in the window already; FSR 3: FSR 1 for a frame it can't do, its first)
         bool smaller = ow > b->width + 1 || oh > b->height + 1;
         bool up = (fsr || fsr3 || xess) && smaller;
-        dlss = dlss && smaller;  // (an upscaler only: at the window's size the game's own composite stays; no DLAA yet)
+        // (DLSS also at the window's size: DLAA, its anti-aliasing at 1x (Native, or Dynamic at full size); not on a
+        //  scene larger than the window - Render scale over 100% - which NGX can't take: the game's composite then)
+        dlss = dlss && b->width <= ow && b->height <= oh;
         if (t != taa_t || dlss) taa = NULL;
         scene_mip_bias = (taa || fsr3 || xess || dlss) && ow && b->width ? log2f((float)b->width / (float)ow) - 1.0f : 0.0f;
         static const char *bias_env = (const char *)1;  // (testing) SAVAGEWIND_MIP_BIAS=<levels>: in place of that

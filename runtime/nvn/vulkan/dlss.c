@@ -28,7 +28,8 @@ typedef unsigned NgxResult;  // NVSDK_NGX_Result: 1 success, 0xBAD00000 | n fail
 #define NGX_OK(r) (((r) & 0xFFF00000u) != 0xBAD00000u)
 #define NGX_VERSION_API 0x15
 enum { NGX_FEATURE_SUPERSAMPLING = 1 };
-enum { NGX_PERF_MAXPERF = 0, NGX_PERF_BALANCED = 1, NGX_PERF_MAXQUALITY = 2, NGX_PERF_ULTRAPERF = 3, NGX_PERF_ULTRAQUALITY = 4 };
+enum { NGX_PERF_MAXPERF = 0, NGX_PERF_BALANCED = 1, NGX_PERF_MAXQUALITY = 2, NGX_PERF_ULTRAPERF = 3, NGX_PERF_ULTRAQUALITY = 4,
+       NGX_PERF_DLAA = 5 };
 enum { NGX_DLSS_IS_HDR = 1 << 0, NGX_DLSS_MV_LOWRES = 1 << 1 };
 // The application id NVIDIA's own DLSS samples use for applications without an NVIDIA-issued id
 #define NGX_APP_ID 231313132ull
@@ -385,14 +386,18 @@ static void dlss_run(void *arg) {
         release_feature();
         static const int q[] = {NGX_PERF_ULTRAQUALITY, NGX_PERF_MAXQUALITY, NGX_PERF_BALANCED, NGX_PERF_MAXPERF,
                                 NGX_PERF_ULTRAPERF};  // (UPQ_*: Ultra Performance's 3.0 is DLSS's own)
-        static bool uq_rejected;
+        static bool uq_rejected, dlaa_rejected;
         unsigned requested = j->quality < 5 ? j->quality : 1;
         unsigned start = (requested == 0 && uq_rejected) ? 1 : requested;
         // Some driver/NGX combinations reject Ultra Quality at a particular render size. Remember that
         // rejection so dynamic-resolution steps go straight to Quality, and step down without duplicate retries.
+        // The scene at the output's size (Native, or Dynamic at its full size) is DLAA, NGX's 1x mode, first.
+        int modes[6], nm = 0;
+        if (cw + 1 >= ow && ch + 1 >= oh && !dlaa_rejected) modes[nm++] = NGX_PERF_DLAA;  // (a pixel's rounding)
+        for (unsigned m = start; m < (start < 4 ? 4u : 5u); m++) modes[nm++] = q[m];
         bool created = false;
-        unsigned tries = start < 4 ? 4 : 5;
-        for (unsigned mode = start; mode < tries && !created; mode++) {
+        for (int i = 0; i < nm && !created; i++) {
+            int mode = modes[i];
             if (!ok(N.alloc_params(&g_params), "allocate parameters")) { atomic_store(&g_failed, 1); return; }
             NgxParam *p = g_params;
             p_setu(p, "CreationNodeMask", 1);
@@ -401,17 +406,20 @@ static void dlss_run(void *arg) {
             p_setu(p, "Height", ch);
             p_setu(p, "OutWidth", ow);
             p_setu(p, "OutHeight", oh);
-            p_seti(p, "PerfQualityValue", q[mode]);
+            p_seti(p, "PerfQualityValue", mode);
             p_seti(p, "DLSS.Feature.Create.Flags", NGX_DLSS_IS_HDR | NGX_DLSS_MV_LOWRES);
             p_seti(p, "DLSS.Enable.Output.Subrects", 0);
             p_dlss_preset(p);
             NgxResult r = N.create(j->cb, NGX_FEATURE_SUPERSAMPLING, p, &g_feature);
             if (NGX_OK(r)) {
                 created = true;
-                if (mode != requested) LOG("[dlss] quality %u rejected; using fallback mode %u\n", requested, mode);
+                if (i) LOG("[dlss] NGX mode %d rejected; using fallback NGX mode %d\n", modes[0], mode);
+                static bool dlaa_logged;  // (once: Dynamic makes the feature again each time it comes back to full size)
+                if (mode == NGX_PERF_DLAA && !dlaa_logged) dlaa_logged = true, LOG("[dlss] DLAA (NGX's 1x mode) at %ux%u\n", cw, ch);
             } else {
-                if (mode == 0) uq_rejected = true;
-                LOG("[dlss] quality mode %u rejected: %s (%#x)\n", mode, result_name(r), r);
+                if (mode == NGX_PERF_ULTRAQUALITY) uq_rejected = true;
+                if (mode == NGX_PERF_DLAA) dlaa_rejected = true;
+                LOG("[dlss] NGX mode %d rejected: %s (%#x)\n", mode, result_name(r), r);
                 release_feature();
             }
         }

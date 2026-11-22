@@ -112,12 +112,15 @@ bool upscale_modes_available(void) {
 // hardly more frames than Performance where the CPU is the limit. So it is offered from a 4K window on, and below that
 // a stored Ultra Performance runs as Performance (the setting is kept: it comes back on a 4K window). FSR 1 keeps it at
 // any size. SAVAGEWIND_UPSCALE_ANY=1: offered at any size, as before.
+// DLSS's Native mode is NVIDIA's DLAA, and the menus call it so (as other games list it among DLSS's modes)
+bool upscale_mode_is_dlaa(int q) { return q == UPQ_NATIVE && g_settings.upscaler == UPSCALE_DLSS; }
+
 static volatile int g_out_lines;  // the window's height (output_scale; 0: not known yet)
 bool upscale_mode_offered(int q) {
     if (q == UPQ_DYNAMIC) return true;  // (the dynamic resolution: one of every upscaler's modes)
-    if (q == UPQ_NATIVE) return rt_fsr3() || rt_xess();  // (every temporal upscaler: XeSS reconstructs from the same
-                                                         //  inputs, so its 1x is anti-aliasing too - #820 knew only
-                                                         //  of FSR 3 and FSR 4, which were the ones there then)
+    // (every temporal upscaler: XeSS reconstructs from the same inputs, so its 1x is anti-aliasing too - #820 knew only
+    //  of FSR 3 and FSR 4, which were the ones there then; DLSS's 1x is NVIDIA's DLAA, and the menus name it so)
+    if (q == UPQ_NATIVE) return rt_fsr3() || rt_xess() || rt_dlss();
     static int any = -1;
     if (any < 0) any = getenv("SAVAGEWIND_UPSCALE_ANY") && atoi(getenv("SAVAGEWIND_UPSCALE_ANY")) != 0;
     if (q != UPQ_ULTRA_PERFORMANCE || any || !(rt_fsr3() || rt_xess() || rt_dlss())) return true;

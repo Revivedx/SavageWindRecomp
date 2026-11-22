@@ -669,6 +669,10 @@ static const int k_upscale_mode_order[UPQ_COUNT] = {
 extern "C" {
 #include "../nvn/output_scale.h"
 }
+// a mode's name: Native is DLAA with DLSS (NVIDIA's name for its 1x)
+static const char *upscale_mode_name(int q) {
+    return upscale_mode_is_dlaa(q) ? "DLAA" : k_upscale_modes[q];
+}
 
 #ifndef SW_METAL
 // Colour (runtime/color_grade.h; vulkan/exec.c scene_post), the Video tab's last section: a preset sets the sliders,
@@ -998,7 +1002,8 @@ static void tab_display(void) {
                                               "graphics cards on Windows. Sharpening sets its own sharpening.");
         uds += std::string("\n\n") + tr("NVIDIA DLSS: like FSR 3, but NVIDIA's machine learning rebuilds the image. For NVIDIA "
                                           "RTX graphics cards on Windows, with NVIDIA's DLSS library, which Savage Wind "
-                                          "Configuration downloads.");
+                                          "Configuration downloads.") +
+               " " + tr("Its DLAA mode keeps the full resolution and only smooths edges.");  // (own key: the one above keeps its translations)
         if (upscaler_available(UPSCALE_XESS))  // (its own paragraph: the ones above keep their translations)
             uds += std::string("\n\n") + tr("Intel XeSS: like FSR 3, but Intel's machine learning rebuilds the image. It runs on "
                                               "every graphics card with DP4a (any recent GPU), with libxess.dll next to the game. "
@@ -1026,8 +1031,8 @@ static void tab_display(void) {
         int mi = 2, mdef = 2;  // UPQ_QUALITY's position in k_upscale_mode_order
         for (int i = 0; i < nm; i++) {
             int q = k_upscale_mode_order[i];
-            mode_names[i] = modes_ok ? tr(k_upscale_modes[q])
-                                     : std::string(tr(k_upscale_modes[q])) + " " + tr("(coming soon)");
+            mode_names[i] = modes_ok ? tr(upscale_mode_name(q))
+                                     : std::string(tr(upscale_mode_name(q))) + " " + tr("(coming soon)");
             mn[i] = mode_names[i].c_str();
             mavail[i] = modes_ok && upscale_mode_offered(q);
             if (q == g_settings.upscale_quality) mi = i;
@@ -1037,9 +1042,15 @@ static void tab_display(void) {
         renderer_get_scene_scale(&sx, &sy);
         char rendering[100];
         snprintf(rendering, sizeof rendering, tr("Rendering at %.0f x %.0f."), 1600.0 * sx, 900.0 * sy);
-        std::string md = std::string(tr("How much smaller the game renders before the upscaler brings it to the window, "
-                                        "on each side: Native 1x (FSR 3/4), Ultra Quality 1.3x, Quality 1.5x, Balanced "
-                                        "1.7x, Performance 2x, Ultra Performance 3x. Smaller is faster and softer.")) +
+        // (the first mode by the name the row gives it: DLAA with DLSS)
+        std::string md = std::string(upscale_mode_is_dlaa(UPQ_NATIVE)
+                                         ? tr("How much smaller the game renders before the upscaler brings it to the "
+                                              "window, on each side: DLAA 1x, Ultra Quality 1.3x, Quality 1.5x, Balanced "
+                                              "1.7x, Performance 2x, Ultra Performance 3x. Smaller is faster and softer.")
+                                         : tr("How much smaller the game renders before the upscaler brings it to the "
+                                              "window, on each side: Native 1x (FSR 3, FSR 4 and XeSS), Ultra Quality "
+                                              "1.3x, Quality 1.5x, Balanced 1.7x, Performance 2x, Ultra Performance 3x. "
+                                              "Smaller is faster and softer.")) +
                          "\n\n" + tr("Dynamic: renders the 3D scene smaller when frames are slow, sharper when they "
                                      "aren't; stays full size where that gains nothing.") +
                          "\n\n" + (modes_ok ? rendering : tr("Coming in a later version."));
@@ -2038,6 +2049,8 @@ static void perf_overlay_draw(ImGuiIO &io, float scale) {
         line += std::string(" ") + (q >= 0 && q < UPQ_COUNT ? std::string(tr(k_upscale_modes[q])) + " " : "") + f + "x";
     } else if (q == UPQ_DYNAMIC) {
         line += std::string(" ") + tr("Dynamic");
+    } else if (up == UPSCALE_DLSS && upscale_mode_is_dlaa(q)) {
+        line += std::string(" ") + tr("DLAA");
     }
     // (FSR 3 / 4 and DLSS anti-alias the scene themselves: the setting does nothing then)
     int aa = rt_antialias();

@@ -37,6 +37,7 @@ bool upscale_modes_available(void);  // (rendering below the window's size: need
 double upscale_mode_factor(int q);
 double upscale_factor(void);
 bool upscale_mode_offered(int q);   // mode q can be chosen now (Ultra Performance with FSR 3 / 4 or DLSS: a 4K window)
+bool upscale_mode_is_dlaa(int q);   // mode q is named DLAA in the menus: Native with DLSS chosen
 int upscale_quality_now(void);      // the mode in use: the setting, or Performance where it is not offered
 // Video > Shadow resolution: the width the game's shadow maps are made at from presented frame `frame` on (0: their
 // own size; vulkan/textures.c RS_SHADOW)
