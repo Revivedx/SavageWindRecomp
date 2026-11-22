@@ -98,7 +98,8 @@ static _Atomic uint32_t test_pad;
 static _Atomic int32_t test_lx, test_ly;  // (a resting stick's drift: "lstick" in SAVAGEWIND_HOST_INPUT)
 static _Atomic bool host_test;  // (then a real controller is left out: the player's own pad must not spoil the test)
 static _Atomic int last_device;  // DEVICE_*: what the player used last
-static bool tilt_held;  // the tilt key or controller button: the mouse tilts the controller instead of turning the camera
+static _Atomic bool tilt_held;  // the tilt binding: the mouse tilts the controller instead of turning the camera
+bool input_tilt_active(void) { return tilt_held; }
 extern bool menu_input_captured(void);  // runtime/ui/menu.mm: overlay menu or name entry up (it has the keys / pad)
 
 static bool profiler_key_available(void) {
@@ -164,7 +165,10 @@ static void recompute_motion(void) {
                         held_gyro(BIND_GYRO_CENTER));
     else motion_keyboard(0, 0, 0, false);
     bool tilt = (game_key_slot(BIND_TILT) || held_pad(BIND_TILT)) && win_focused && !menu_input_captured();
-    if (tilt != tilt_held) motion_tilt_held(tilt_held = tilt);
+    if (tilt != tilt_held) {
+        motion_tilt_held(tilt);
+        tilt_held = tilt;
+    }
 }
 
 // Through the bindings (runtime/hle/bindings.c: g_bind_key), read on every key event, so a rebind applies at once.

@@ -1219,7 +1219,7 @@ void build_items(void) {
                        [](const Item &) { return (int)g_settings.pc_gyro; },
                        [](const Item &, int x) { g_settings.pc_gyro = x; }, 1));
     v.push_back(toggle(P_CONTROLS, "Shrine mouse drag",
-                       "At a shrine apparatus, hold left click and drag to rotate. Release to keep its orientation and re-grip.",
+                       "At a shrine apparatus, left-drag to rotate. Right-drag sideways to bank or vertically to tilt. Release to keep the pose.",
                        [](const Item &) { return (int)g_settings.gyro_scene; },
                        [](const Item &, int x) { g_settings.gyro_scene = x; }, 1));
     // motion controls (runtime/hle/motion.c; the game's own Motion Controls option turns motion aiming on and off)

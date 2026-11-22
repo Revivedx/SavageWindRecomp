@@ -53,6 +53,7 @@ extern "C" {
 }
 #include "menu.h"
 void input_reset(void);
+bool input_tilt_active(void);
 void input_pc_escape(bool down);
 void controls_bindings_draw(float scale);  // controls_ui.mm
 #include "../input_bind.h"
@@ -397,7 +398,7 @@ bool menu_handle_event(const SDL_Event *e) {
     case SDL_EVENT_MOUSE_MOTION:
         if (!capturing() && !pc_gyro_scene_active()) return false;
         { QEvent q = {}; q.kind = QEvent::MOUSE_POS; q.x = e->motion.x * g_pixel_density; q.y = e->motion.y * g_pixel_density; push(q); }
-        return true;
+        return capturing() || !input_tilt_active();  // the tilt binding needs the relative motion at an apparatus
     case SDL_EVENT_MOUSE_BUTTON_DOWN: case SDL_EVENT_MOUSE_BUTTON_UP:
         if (e->type == SDL_EVENT_MOUSE_BUTTON_UP && e->button.button == SDL_BUTTON_LEFT && g_sizes_eat_up.exchange(false) &&
             !capturing())
@@ -412,7 +413,7 @@ bool menu_handle_event(const SDL_Event *e) {
         }
         return true;
     case SDL_EVENT_MOUSE_WHEEL:
-        if (!capturing() && !pc_gyro_scene_active()) return false;
+        if (!capturing()) return pc_gyro_scene_active() && !input_tilt_active();
         { QEvent q = {}; q.kind = QEvent::WHEEL; q.x = e->wheel.x; q.y = e->wheel.y; push(q); }
         return true;
     default:
@@ -2579,7 +2580,7 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
     if (act_log_enabled()) act_overlay_draw(io, scale);
     if (!open && !kbd && !sizes && !con && (quick_inventory_sort_hint() || quick_drop_hint_state())) quick_inventory_hint_draw(io);
     if (!open && !kbd && !sizes && !con) photo_overlay_draw(io, scale);
-    if (!open && !kbd && !sizes && !con && gyro_scene_show) gyro_scene_draw(io, scale, gyro_scene);
+    gyro_scene_draw(io, gyro_scene, gyro_scene_show && !open && !kbd && !sizes && !con && !input_tilt_active());
 
     if (open) {
         // dim the game behind the menu
