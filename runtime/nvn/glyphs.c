@@ -645,10 +645,13 @@ bool glyphs_hud_positions_stale(void) {
 // The game draws its prompts with the Switch buttons' characters (A B X Y). With per-action bindings an action can sit
 // on another button than its Switch button's: in play each character stands for the button every action of its Switch
 // button moved to (input_bind.h act_prompt_host: Jump and the other Switch X actions all on A, the X character shows
-// A), and while a rune is out the A character stands for Activate rune's button. The menus keep the Switch layer
+// A), while a rune is out the A character stands for Activate rune's button, and on the Master Cycle Zero A and B
+// stand for Cycle accelerate's and Cycle brake's. The menus keep the Switch layer
 // (g_bind_pad / g_bind_key): their prompts are the menus' own buttons. The sheet goes up again when that changes
 // (generation), so a prompt on screen changes on the next frame.
 #define ACT_ACTIVATE_RUNE 34   // (bindings.c k_act_names)
+#define ACT_CYCLE_ACCELERATE 38
+#define ACT_CYCLE_BRAKE 39
 #define RUNE_ASKED_MS 150      // asked that recently: a rune is out
 static int g_face[2][4];       // latched by generation(): per device (pad, keys) the host for A, B, X, Y
 
@@ -727,6 +730,7 @@ static bool rune_slot(int host, int *moved) {  // host < 0: back to the slot's o
 // in its own corner (put back if the setting goes off with the slot moved)
 static void resolve_face(void) {
     bool on = g_settings.prompts_follow, play = on && in_play(), rune = play && rune_out();
+    bool cycle = play && !rune && act_cycle_live();
     int rune_host = rune ? g_act_pad[ACT_ACTIVATE_RUNE] : -1, moved = -1;
     if ((play || !on) && !rune_slot(rune_host, &moved)) rune = false;  // (the characters follow once the slot is there)
     g_letter_swap = rune ? moved : -1;
@@ -736,6 +740,11 @@ static void resolve_face(void) {
             int h = play ? act_prompt_host(dev ? BIND_DEV_KEY : BIND_DEV_PAD, BIND_A + i) : -1;
             if (rune && i == 0) {
                 int r = dev ? g_act_key[ACT_ACTIVATE_RUNE] : g_act_pad[ACT_ACTIVATE_RUNE];
+                if (dev ? r > 0 : r >= 0) h = r;
+            }
+            if (cycle && i < 2) {  // (on the Master Cycle Zero its prompts are Accelerate and Brake: #967)
+                int id = i == 0 ? ACT_CYCLE_ACCELERATE : ACT_CYCLE_BRAKE;
+                int r = dev ? g_act_key[id] : g_act_pad[id];
                 if (dev ? r > 0 : r >= 0) h = r;
             }
             g_face[dev][i] = h >= 0 && (dev ? h > 0 : 1) ? h : layer;
