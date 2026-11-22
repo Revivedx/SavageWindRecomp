@@ -29,17 +29,11 @@
 #include "nvn/tegra.h"
 #include "rt.h"
 #include "services/archive.h"
+#include "services/formats.h"
 #include "settings.h"
 #include "ui/i18n.h"
 
 uint8_t *fs_game_file(const char *path, size_t *out_n);  // runtime/services/fs.c
-
-// ---- BYML (little-endian "YB", version 2 and up): dictionaries, arrays, strings and numbers
-typedef struct {
-    const uint8_t *d;
-    size_t n;
-    uint32_t keys, strs;  // their string tables
-} Byml;
 
 static uint32_t rd32(const uint8_t *p) { uint32_t v; memcpy(&v, p, 4); return v; }
 static char *copy(const char *s, size_t n) {
@@ -47,94 +41,21 @@ static char *copy(const char *s, size_t n) {
     if (o) memcpy(o, s, n), o[n] = 0;
     return o;
 }
-static uint16_t rd16(const uint8_t *p) { uint16_t v; memcpy(&v, p, 2); return v; }
 
-static const char *byml_str(const Byml *b, uint32_t table, uint32_t i) {
-    if (!table || table + 8 > b->n || i >= (rd32(b->d + table) >> 8)) return NULL;
-    uint32_t o = table + rd32(b->d + table + 4 + 4 * i);
-    return o < b->n ? (const char *)b->d + o : NULL;
-}
-static uint32_t byml_count(const Byml *b, uint32_t node) { return node + 4 <= b->n ? rd32(b->d + node) >> 8 : 0; }
-// Entry `key` of the dictionary at `node`: its type and value; false if it has none
-static bool byml_get(const Byml *b, uint32_t node, const char *key, uint8_t *type, uint32_t *value) {
-    if (node + 4 > b->n || b->d[node] != 0xc1) return false;
-    uint32_t n = byml_count(b, node);
-    for (uint32_t i = 0; i < n && node + 12 + 8 * i <= b->n; i++) {
-        const uint8_t *e = b->d + node + 4 + 8 * i;
-        const char *k = byml_str(b, b->keys, rd32(e) & 0xffffff);
-        if (k && !strcmp(k, key)) { *type = e[3], *value = rd32(e + 4); return true; }
-    }
-    return false;
-}
-static const char *byml_get_str(const Byml *b, uint32_t node, const char *key) {
-    uint8_t t; uint32_t v;
-    return byml_get(b, node, key, &t, &v) && t == 0xa0 ? byml_str(b, b->strs, v) : NULL;
-}
-static int byml_get_int(const Byml *b, uint32_t node, const char *key, int def) {
-    uint8_t t; uint32_t v;
-    return byml_get(b, node, key, &t, &v) && (t == 0xd1 || t == 0xd3) ? (int)v : def;
-}
-
-// ---- MSBT: the label's text, UTF-16 to UTF-8, control tags left out
-static void utf8_put(char **o, char *end, uint32_t c) {
-    char *p = *o;
-    if (c < 0x80) { if (p + 1 < end) *p++ = (char)c; }
-    else if (c < 0x800) { if (p + 2 < end) *p++ = (char)(0xc0 | c >> 6), *p++ = (char)(0x80 | (c & 63)); }
-    else if (p + 3 < end) *p++ = (char)(0xe0 | c >> 12), *p++ = (char)(0x80 | ((c >> 6) & 63)), *p++ = (char)(0x80 | (c & 63));
-    *o = p;
-}
-
+// ---- the names: each <actor>_Name message's text
 typedef struct { char *label, *text; } Msg;
 static Msg *g_msgs;
 static int g_nmsgs, g_capmsgs;
 
-static void msbt_read(const uint8_t *d, size_t n) {
-    if (n < 0x20 || memcmp(d, "MsgStdBn", 8) || d[8] != 0xff) return;  // (little-endian only, as the Switch's are)
-    uint16_t nsec = rd16(d + 0xe);
-    size_t off = 0x20, lbl = 0, txt = 0, txt_size = 0;
-    for (int s = 0; s < nsec && off + 0x10 <= n; s++) {
-        uint32_t size = rd32(d + off + 4);
-        if (!memcmp(d + off, "LBL1", 4)) lbl = off + 0x10;
-        if (!memcmp(d + off, "TXT2", 4)) txt = off + 0x10, txt_size = size;
-        off = (off + 0x10 + size + 15) & ~(size_t)15;
-    }
-    if (!lbl || !txt || txt + 4 > n) return;
-    uint32_t ntxt = rd32(d + txt), nb = rd32(d + lbl);
-    for (uint32_t b = 0; b < nb && lbl + 12 + 8 * b <= n; b++) {
-        uint32_t cnt = rd32(d + lbl + 4 + 8 * b);
-        size_t p = lbl + rd32(d + lbl + 8 + 8 * b);
-        for (uint32_t k = 0; k < cnt && p < n; k++) {
-            uint8_t len = d[p];
-            if (p + 1 + len + 4 > n) return;
-            uint32_t idx = rd32(d + p + 1 + len);
-            if (len > 5 && !memcmp(d + p + 1 + len - 5, "_Name", 5) && idx < ntxt) {
-                size_t t0 = txt + rd32(d + txt + 4 + 4 * idx);
-                size_t t1 = idx + 1 < ntxt ? txt + rd32(d + txt + 8 + 4 * idx) : txt + txt_size;
-                char buf[160], *o = buf;
-                for (size_t q = t0; q + 1 < t1 && q + 1 < n;) {
-                    uint16_t c = rd16(d + q);
-                    q += 2;
-                    if (!c) break;
-                    if (c == 0x0e) { if (q + 6 <= n) q += 6 + rd16(d + q + 4); continue; }  // (a tag: group, type, size, data)
-                    if (c >= 0xd800 && c < 0xdc00 && q + 1 < n) {
-                        uint16_t lo = rd16(d + q);
-                        q += 2;
-                        utf8_put(&o, buf + sizeof buf, 0x10000 + ((c - 0xd800) << 10) + (lo - 0xdc00));
-                        continue;
-                    }
-                    utf8_put(&o, buf + sizeof buf, c);
-                }
-                while (o > buf && (o[-1] == ' ' || (o[-1] == 'x' && o - 1 > buf && o[-2] == ' '))) o--;  // ("... x ": a count's place)
-                *o = 0;
-                if (buf[0]) {
-                    if (g_nmsgs == g_capmsgs) g_capmsgs = g_capmsgs ? g_capmsgs * 2 : 1024, g_msgs = realloc(g_msgs, sizeof *g_msgs * g_capmsgs);
-                    g_msgs[g_nmsgs].label = copy((const char *)d + p + 1, len - 5);
-                    g_msgs[g_nmsgs++].text = copy(buf, strlen(buf));
-                }
-            }
-            p += 1 + len + 4;
-        }
-    }
+static void name_add(void *ctx, const char *label, size_t len, const char *text) {
+    (void)ctx;
+    if (len <= 5 || memcmp(label + len - 5, "_Name", 5)) return;
+    size_t n = strlen(text);
+    while (n && (text[n - 1] == ' ' || (text[n - 1] == 'x' && n > 1 && text[n - 2] == ' '))) n--;  // ("... x ": a count's place)
+    if (!n) return;
+    if (g_nmsgs == g_capmsgs) g_capmsgs = g_capmsgs ? g_capmsgs * 2 : 1024, g_msgs = realloc(g_msgs, sizeof *g_msgs * g_capmsgs);
+    g_msgs[g_nmsgs].label = copy(label, len - 5);
+    g_msgs[g_nmsgs++].text = copy(text, n);
 }
 static int msg_cmp(const void *a, const void *b) { return strcmp(((const Msg *)a)->label, ((const Msg *)b)->label); }
 static const char *msg_name(const char *actor) {
@@ -155,7 +76,8 @@ static void names_read(void) {
     int nodes = msg ? sarc_count(msg, mn) : -1;
     for (int i = 0; i < nodes; i++) {
         const char *name; const uint8_t *data; size_t size;
-        if (sarc_node(msg, mn, i, &name, &data, &size) && name && !strncmp(name, "ActorType/", 10)) msbt_read(data, size);
+        if (sarc_node(msg, mn, i, &name, &data, &size) && name && !strncmp(name, "ActorType/", 10))
+            msbt_each(data, size, name_add, NULL);
     }
     if (g_nmsgs) qsort(g_msgs, g_nmsgs, sizeof *g_msgs, msg_cmp);
     LOG("[items] %d names from %s\n", g_nmsgs, path);
@@ -182,11 +104,11 @@ static uint32_t tag(const char *s) {  // (the tags are CRC-32s of their names)
     return ~c;
 }
 static bool has_tag(const Byml *b, uint32_t actor, uint32_t t) {
-    uint8_t ty; uint32_t tags;
-    if (!byml_get(b, actor, "tags", &ty, &tags) || ty != 0xc1) return false;
+    uint8_t ty; uint32_t tags, v;
+    if (!byml_get(b, actor, "tags", &ty, &tags) || ty != BYML_DICT) return false;
     uint32_t n = byml_count(b, tags);
-    for (uint32_t i = 0; i < n && tags + 12 + 8 * i <= b->n; i++)
-        if (rd32(b->d + tags + 8 + 8 * i) == t) return true;
+    for (uint32_t i = 0; i < n; i++)
+        if (byml_at(b, tags, i, &ty, &v, NULL) && v == t) return true;
     return false;
 }
 static int item_cmp(const void *a, const void *b) {
@@ -219,10 +141,10 @@ static void list_read(void) {
     size_t zn = 0, n = 0;
     uint8_t *z = fs_game_file("Actor/ActorInfo.product.sbyml", &zn), *d = z ? yaz0_unpack(z, zn, &n) : NULL;
     free(z);
-    if (!d || n < 16 || memcmp(d, "YB", 2)) { LOG("[items] no ActorInfo\n"); free(d); return; }
-    Byml b = {d, n, rd32(d + 4), rd32(d + 8)};
+    Byml b;
+    if (!byml_open(&b, d, n)) { LOG("[items] no ActorInfo\n"); free(d); return; }
     uint8_t t; uint32_t actors;
-    if (!byml_get(&b, rd32(d + 12), "Actors", &t, &actors) || t != 0xc0) { free(d); return; }
+    if (!byml_get(&b, b.root, "Actors", &t, &actors) || t != BYML_ARRAY) { free(d); return; }
     names_read();
     static const struct { const char *profile; int cat; } profiles[] = {
         {"WeaponSmallSword", ITEMCAT_WEAPON}, {"WeaponLargeSword", ITEMCAT_WEAPON}, {"WeaponSpear", ITEMCAT_WEAPON},
@@ -235,12 +157,11 @@ static void list_read(void) {
     uint32_t can_get = tag("CanGetPouch"), important = tag("Important"), cooked = tag("CookResult"), rupee = tag("Rupee"),
              arrow = tag("Arrow");
     uint32_t na = byml_count(&b, actors);
-    const uint8_t *types = d + actors + 4;
-    uint32_t vals = actors + 4 + ((na + 3) & ~3u);
     g_items = calloc(na ? na : 1, sizeof *g_items);
-    for (uint32_t i = 0; i < na && vals + 4 * i + 4 <= n; i++) {
-        if (types[i] != 0xc1) continue;
-        uint32_t a = rd32(d + vals + 4 * i);
+    for (uint32_t i = 0; i < na; i++) {
+        uint32_t a;
+        if (!byml_at(&b, actors, i, &t, &a, NULL)) break;
+        if (t != BYML_DICT) continue;
         const char *actor = byml_get_str(&b, a, "name"), *profile = byml_get_str(&b, a, "profile");
         if (!actor || !profile || !has_tag(&b, a, can_get) || has_tag(&b, a, important) || has_tag(&b, a, cooked) ||
             has_tag(&b, a, rupee))
