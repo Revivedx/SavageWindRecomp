@@ -11,6 +11,7 @@
 #include <dlfcn.h>
 #endif
 
+#include "game_cpu.h"
 #include "game_sites.h"
 #include "paths.h"
 #include "rt.h"
@@ -26,25 +27,12 @@ static char g_error[256];
 #define GAMELIB_ARCH ""
 #endif
 
-// Whether this CPU runs code built for arch: the x86-64 levels the Makefile uses. Another -march (a build's own
-// GENARCH) isn't checked.
-static bool cpu_runs(const char *arch) {
-#if defined(__x86_64__)
-    __builtin_cpu_init();
-    if (strstr(arch, "x86-64-v3"))
-        return __builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma") && __builtin_cpu_supports("bmi2");
-    if (strstr(arch, "x86-64-v2")) return __builtin_cpu_supports("sse4.2") && __builtin_cpu_supports("popcnt");
-#endif
-    (void)arch;
-    return true;
-}
-
 bool gamelib_compat(void) {
 #ifdef GAMELIB_ID_COMPAT
     static int compat = -1;
     if (compat < 0) {
         const char *e = getenv("SAVAGEWIND_COMPAT_CPU");
-        compat = (e && *e && strcmp(e, "0")) || !cpu_runs(GAMELIB_ARCH);
+        compat = (e && *e && strcmp(e, "0")) || !game_cpu_runs(GAMELIB_ARCH);
     }
     return compat;
 #else
@@ -61,12 +49,12 @@ const char *gamelib_id(void) {
 
 const char *gamelib_cpu_problem(void) {
 #ifdef GAMELIB_ID_COMPAT
-    if (!cpu_runs(GAMELIB_ARCH_COMPAT))
+    if (!game_cpu_runs(GAMELIB_ARCH_COMPAT))
         return "a CPU with SSE4.2 (Intel Nehalem / 2008 or newer, AMD Bulldozer / 2011 or newer)";
     return NULL;
 #else
-    return cpu_runs(GAMELIB_ARCH) ? NULL
-                                  : "a CPU with AVX2 (Intel Haswell / 2013 or newer, AMD Excavator / Zen or newer)";
+    return game_cpu_runs(GAMELIB_ARCH) ? NULL
+                                       : "a CPU with AVX2 (Intel Haswell / 2013 or newer, AMD Excavator / Zen or newer)";
 #endif
 }
 

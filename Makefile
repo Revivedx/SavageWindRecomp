@@ -727,6 +727,15 @@ $(B)/test_game_file_size: tools/test_game_file_size.c runtime/game_file_size.c r
 	@mkdir -p $(B)
 	$(CC) -O1 -Wall $(OSFLAGS) -Iruntime -o $@ tools/test_game_file_size.c runtime/game_file_size.c
 
+$(B)/test_game_cpu: tools/test_game_cpu.c runtime/game_cpu.h
+	@mkdir -p $(B)
+	$(CC) -O1 -Wall -Wextra -Werror -std=gnu11 -Iruntime -o $@ tools/test_game_cpu.c
+
+test-game-cpu: $(B)/test_game_cpu
+	$(B)/test_game_cpu
+
+.PHONY: test-game-cpu
+
 test-game-file-size: $(B)/test_game_file_size
 	$(B)/test_game_file_size
 
