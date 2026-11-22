@@ -1243,6 +1243,8 @@ static bool menu_tip(float s) {
     ImGui::PopStyleColor();
     ImGui::PopStyleVar(2);
     if (open) {
+        // (not the A / Enter that pressed PLAY and opened the note, on its first frame, or that key held down after it)
+        bool keys = !ImGui::IsWindowAppearing();
         ImGui::SetWindowFontScale(1.25f);
         ImGui::PushTextWrapPos(0);
         ImGui::TextUnformatted(tr("Savage Wind's video, audio and controls settings are in the game's own Options."));
@@ -1254,8 +1256,8 @@ static bool menu_tip(float s) {
         ImGui::Dummy(ImVec2(0, 14 * s));
         ImGui::SetCursorPosX((ImGui::GetWindowWidth() - 180 * s) * 0.5f);
         ImGui::SetItemDefaultFocus();
-        if (ImGui::Button(tr("OK"), ImVec2(180 * s, 44 * s)) || ImGui::IsKeyPressed(ImGuiKey_Enter) ||
-            ImGui::IsKeyPressed(ImGuiKey_GamepadFaceDown)) {
+        if (ImGui::Button(tr("OK"), ImVec2(180 * s, 44 * s)) ||
+            (keys && (ImGui::IsKeyPressed(ImGuiKey_Enter, false) || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceDown, false)))) {
             g_settings.menu_tip_seen = true;
             settings_save();
             ImGui::CloseCurrentPopup();
