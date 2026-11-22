@@ -160,7 +160,7 @@ const char *const k_modes[] = {"Ultra Quality", "Quality", "Balanced", "Performa
 const int k_modes_order[] = {UPQ_NATIVE, UPQ_ULTRA, UPQ_QUALITY, UPQ_BALANCED, UPQ_PERFORMANCE, UPQ_ULTRA_PERFORMANCE,
                              UPQ_DYNAMIC};
 int upscale_mode_base(void) {
-    return rt_fsr3() || rt_xess() || rt_dlss() ? 0 : 1;
+    return rt_temporal_upscaler() ? 0 : 1;
 }
 // a mode's name: Native is DLAA with DLSS (NVIDIA's name for its 1x)
 const char *upscale_mode_name(int q) {
@@ -836,7 +836,11 @@ void build_items(void) {
                                if (k_ups_value[i] == g_settings.upscaler) return i;
                            return 0;
                        },
-                       [](const Item &, int x) { g_settings.upscaler = k_ups_value[x]; }, UPS_DEFAULT));
+                       [](const Item &, int x) {
+                           g_settings.upscaler = k_ups_value[x];
+                           render_scale_fit();  // (FSR 3 / 4, XeSS, DLSS: up to 100%)
+                       },
+                       UPS_DEFAULT));
     v.back().value_off = [](const Item &, int x) { return !upscaler_available(k_ups_value[x]); };
     v.back().desc_fn = [](const Item &) {  // (one line)
         return g_settings.upscaler == UPSCALE_FSR4 ? tr("AMD FSR 4: renders smaller, then rebuilds detail with machine learning.")
@@ -868,7 +872,7 @@ void build_items(void) {
                        },
                        [](const Item &, int x) {
                            if (g_settings.upscaler != UPSCALE_OFF)
-                               g_settings.upscale_quality = k_modes_order[x + upscale_mode_base()];
+                               g_settings.upscale_quality = k_modes_order[x + upscale_mode_base()], render_scale_fit();
                        },
                        2);
     mode.value_off = [](const Item &, int x) {
@@ -890,8 +894,18 @@ void build_items(void) {
                            static const char *const r[] = {"50%", "75%", "100%", "125%", "150%", "200%"};
                            return r[x];
                        },
-                       [](const Item &) { return g_settings.render_scale; },
-                       [](const Item &, int x) { g_settings.render_scale = x; }, RSCALE_100));
+                       [](const Item &) {
+                           render_scale_fit();  // (a value stored before shows as the 100% it runs at)
+                           return g_settings.render_scale;
+                       },
+                       [](const Item &, int x) { g_settings.render_scale = x, render_scale_chosen(); }, RSCALE_100));
+    // (FSR 3 / 4, XeSS, DLSS: up to 100%, in Native and DLAA 100%)
+    v.back().value_off = [](const Item &, int x) { return !render_scale_offered(x); };
+    v.back().desc_fn = [](const Item &) {  // (one line)
+        return !rt_temporal_upscaler() ? tr("Below 100%: faster, blurrier. Above 100%: renders bigger, then shrinks to the window. Smoothest edges.")
+             : upscale_quality_now() == UPQ_NATIVE ? tr("Always 100% in Native and DLAA modes.")
+                                                   : tr("Up to 100% while FSR 3, FSR 4, XeSS or DLSS is on.");
+    };
 #ifndef SW_METAL
     // the game's own FXAA (vulkan/exec.c fxaa_patch)
     // the wet lighting passes' sun glare (maxwell/translate.c maxwell_wet_lighting): their translations, made at the start

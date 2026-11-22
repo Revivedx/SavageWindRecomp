@@ -231,14 +231,15 @@ bool opt_dropdown(const char *label, int *v, const char *const *names, int n, in
 }
 
 bool opt_choice_avail(const char *label, int *v, int *shown, const char *const *names, const bool *avail, int n, int def,
-                      const char *desc) {
+                      const char *desc, bool wrap) {
     int cur = *v >= 0 && *v < n ? *v : 0;
     if (*shown < 0 || *shown >= n || (avail[*shown] && *shown != cur)) *shown = cur;  // (changed elsewhere)
     int s = *shown;
     g_value_dim = !avail[s];
     int step = row(label, tr(names[s]), s != def, desc, true, true);
     if (!step) return false;
-    s = (s + (step == 2 ? 1 : step) + n) % n;
+    s += step == 2 ? 1 : step;
+    s = wrap ? (s + n) % n : s < 0 ? 0 : s >= n ? n - 1 : s;
     *shown = s;
     if (!avail[s] || s == cur) return false;
     *v = s;

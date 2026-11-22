@@ -39,6 +39,15 @@ double upscale_factor(void);
 bool upscale_mode_offered(int q);   // mode q can be chosen now (Ultra Performance with FSR 3 / 4 or DLSS: a 4K window)
 bool upscale_mode_is_dlaa(int q);   // mode q is named DLAA in the menus: Native with DLSS chosen
 int upscale_quality_now(void);      // the mode in use: the setting, or Performance where it is not offered
+bool rt_temporal_upscaler(void);  // FSR 3 / 4, XeSS or DLSS: the upscalers that rebuild the image from several frames
+// Video > Render scale: whether value r (RSCALE_*) can be chosen now (with a temporal upscaler up to 100%, in its Native
+// or DLAA mode 100%), and the one in use
+bool render_scale_offered(int r);
+int render_scale_now(void);
+// The stored render scale to 100% when the upscaler and mode now chosen don't offer it, and back to the value it had
+// when they offer it again; render_scale_chosen: the player set it in its row (that value is never undone)
+void render_scale_fit(void);
+void render_scale_chosen(void);
 // Video > Shadow resolution: the width the game's shadow maps are made at from presented frame `frame` on (0: their
 // own size; vulkan/textures.c RS_SHADOW)
 unsigned shadow_map_size(unsigned long long frame);

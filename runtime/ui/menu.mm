@@ -1020,7 +1020,8 @@ static void tab_display(void) {
         static int shown = -1;
         int udef = 0;  // (the reset value: UPSCALE_DEFAULT)
         for (int i = 0; i < NU; i++) if (ups_value[i] == UPSCALE_DEFAULT) udef = i;
-        if (opt_choice_avail("Upscaler", &ui, &shown, ups, avail, NU, udef, ud)) g_settings.upscaler = ups_value[ui];
+        if (opt_choice_avail("Upscaler", &ui, &shown, ups, avail, NU, udef, ud))
+            g_settings.upscaler = ups_value[ui], render_scale_fit();  // (FSR 3 / 4, XeSS, DLSS: up to 100%)
         // its mode (AMD's scale factors, or Dynamic: the dynamic resolution), one step in; greyed when the upscaler
         // is off
         bool modes_ok = upscale_modes_available();
@@ -1058,7 +1059,7 @@ static void tab_display(void) {
         if (g_settings.upscaler == UPSCALE_OFF) opt_disable_next();
         static int mshown = -1;
         if (opt_choice_avail("Upscaler mode", &mi, &mshown, mn, mavail, nm, mdef, md.c_str()))
-            g_settings.upscale_quality = k_upscale_mode_order[mi];
+            g_settings.upscale_quality = k_upscale_mode_order[mi], render_scale_fit();  // (Native, DLAA: 100%)
         opt_indent(-1);
     }
 #ifdef SW_METAL
@@ -1083,12 +1084,23 @@ static void tab_display(void) {
                "glare goes, and the grass keeps its colour and a soft sheen. Applies from the next start.");
 #endif
     {   // supersampling (nvn/output_scale.c): applies at once
+        // (FSR 3 / 4, XeSS, DLSS: up to 100%, in Native and DLAA 100%: output_scale.c render_scale_offered; the sentence
+        //  on its own, the first keeps its translations)
         static const char *const rscale[] = {"50%", "75%", "100%", "125%", "150%", "200%"};
-        opt_choice("Render scale", &g_settings.render_scale, rscale, RSCALE_COUNT, RSCALE_100,
-                   "Below 100% the game renders at a lower resolution than the window and is scaled up to it: faster, "
-                   "but blurrier (50% is a quarter of the pixels, for weak graphics cards). Above 100% it renders at a "
-                   "higher resolution and is scaled down to it, the cleanest way to smooth edges and shimmer. 200% is "
-                   "4x the pixels: for fast graphics cards.", false);
+        render_scale_fit();  // (a value stored before shows as the 100% it runs at)
+        bool ravail[RSCALE_COUNT];
+        for (int i = 0; i < RSCALE_COUNT; i++) ravail[i] = render_scale_offered(i);
+        std::string rd = tr("Below 100% the game renders at a lower resolution than the window and is scaled up to it: "
+                            "faster, but blurrier (50% is a quarter of the pixels, for weak graphics cards). Above 100% "
+                            "it renders at a higher resolution and is scaled down to it, the cleanest way to smooth edges "
+                            "and shimmer. 200% is 4x the pixels: for fast graphics cards.");
+        if (rt_temporal_upscaler())
+            rd += std::string(" ") + tr("With FSR 3, FSR 4, XeSS or DLSS it stops at 100%, because they can't use an "
+                                        "image bigger than the window. In Native and DLAA modes it's always 100%.");
+        static int rshown = -1;
+        if (opt_choice_avail("Render scale", &g_settings.render_scale, &rshown, rscale, ravail, RSCALE_COUNT, RSCALE_100,
+                             rd.c_str(), false))
+            render_scale_chosen();
     }
 #ifndef SW_METAL
     {   // Anisotropic filtering and sharpening (Vulkan: vulkan/textures.c sampler_aniso, vulkan/exec.c scene_post)
