@@ -4365,6 +4365,22 @@ static int feedback_color_slot(Prog *pr, NvnTexture *t) {
     return last;
 }
 
+// The draw writes neither depth nor stencil: its depth attachment is only read.
+static bool depth_read_only(void) {
+    if (st.ds[0] && st.ds[1]) return false;
+    if (!st.ds[3]) return true;
+    uint32_t ops = st.ds[5] | st.ds[6] << 8 | st.ds[7] << 16;
+    for (int f = 0; f < 2; f++) {
+        uint32_t o = f ? ops >> 12 : ops;
+        if (!(st.stencil_mask[f] & 0xFF)) continue;
+        for (int k = 0; k < 3; k++) {
+            uint32_t v = (o >> (4 * k)) & 0xF;
+            if (v >= 2 && v <= 8) return false;  // (stencil_op: 2..8 write, KEEP otherwise)
+        }
+    }
+    return true;
+}
+
 static long logfb = -1, fbskip;  // (SAVAGEWIND_LOG_FEEDBACK)
 static unsigned fb_draws;
 static void resolve_feedback(Prog *pr) {
@@ -4414,7 +4430,7 @@ static void resolve_feedback(Prog *pr) {
                 snap_gbuf = g ? atoi(g) != 0 : mali;
                 if (snap_depth || snap_gbuf) LOG("[vk] bound attachments read through snapshots: depth %d, G-buffer %d\n", snap_depth, snap_gbuf);
             }
-            if (!nolive && !snap_depth && is_depth && feedback_depth_read_only()) {
+            if (!nolive && !snap_depth && is_depth && depth_read_only()) {
                 if (pass_ds_written) { vk_end_pass(); st.rt_dirty = true; }
                 stat_feedback_live++;
                 feedback_tex[nfeedback] = t;
@@ -8955,7 +8971,7 @@ static void draw_(CmdRec *r, bool indexed) {
         }
         if (mp) pr = mp, mvec_masked();
     }
-    if (st.rt.depth && !feedback_depth_read_only()) pass_ds_written = true;
+    if (st.rt.depth && !depth_read_only()) pass_ds_written = true;
     for (int i = 0; i < st.rt.ncolor && i < 8; i++)
         if (st.rt.color[i] && feedback_draw_writes_color(pr->fi->out_mask, st.channel_mask, i)) {
             pass_color_written |= (uint8_t)(1u << i);

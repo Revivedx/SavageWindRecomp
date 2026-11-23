@@ -23,19 +23,3 @@ bool feedback_is_attachment(NvnTexture *t, uint8_t det_draw) {
 bool feedback_draw_writes_color(uint32_t out_mask, uint32_t channel_mask, int i) {
     return ((out_mask >> (i * 4)) & 0xF) && ((channel_mask >> (i * 4)) & 0xF);
 }
-
-// The draw writes neither depth nor stencil: its depth attachment is only read.
-bool feedback_depth_read_only(void) {
-    if (st.ds[0] && st.ds[1]) return false;
-    if (!st.ds[3]) return true;
-    uint32_t ops = st.ds[5] | st.ds[6] << 8 | st.ds[7] << 16;
-    for (int f = 0; f < 2; f++) {
-        uint32_t o = f ? ops >> 12 : ops;
-        if (!(st.stencil_mask[f] & 0xFF)) continue;
-        for (int k = 0; k < 3; k++) {
-            uint32_t v = (o >> (4 * k)) & 0xF;
-            if (v >= 2 && v <= 8) return false;  // (stencil_op: 2..8 write, KEEP otherwise)
-        }
-    }
-    return true;
-}

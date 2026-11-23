@@ -9,7 +9,7 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[1]
 source = (ROOT / "runtime/nvn/vulkan/exec.c").read_text()
 start = source.index("static int feedback_color_slot(")
-end = source.index("static long logfb", start)
+end = source.index("// The draw writes neither depth nor stencil:", start)
 helper = source[start:end]
 fixture = r"""
 #include <assert.h>
