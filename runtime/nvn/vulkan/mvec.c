@@ -97,6 +97,7 @@ static struct {  // since the last log line
     uint64_t masked;  // blended effects drawn into the reactive mask
     uint64_t loose;   // matched by shaders and vertex buffers (prev_match_loose)
     uint64_t still;   // matched draws whose inputs did not change (mvec_still)
+    uint64_t drawn;   // matched draws that moved but whose vertex shader samples a texture the GPU draws (w_draw)
     uint64_t frames, draws, matched, repeated, unmatched, dropped, cb_bytes, inst_bytes, copied, dedupe_hits, max_used, motion,
         cameras;    // frames with a valid camera (camera_finish)
 } mstat;
@@ -275,12 +276,12 @@ static void log_stats(uint64_t frame) {
     if (every <= 0 || ++mstat.frames < (uint64_t)every) return;
     double f = (double)mstat.frames;
     LOG("[mvec] frame %llu: %.0f scene draws a frame, matched %.1f%% (%.0f with a repeated key, %.1f%% drawn with motion), "
-        "unmatched %.0f, %.0f matched without their index buffer, %.0f still, "
+        "unmatched %.0f, %.0f matched without their index buffer, %.0f still, %.0f moved but read a drawn texture, "
         "not recorded %.0f; inputs %.0f KB constants + %.0f KB instance data a frame, %.0f KB copied (%.0f copies "
         "shared); history slot at most %.1f MB used of %.1f; camera found in %.0f%% of the frames; %.1f effects a frame in "
         "the reactive mask\n",
         (unsigned long long)frame, mstat.draws / f, mstat.draws ? 100.0 * mstat.matched / mstat.draws : 0.0, mstat.repeated / f,
-        mstat.draws ? 100.0 * mstat.motion / mstat.draws : 0.0, mstat.unmatched / f, mstat.loose / f, mstat.still / f, mstat.dropped / f, mstat.cb_bytes / f / 1024, mstat.inst_bytes / f / 1024, mstat.copied / f / 1024,
+        mstat.draws ? 100.0 * mstat.motion / mstat.draws : 0.0, mstat.unmatched / f, mstat.loose / f, mstat.still / f, mstat.drawn / f, mstat.dropped / f, mstat.cb_bytes / f / 1024, mstat.inst_bytes / f / 1024, mstat.copied / f / 1024,
         mstat.dedupe_hits / f, mstat.max_used / 1048576.0, cur >= 0 ? slots[cur].cap / 1048576.0 : 0.0,
         100.0 * mstat.cameras / f, mstat.masked / f);
     for (int g = 0; g < 2; g++)
@@ -842,6 +843,15 @@ static void w_draw(const MvecDrawIn *d, uint32_t *pc) {
     static int still = -1;  // SAVAGEWIND_MVEC_STILL=0: (testing) every matched draw runs its vertex shader twice
     if (still < 0) still = !getenv("SAVAGEWIND_MVEC_STILL") || atoi(getenv("SAVAGEWIND_MVEC_STILL")) != 0;
     if (still && p->hash == r->hash) { mstat.still++; return; }
+    // Its vertex shader samples a texture the GPU draws into: run again on the previous frame's inputs, it still reads
+    // this frame's texels. BOTW's grass is drawn so: while Link ran, its vectors went wrong over half the screen every
+    // 10th frame (150 px and more, blades taking other blades' places) and were a few pixels off between those, and
+    // DLSS threw its history away there (the grass shimmering while running; RTX 5070 Ti, 1440p DLAA, 2026-11-22).
+    // The camera's motion instead: the grass stands, but for its sway. Trees and cloth, whose vertex textures are the
+    // game's own, keep theirs. SAVAGEWIND_MVEC_DRAWN=0: (testing) such draws keep their own motion.
+    static int drawn = -1;
+    if (drawn < 0) drawn = !getenv("SAVAGEWIND_MVEC_DRAWN") || atoi(getenv("SAVAGEWIND_MVEC_DRAWN")) != 0;
+    if ((d->h.flags & MVEC_DRAWN_TEXTURE) && drawn) { mstat.drawn++; return; }
     for (int k = 0; k < r->ncb; k++) {
         int j = -1;
         for (int m = 0; m < p->ncb; m++) if (p->cb_slot[m] == r->cb_slot[k]) j = m;

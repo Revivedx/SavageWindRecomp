@@ -8931,6 +8931,11 @@ static void draw_(CmdRec *r, bool indexed) {
             if (size > u.size && u.size) size = u.size;
             md.cb[md.h.ncb++] = (MvecCb){u.addr, (uint32_t)size, (uint8_t)k, {0}};
         }
+        md.h.flags = 0;  // does the vertex shader sample a texture the GPU draws into (mvec.c w_draw: then no motion of its own)
+        for (int i = 0; i < pr->vi->ntex && !md.h.flags; i++) {
+            NvnTexture *et = shader_texture_object(0, &pr->vi->tex[i]);
+            if (et && et->backend && ((TexBackend *)et->backend)->gpu_owned) md.h.flags = MVEC_DRAWN_TEXTURE;
+        }
 #undef md
         mvec_seq = mvec_draw_commit();
         // Its motion program: the vertex shader also run on the previous frame's inputs when the draw moved, which
