@@ -1389,7 +1389,64 @@ extern "C" void test_warp_hold_hour(float hour);
 extern "C" float test_warp_hour(bool *held);
 #include "../blood_moon.h"
 
+// Damage taken / Damage dealt (Accessibility's rows: game_options.mm k_damage, settings.h DAMAGE_CHOICES)
+static void cheats_damage(bool dealt) {
+    static const int damage[] = DAMAGE_CHOICES;
+    static const char *const damage_names[] = {"25%", "50%", "75%", "100%", "150%", "200%", "300%", "400%"};
+    enum { ND = sizeof damage / sizeof damage[0] };
+    static_assert(sizeof damage_names / sizeof damage_names[0] == ND, "a name for each damage choice");
+    int &setting = dealt ? g_settings.damage_dealt : g_settings.damage_taken;
+    int d = 3;
+    for (int i = 0; i < ND; i++) if (setting == damage[i]) d = i;
+    if (opt_choice(dealt ? "Damage dealt" : "Damage taken", &d, damage_names, ND, 3,
+                   dealt ? "How much damage enemies take. 100% is the game's own."
+                         : "How much damage Link takes. 100% is the game's own.", false))
+        setting = damage[d];
+}
+
+// The cheat rows, in sections by what they change (tab_cheats adds the Add items section after them)
 static void cheats_options(void) {
+    opt_section("Link");
+    opt_toggle("God mode", &g_settings.god_mode, false,
+               "Link takes no damage.");
+    {
+        static char heart_buf[16];
+        if (opt_text("Set hearts", heart_buf, sizeof heart_buf, "",
+                     "Sets your heart containers to an exact number (3 to 30).")) {
+            char *end;
+            long n = strtol(heart_buf, &end, 10);
+            if (heart_buf[0] && end != heart_buf && !*end && n >= 3 && n <= 30 && hearts_set((int32_t)n)) {
+                std::string s = std::to_string(n);
+                memcpy(heart_buf, s.c_str(), s.size() + 1);
+            } else
+                heart_buf[0] = 0;
+        }
+    }
+    cheats_damage(false);
+    opt_toggle("Infinite stamina", &g_settings.infinite_stamina, false,
+               "The stamina wheel never runs out.");
+    opt_toggle("Free sprint out of combat", &g_settings.free_sprint, false,
+               "Sprinting takes no stamina while no enemy is fighting you. Once the battle music starts, sprinting "
+               "costs stamina again.");
+
+    opt_section("Combat");
+    opt_toggle("One-hit kill", &g_settings.one_hit_kill, false, "Enemies go down in one hit.");
+    cheats_damage(true);
+    {   // (Accessibility's row: game_options.mm k_wear)
+        static const int wear[] = {0, 50, 100, 150, 200, 250, 300};
+        static const char *const wear_names[] = {"Fairy", "Peter Pan", "Hylian", "Hero", "Master", "Legend",
+                                                 "Dude, are you ok?"};
+        enum { NW = sizeof wear / sizeof wear[0] };
+        int w = 2;
+        for (int i = 0; i < NW; i++) if (g_settings.weapon_wear == wear[i]) w = i;
+        if (opt_choice("Weapon wear", &w, wear_names, NW, 2,
+                       "How fast weapons, bows and shields wear out. Fairy: never. Hylian: the game's own.", false))
+            g_settings.weapon_wear = wear[w], g_settings.no_weapon_wear = wear[w] == 0;
+    }
+    opt_toggle("Infinite arrows", &g_settings.infinite_arrows, false,
+               "Shooting a bow uses up no arrows. You still need one to shoot.");
+
+    opt_section("Rupees and pickups");
     opt_toggle("Infinite rupees", &g_settings.infinite_rupees, false,
                "Keeps your wallet at 9999 rupees, topped up every few seconds.");
     {
@@ -1406,50 +1463,14 @@ static void cheats_options(void) {
                 rupee_buf[0] = 0;
         }
     }
-    opt_toggle("God mode", &g_settings.god_mode, false,
-               "Link takes no damage.");
-    opt_toggle("Infinite stamina", &g_settings.infinite_stamina, false,
-               "The stamina wheel never runs out.");
-    opt_toggle("One-hit kill", &g_settings.one_hit_kill, false, "Enemies go down in one hit.");
-    opt_toggle("Infinite arrows", &g_settings.infinite_arrows, false,
-               "Shooting a bow uses up no arrows. You still need one to shoot.");
-    {   // (Accessibility's rows: game_options.mm k_wear and DAMAGE_CHOICES)
-        static const int wear[] = {0, 50, 100, 150, 200, 250, 300};
-        static const char *const wear_names[] = {"Fairy", "Peter Pan", "Hylian", "Hero", "Master", "Legend",
-                                                 "Dude, are you ok?"};
-        enum { NW = sizeof wear / sizeof wear[0] };
-        int w = 2;
-        for (int i = 0; i < NW; i++) if (g_settings.weapon_wear == wear[i]) w = i;
-        if (opt_choice("Weapon wear", &w, wear_names, NW, 2,
-                       "How fast weapons, bows and shields wear out. Fairy: never. Hylian: the game's own.", false))
-            g_settings.weapon_wear = wear[w], g_settings.no_weapon_wear = wear[w] == 0;
-        static const int damage[] = DAMAGE_CHOICES;
-        static const char *const damage_names[] = {"25%", "50%", "75%", "100%", "150%", "200%", "300%", "400%"};
-        enum { ND = sizeof damage / sizeof damage[0] };
-        static_assert(sizeof damage_names / sizeof damage_names[0] == ND, "a name for each damage choice");
-        for (int dealt = 0; dealt < 2; dealt++) {
-            int &setting = dealt ? g_settings.damage_dealt : g_settings.damage_taken;
-            int d = 3;
-            for (int i = 0; i < ND; i++) if (setting == damage[i]) d = i;
-            if (opt_choice(dealt ? "Damage dealt" : "Damage taken", &d, damage_names, ND, 3,
-                           dealt ? "How much damage enemies take. 100% is the game's own."
-                                 : "How much damage Link takes. 100% is the game's own.", false))
-                setting = damage[d];
-        }
-    }
-    {
-        static char heart_buf[16];
-        if (opt_text("Set hearts", heart_buf, sizeof heart_buf, "",
-                     "Sets your heart containers to an exact number (3 to 30).")) {
-            char *end;
-            long n = strtol(heart_buf, &end, 10);
-            if (heart_buf[0] && end != heart_buf && !*end && n >= 3 && n <= 30 && hearts_set((int32_t)n)) {
-                std::string s = std::to_string(n);
-                memcpy(heart_buf, s.c_str(), s.size() + 1);
-            } else
-                heart_buf[0] = 0;
-        }
-    }
+    static const char *const mults[] = {"Off", "2x", "4x", "8x"};
+    static const int mult_vals[] = {1, 2, 4, 8};
+    int mult_idx = g_settings.item_multiplier == 8 ? 3 : g_settings.item_multiplier == 4 ? 2 : g_settings.item_multiplier == 2 ? 1 : 0;
+    opt_dropdown("Item pickup multiplier", &mult_idx, mults, 4, 0,
+                 "Multiplies stackable items you pick up (materials, monster parts, arrows).");
+    g_settings.item_multiplier = mult_vals[mult_idx];
+
+    opt_section("World");
     static const char *const weather[WEATHER_COUNT] = {"Automatic", "No rain", "No thunderstorms", "Clear", "Cloudy",
                                                        "Rain", "Heavy rain", "Snow", "Heavy snow", "Thunderstorm",
                                                        "Thunder rain", "Rain in sunshine"};  // (settings.h weather)
@@ -1479,15 +1500,8 @@ static void cheats_options(void) {
         if (told) hint(tr(told == 1 ? "The blood moon starts once you close this menu."
                                     : "A blood moon can only start in the open world."));
     }
-    static const char *const mults[] = {"Off", "2x", "4x", "8x"};
-    static const int mult_vals[] = {1, 2, 4, 8};
-    int mult_idx = g_settings.item_multiplier == 8 ? 3 : g_settings.item_multiplier == 4 ? 2 : g_settings.item_multiplier == 2 ? 1 : 0;
-    opt_dropdown("Item pickup multiplier", &mult_idx, mults, 4, 0,
-                 "Multiplies stackable items you pick up (materials, monster parts, arrows).");
-    g_settings.item_multiplier = mult_vals[mult_idx];
-    opt_toggle("Free sprint out of combat", &g_settings.free_sprint, false,
-               "Sprinting takes no stamina while no enemy is fighting you. Once the battle music starts, sprinting "
-               "costs stamina again.");
+
+    opt_section("Travel");
     opt_toggle("Sure-footed horse", &g_settings.sure_footed, false,
                "A running horse no longer stops dead and rears when it runs into something."
                " It no longer stops at cliff edges either.");
@@ -1679,8 +1693,8 @@ static void tab_cheats(void) {
     static char notice[160];
     static unsigned waiting;  // the request the notice waits to tell the result of
     opt_begin("##cheats", ImGui::GetFontSize() / 34);
-    opt_section(tr("Cheats"));
     cheats_options();
+    opt_section("Add items");
     hint(tr("These are cheats: they put items in your pouch. The list comes from your game files; nothing of the game is shipped."));
     if (!items_available()) {
         hint(tr("Items are added in game only."));
