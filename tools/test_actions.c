@@ -671,6 +671,38 @@ static void a_moved_menu_input_leaves_its_actions(void) {
     act_reset();
 }
 
+// The player's report (#1057): Bow on the right mouse button and Guard / lock on on F, the other way round from the
+// factory defaults. The right mouse button must aim the bow only, and the hidden lock-on check (29) must follow
+// Guard's F, so pressing it must not target as well.
+static void bow_and_guard_swapped_on_mouse_and_key_leaves_lock_on_on_the_guard_key(void) {
+    act_reset();
+    host(0, 0, 0);
+    act_poll(true);
+    assert(g_act_key[18] == SDL_SCANCODE_F && g_act_key[13] == BIND_MOUSE + SDL_BUTTON_RIGHT);  // factory defaults
+    // The swap the Controls page makes: Bow takes the guard's right mouse button, Guard takes the bow's F.
+    act_set(BIND_DEV_KEY, 18, BIND_MOUSE + SDL_BUTTON_RIGHT);
+    act_set(BIND_DEV_KEY, 13, SDL_SCANCODE_F);
+    host(0, 0, 0);
+    act_poll(true);
+    assert(hold(13) == 0 && hold(18) == 0 && hold(29) == 0);
+    key_down[BIND_MOUSE + SDL_BUTTON_RIGHT] = 1;
+    host(0, 0, 0);
+    act_poll(true);
+    assert(hold(18) == 1 && trig(18) == 1);   // the bow aims
+    assert(hold(13) == 0 && hold(29) == 0);   // ...and nothing locks on
+    key_down[BIND_MOUSE + SDL_BUTTON_RIGHT] = 0;
+    key_down[SDL_SCANCODE_F] = 1;
+    host(0, 0, 0);
+    act_poll(true);
+    assert(hold(18) == 0);
+    assert(hold(13) == 1 && hold(29) == 1);  // Guard, and the hidden lock-on check with it
+    key_down[SDL_SCANCODE_F] = 0;
+    host(0, 0, 0);
+    act_poll(true);
+    assert(hold(13) == 0 && hold(29) == 0);
+    act_reset();
+}
+
 int main(void) {
     static const uint32_t k_masks_190[ACT_COUNT] = {
         0x1, 0x2, 0x8, 0x10, 0x8, 0x1, 0x8, 0x2, 0x8, 0x2, 0x8, 0x8, 0x2, 0x4, 0x2, 0x40, 0x1, 0x80, 0x20, 0x8, 0x2,
@@ -697,6 +729,7 @@ int main(void) {
     names_and_groups();
     a_conversation_answer_does_not_jump();
     guard_rebind_updates_hidden_lock_on();
+    bow_and_guard_swapped_on_mouse_and_key_leaves_lock_on_on_the_guard_key();
     a_moved_menu_input_leaves_its_actions();
     puts("action bindings: default fallthrough, custom host bindings, schema migration, held / pressed, menus, shared keys, pad capture, contexts, A / B swap, reset and ini passed");
     return 0;
