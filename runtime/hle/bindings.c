@@ -153,6 +153,7 @@ int bind_label_family(void) {
 static void result(int kind, int dev, int slot, int other);
 static int act_default(int dev, int id);
 static void act_refresh(void);
+static void act_reset_following_guard(int dev);
 
 void bind_reset(int dev) {
     if (dev == BIND_DEV_PAD) {
@@ -166,6 +167,10 @@ void bind_reset(int dev) {
         act_set(dev, id, ACT_FOLLOW);
         act_set2(dev, id, ACT_NONE);
     }
+    // The hidden lock-on check (29) has no row of its own and follows Guard (#1016), which works while it is nobody's
+    // binding: a reset must leave it following, not make the factory default a binding of its own, or rebinding Guard
+    // afterwards would stop moving it and the old input would go on targeting (#1057).
+    act_reset_following_guard(dev);
     LOG("[input] %s bindings reset to the defaults\n", dev == BIND_DEV_PAD ? "controller" : "keyboard");
     result(5, dev, -1, -1);
 }
@@ -592,6 +597,14 @@ void act_reset(void) {
     }
     a_explicit_key = a_explicit_pad = 0;
     act_refresh();
+}
+
+// A reset puts every action back at its factory default. The hidden lock-on check (29) has no row of its own and goes
+// on following Guard (#1016): a reset must leave it following, not make the default a binding of its own, or rebinding
+// Guard afterwards would stop moving it and Guard's old input would go on targeting (#1057).
+static void act_reset_following_guard(int dev) {
+    if (dev == BIND_DEV_PAD) a_explicit_pad &= ~(1ull << 29);
+    else a_explicit_key &= ~(1ull << 29);
 }
 
 // Initialized before settings or either Controls page can read the public arrays (also in standalone tests).

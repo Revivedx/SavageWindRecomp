@@ -671,6 +671,31 @@ static void a_moved_menu_input_leaves_its_actions(void) {
     act_reset();
 }
 
+// "Reset keyboard to defaults" then rebinding Guard: the reset must not leave the hidden lock-on check (29) a binding
+// of its own, or Guard's new key would stop moving it (#1016) and the old one would go on targeting (#1057).
+static void a_reset_leaves_the_hidden_lock_on_check_following_guard(void) {
+    act_reset();
+    bind_reset(BIND_DEV_KEY);
+    act_set(BIND_DEV_KEY, 13, SDL_SCANCODE_F);
+    host(0, 0, 0);
+    act_poll(true);
+    key_down[BIND_MOUSE + SDL_BUTTON_RIGHT] = 1;  // its factory-default input, now nobody's
+    host(0, 0, 0);
+    act_poll(true);
+    assert(hold(13) == 0 && hold(29) == 0);
+    key_down[BIND_MOUSE + SDL_BUTTON_RIGHT] = 0;
+    key_down[SDL_SCANCODE_F] = 1;
+    host(0, 0, 0);
+    act_poll(true);
+    assert(hold(13) == 1 && hold(29) == 1);
+    key_down[SDL_SCANCODE_F] = 0;
+    host(0, 0, 0);
+    act_poll(true);
+    assert(hold(13) == 0 && hold(29) == 0);
+    bind_reset(BIND_DEV_KEY);
+    act_reset();
+}
+
 int main(void) {
     static const uint32_t k_masks_190[ACT_COUNT] = {
         0x1, 0x2, 0x8, 0x10, 0x8, 0x1, 0x8, 0x2, 0x8, 0x2, 0x8, 0x8, 0x2, 0x4, 0x2, 0x40, 0x1, 0x80, 0x20, 0x8, 0x2,
@@ -697,6 +722,7 @@ int main(void) {
     names_and_groups();
     a_conversation_answer_does_not_jump();
     guard_rebind_updates_hidden_lock_on();
+    a_reset_leaves_the_hidden_lock_on_check_following_guard();
     a_moved_menu_input_leaves_its_actions();
     puts("action bindings: default fallthrough, custom host bindings, schema migration, held / pressed, menus, shared keys, pad capture, contexts, A / B swap, reset and ini passed");
     return 0;
