@@ -1261,3 +1261,6 @@ T("Downloading Intel XeSS", "กำลังดาวน์โหลด Intel Xe
 T("Dynamic: renders the 3D scene smaller when frames are slow, sharper when they aren't; stays full size where that gains nothing.", "ไดนามิก: เรนเดอร์ฉาก 3D เล็กลงเมื่อเฟรมช้า และคมขึ้นเมื่อเร็ว คงขนาดเต็มเมื่อไม่ได้ประโยชน์")
 T("About mods", "เกี่ยวกับม็อด")
 T("Mods are made by other people, not by Savage Wind. We don't check, test or support them, and we aren't responsible for what they do, including if they break the game or your saves. Back up your saves before trying one, and turn mods off before reporting a bug: a report of a bug a mod causes is closed right away. Savage Wind releases never include mods; in the future we may suggest some we've found to play well with Savage Wind.", "ม็อดสร้างโดยผู้อื่น ไม่ใช่ Savage Wind เราไม่ได้ตรวจสอบ ทดสอบ หรือดูแลม็อด และไม่รับผิดชอบต่อสิ่งที่ม็อดทำ รวมถึงหากม็อดทำให้เกมหรือเซฟเสียหาย สำรองเซฟก่อนลองม็อด และปิดม็อดก่อนรายงานบั๊ก รายงานบั๊กที่เกิดจากม็อดจะถูกปิดทันที รุ่นเผยแพร่ของ Savage Wind จะไม่รวมม็อดใด ๆ ในอนาคตเราอาจแนะนำม็อดบางตัวที่เล่นกับ Savage Wind ได้ดี")
+T("Yes, set up again", "ใช่ ตั้งค่าใหม่อีกครั้ง")
+T("Re-extracts and recompiles the game files now.", "แตกไฟล์เกมและคอมไพล์ใหม่ตอนนี้")
+T("Keeps the current game files.", "เก็บไฟล์เกมปัจจุบันไว้")

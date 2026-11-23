@@ -313,6 +313,7 @@ static std::string g_job;           // current setup step / result for the statu
 static std::string g_job_hint;      // a failure: what to do about it (shown under it)
 static bool g_busy, g_job_failed;
 static bool g_confirm_delete;       // game-files page: "Delete the game files?" shown
+static bool g_confirm_setup;        // game-files page: "Set up game files again?" shown
 
 static void set_job(const std::string &s, bool failed = false, const std::string &hint = "") {
     if (failed) fprintf(stderr, "[launcher] FAILED: %s | %s\n", s.c_str(), hint.c_str());
@@ -2180,7 +2181,7 @@ extern "C" void launcher_run(const char *root, int mode) {
                         if (opt_action("Delete game files", gb, "Frees the space Savage Wind's copy of the game files takes. "
                                        "Saves and settings are kept, and your own game files aren't touched: you can "
                                        "set the game files up again from them.", true))
-                            g_confirm_delete = true;
+                            g_confirm_delete = true, g_confirm_setup = false;
                         first_row();
                     } else {
                         if (opt_action("Yes, delete them", gb, "Deletes the extracted game files now.", true)) {
@@ -2408,9 +2409,22 @@ extern "C" void launcher_run(const char *root, int mode) {
                             pthread_detach(st);
                         }
                     }
-                    if (busy || (src.empty() && !check_copied_files(g_root).empty())) opt_disable_next();
-                    if (opt_action("Set up game files", busy ? tr("Working...") : "", ready ? again_d.c_str() : ex_d.c_str(),
-                                   true)) {
+                    bool start_setup = false;
+                    if (ready && g_confirm_setup && !busy) {
+                        if (opt_action("Yes, set up again", "", "Re-extracts and recompiles the game files now.", true)) {
+                            g_confirm_setup = false;
+                            start_setup = true;
+                        }
+                        if (opt_action("Cancel", "", "Keeps the current game files.", true)) g_confirm_setup = false;
+                    } else {
+                        if (busy || (src.empty() && !check_copied_files(g_root).empty())) opt_disable_next();
+                        if (opt_action("Set up game files", busy ? tr("Working...") : "", ready ? again_d.c_str() : ex_d.c_str(),
+                                       true)) {
+                            if (ready) g_confirm_setup = true;
+                            else start_setup = true;
+                        }
+                    }
+                    if (start_setup) {
                         settings_save();  // (the colour look as chosen above)
                         g_file_size.set_suspended(true);
                         pthread_mutex_lock(&g_lock);
@@ -2455,9 +2469,9 @@ extern "C" void launcher_run(const char *root, int mode) {
                     ImGui::PopTextWrapPos();
                 }
                 opt_end();
-                if (g_confirm_delete && (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) ||
-                                         ImGui::IsKeyPressed(ImGuiKey_Escape, false)))
-                    g_confirm_delete = false;  // (B / Esc: back out of the question first)
+                if ((g_confirm_delete || g_confirm_setup) && (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) ||
+                                                              ImGui::IsKeyPressed(ImGuiKey_Escape, false)))
+                    g_confirm_delete = g_confirm_setup = false;  // (B / Esc: back out of the question first)
                 else if (!busy && !typing && !g_setup_only && (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) ||
                                                                ImGui::IsKeyPressed(ImGuiKey_Escape, false)))
                     back = true;  // (setup mode has nothing to go back to: only its X closes it)
@@ -2466,7 +2480,7 @@ extern "C" void launcher_run(const char *root, int mode) {
                 if (back && !busy) {
                     settings_save();
                     if (g_setup_only) exit(0);
-                    g_confirm_delete = false;
+                    g_confirm_delete = g_confirm_setup = false;
                     refresh_dlc();
                     page = MAIN, g_refocus = SETUP;
                 }
