@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "settings.h"
+#include "rt.h"
 
 // The damage multipliers: d percent of a loss, rounded, and at least 1 while there is a loss
 static int32_t scaled(int32_t d, int pct) {
@@ -54,3 +55,14 @@ uint32_t rt_stamina(uint32_t oldv, uint32_t newv) {
 // Infinite arrows: the bow's shot takes its arrows off the pouch through one function, which returns before taking
 // any (tools/patches.py _remove_arrows). One arrow is still needed to shoot.
 int rt_infinite_arrows(void) { return g_settings.infinite_arrows; }
+
+// Silent Link: the game's noise setter, called with (object, channel, value) for one of an actor's four noise channels
+// (tools/patches.py _silent_link). Channel 1 is the one whistling and the sounds like it go through; the HUD's sound
+// wave and the enemies' hearing both read it, so keeping it at zero is what makes Link quiet. The other channels and
+// the other actors are left alone.
+int rt_silent_link(uint64_t object, uint32_t channel) {
+    if (!g_settings.silent_link || channel != 1) return 0;
+    if (object < GUEST_LO || object >= GUEST_HI) return 0;
+    *(volatile float *)(uintptr_t)(object + 0x1c) = 0.0f;  // (+0x18: the four channels, one float each)
+    return 1;
+}

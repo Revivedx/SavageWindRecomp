@@ -39,6 +39,7 @@ your settings.
 |---|---|
 | God mode | Link takes no damage. |
 | One-hit kill | Enemies go down in one hit. |
+| Silent Link | Link stays quiet, so enemies do not hear him. |
 | Damage taken | How much damage Link takes: 25% to 400%. 100% is the game's own. |
 | Damage dealt | How much damage enemies take: 25% to 400%. 100% is the game's own. |
 | Weapon wear | How fast weapons, bows and shields wear out: Fairy (never), Peter Pan (0.5x), Hylian (1x, the game's own), Hero (1.5x), Master (2x), Legend (2.5x), Dude, are you ok? (3x). |

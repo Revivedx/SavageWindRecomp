@@ -759,6 +759,17 @@ def _cam_stick_end(gen, a):
             f'  /* {a:#x}: ldr d8, [sp, #0x10] (camera stick input: its end) */')
 
 
+def _silent_link(gen, a):
+    # The game's noise setter (object = x0, channel = w1, value = s0). With the option on, channel 1 stays at zero: the
+    # setter returns before storing anything, and the runtime puts the zero in the channel (runtime/assists.c). The
+    # other channels (and every other actor) go through the setter as before.
+    assert _word(gen, a) == 0x51000429, hex(_word(gen, a))  # sub w9, w1, #1
+    return ('{ extern int rt_silent_link(uint64_t, uint32_t); '
+            'if (rt_silent_link(c->x[0], (uint32_t)c->x[1])) return; '
+            'c->x[9] = (uint32_t)((uint32_t)c->x[1] - 1u); }'
+            f'  /* {a:#x}: sub w9, w1, #1 (the noise setter: (object, channel, value)) */')
+
+
 def _cam_pitch(gen, a):
     # fmul s1, s0, s0 just above, fnmul s3, s0, s0 here: the vertical part kept its sign squared, s1 or s3 by s0's sign
     assert _word(gen, a) == 0x1e208803 and _word(gen, a - 4) == 0x1e200801, hex(_word(gen, a))
@@ -1181,6 +1192,7 @@ def _tp_gate(gen, a):
 
 
 PATCHES = {
+    'silent_link': _silent_link,
     'ui_layout_draw': _ui_layout_draw,
     'ui_layout_pane': _ui_layout_pane,
     'replace_tick_call': _replace_tick_call,

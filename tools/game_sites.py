@@ -217,6 +217,10 @@ SITES = [
          '7100001f 5400000c/ff00001f 91314260', 1),
     Site('world_mgr', 'ref', '90000008/9f00001f 91000108/ffc003ff f9400108 b4000008/ff00001f b946b908 7100051f '
          '54000001/ff00001f a9bf7bfd', 1),
+    # the noise setter (tools/patches.py _silent_link; runtime/assists.c): a (object, channel, value) for one of
+    # an actor's four noise channels, channel 1 being the one whistling and the sounds like it go through
+    Site('silent_link', 'code', '51000429 91006008 7100053f 540000c8/ff00001f 8b214908 bd400101 1e202020 '
+         '540000a4/ff00001f', 0),
     # the mouse camera (tools/patches.py _cam_stick, _cam_pitch, _cam_pitch_aim; runtime/hle/input.c): the camera's
     # stick input, which every camera action reads, and the square that the chase-like cameras apply to its vertical
     # part
@@ -691,6 +695,7 @@ KNOWN = {
         'controller_step': 0x7001dad0e0,
         'player_info': 0x7001e13ed0,
         'world_mgr': 0x7001e57580,
+        'silent_link': 0x70010d7e1c,
         'cam_stick': 0x7000d57fe0,
         'cam_stick_end': 0x7000d5801c,
         'horse_cam_lr': 0x7000c29000,

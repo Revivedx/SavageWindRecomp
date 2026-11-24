@@ -229,6 +229,7 @@ typedef struct {
     int weather;             // WEATHER_COUNT: the game's, rain or thunderstorms kept out, or one weather held (weather.c)
     bool god_mode;           // Link takes no damage
     bool one_hit_kill;       // whatever else takes damage loses all its life at once
+    bool silent_link;        // Link's noise channel 1 (whistling and the sounds like it) stays at zero (silent_link.c)
     int damage_taken;        // percent of the damage Link takes (DAMAGE_CHOICES)
     int damage_dealt;        // percent of the damage everything else takes (DAMAGE_CHOICES)
     bool toggle_zl;          // press ZL once in play to hold shield / focus; press again to release (hle/input.c)

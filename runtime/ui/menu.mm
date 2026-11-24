@@ -1411,6 +1411,8 @@ static void cheats_options(void) {
     opt_toggle("Infinite stamina", &g_settings.infinite_stamina, false,
                "The stamina wheel never runs out.");
     opt_toggle("One-hit kill", &g_settings.one_hit_kill, false, "Enemies go down in one hit.");
+    opt_toggle("Silent Link", &g_settings.silent_link, false,
+               "Link stays quiet, so enemies do not hear him.");
     opt_toggle("Infinite arrows", &g_settings.infinite_arrows, false,
                "Shooting a bow uses up no arrows. You still need one to shoot.");
     {   // (Accessibility's rows: game_options.mm k_wear and DAMAGE_CHOICES)
