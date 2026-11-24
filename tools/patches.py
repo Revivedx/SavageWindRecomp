@@ -41,6 +41,42 @@ def _ui_layout_pane(gen, a):
             f'if (rt_ui_layout_pane_draw(c, {fn})) return; c->x[8] = LD8(c->x[0] + 0x58); }}')
 
 
+def _cjk_font_size(gen, a):
+    assert _word(gen, a) == 0x53103d01, hex(_word(gen, a))  # lsl w1, w8, #0x10
+    return ('{ extern uint32_t rt_cjk_font_scale(void); '
+            'uint32_t scale = rt_cjk_font_scale(); '
+            'uint32_t size = (uint32_t)c->x[8] * scale; '
+            'c->x[1] = size << 16; }')
+
+
+def _cjk_font_bin(gen, a):
+    assert _word(gen, a) == 0x7d406f81, hex(_word(gen, a))  # ldr h1, [x28, #0x36]
+    return ('{ extern uint32_t rt_cjk_font_scale(void); '
+            'uint64_t ea = c->x[28] + 0x36ull; '
+            'uint32_t scale = rt_cjk_font_scale(); '
+            'c->v[1] = (u128)((uint32_t)LD16(ea) * scale); }')
+
+
+def _cjk_font_quad(gen, a):
+    assert _word(gen, a) == 0x2d42212b, hex(_word(gen, a))  # ldp s11, s8, [x9, #0x10]
+    return ('{ extern uint32_t rt_cjk_font_scale(void); '
+            'uint64_t ea = c->x[9] + 16; '
+            'uint32_t u_s11 = LD32(ea); '
+            'uint32_t u_s8 = LD32(ea + 4); '
+            'uint32_t scale = rt_cjk_font_scale(); '
+            'if (scale > 1) { '
+            'float f_s11, f_s8; '
+            'memcpy(&f_s11, &u_s11, 4); '
+            'memcpy(&f_s8, &u_s8, 4); '
+            'f_s11 /= (float)scale; '
+            'f_s8 /= (float)scale; '
+            'memcpy(&u_s11, &f_s11, 4); '
+            'memcpy(&u_s8, &f_s8, 4); '
+            '} '
+            'c->v[11] = (u128)u_s11; '
+            'c->v[8] = (u128)u_s8; }')
+
+
 def _quick_sort_enter(gen, a):
     # Menu::enter: sample held X before the selector initializes its list.
     assert _word(gen, a) == 0xfc1d0fe8, hex(_word(gen, a))  # str d8, [sp, #-0x30]!
@@ -1312,6 +1348,9 @@ PATCHES = {
     'horse_crash': _horse_crash,
     'horse_look_ahead': _horse_look_ahead,
     'item_tick': _item_tick,
+    'cjk_font_size': _cjk_font_size,
+    'cjk_font_bin': _cjk_font_bin,
+    'cjk_font_quad': _cjk_font_quad,
 }
 
 

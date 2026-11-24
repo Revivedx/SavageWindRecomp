@@ -98,6 +98,15 @@ bool rt_ui_layout_pane_draw(Cpu *c, void (*native)(Cpu *)) {
 #endif
 }
 
+uint32_t rt_cjk_font_scale(void) {
+    const char *env = getenv("SAVAGEWIND_CJK_SCALE");
+    if (env && *env) {
+        int v = atoi(env);
+        if (v >= 1 && v <= 4) return (uint32_t)v;
+    }
+    return (g_settings.sharper_text >= 2) ? 2 : 1;
+}
+
 uint64_t ui_layout_begin(Cpu *c) {
 #ifdef SW_METAL
     return 0;

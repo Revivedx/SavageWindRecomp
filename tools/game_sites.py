@@ -203,6 +203,10 @@ SITES = [
     Site('quick_menu_capture_alpha', 'code', 'f9400268/ffc003ff bd405100 1e202008 54000000/ff00001f '
          'bd402100 1e2e1001 1e212000 54000001/ff00001f 90000001/9f00001f 91000021/ffc003ff '
          'aa1303e0 94000000/fc000000 52801fe8 39016408', 7),
+    # Scalable font engine (CJK/Chinese TrueType) resolution scaling
+    Site('cjk_font_size', 'code', '53103d01 2a0103e4 94000000/fc000000 f9400660 52800102 b9403381 94000000/fc000000 aa0003f4', 0),
+    Site('cjk_font_bin', 'code', '7d406f81 4b080128 f94c826a 79406b8b 9bba296a bd400940 7e21d821 1f012400', 0),
+    Site('cjk_font_quad', 'code', '2d42212b 79c03aa9 1e220120 1e200960 1e380009 79009389 79c00329 0b090289', 0),
     # the wait for the ground (tools/patches.py _tp_gate): is the map around Link not loaded yet? (the world pauses for it)
     Site('tp_gate', 'code', 'd10283ff fd002be8 f90037f9 a905fbfd a9075ff8 a90857f6 a9094ff4 910163fd '
          '90000016/9f00001f', 0),
@@ -480,6 +484,7 @@ OPTIONAL_GROUPS = [
     ('surf_contact', 'surf_boost_remove', 'surf_jump_request'),
     ('stale_actor_helper', 'stale_actor_kind', 'stale_actor_target', 'stale_actor_flag', 'stale_actor_flag2'),
     ('quick_menu_capture_alpha',),
+    ('cjk_font_size', 'cjk_font_bin', 'cjk_font_quad'),
     ('kf_angle',),
     ('demo_move_arrive',),
     ('rail_point_radius',),
@@ -516,6 +521,9 @@ OPTIONAL = {n for g in OPTIONAL_GROUPS for n in g}
 
 KNOWN = {
     '1.9.0': {
+        'cjk_font_size': 0x7000017d40,
+        'cjk_font_bin': 0x7000017d78,
+        'cjk_font_quad': 0x7000017f78,
         'ui_layout_draw': 0x70013ee084,
         'ui_layout_native': 0x7000f6f690,
         'ui_layout_pane': 0x7000027d30,
