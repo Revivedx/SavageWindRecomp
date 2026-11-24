@@ -50,6 +50,19 @@ int collectibles_missing(CollectPoint *out, int max);
 typedef struct { float translate[2], zoom, scale[2], half[2], cursor[2], bar[4]; char bar_text[96]; } CollectMapView;
 bool collectibles_map_view(CollectMapView *v);
 
+// The ground under the hints (runtime/collectibles_map.c): a small copy of the game image (without the overlay), which
+// the presenter takes when the hints ask, so that a hint on light ground (Eldin's rock, snow) can be drawn stronger.
+// All on the render thread. collectibles_ground_ask: the hints show this frame on this view (each frame). The
+// presenter: collectibles_ground_wanted says whether to take a copy now (a few a second while asked), and
+// collectibles_ground_put hands it over when it arrives (RGBA, 8 bits a channel as the game image stores them, w x h
+// covering the whole game image; the view is the one asked for when the copy was taken). collectibles_ground: the
+// latest copy and its view (false: none, or asked for more than a second ago); gen goes up with each copy.
+typedef struct { const uint8_t *rgba; int w, h; unsigned gen; CollectMapView view; } CollectGround;
+void collectibles_ground_ask(const CollectMapView *v);
+bool collectibles_ground_wanted(void);
+void collectibles_ground_put(const uint8_t *rgba, int w, int h);
+bool collectibles_ground(CollectGround *out);
+
 // (runtime/main.c boot: each game start)
 void collectibles_start(void);
 
