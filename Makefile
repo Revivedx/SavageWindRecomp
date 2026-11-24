@@ -789,6 +789,11 @@ test-hour: $(B)/test_hour
 
 .PHONY: test-hour
 
+# Tests that keep a few functions of a large runtime file and let --gc-sections drop the rest. ELF lld reports an
+# undefined symbol only when live code uses it; COFF lld (Windows) reports them before discarding sections, so there
+# the link allows them.
+GC_TEST_UNDEF := $(if $(filter windows,$(PLATFORM)),-Wl$(comma)-Xlink=-force:unresolved)
+
 # The BC5 view format (NVN 0x4C, SAVAGEWIND_BC5_UNORM): vk_format is the only function the section GC keeps from
 # textures.c, so no Vulkan device is needed. Run twice so both initial environment states cache the right format.
 ifneq ($(PLATFORM),macos)
@@ -796,7 +801,7 @@ $(B)/test_textures_format: tests/test_textures_format.c runtime/nvn/vulkan/textu
 	@mkdir -p $(dir $@)
 	$(CC) -O2 -ffunction-sections -fdata-sections $(OSFLAGS) $(DEPINC) -Iruntime -Iruntime/nvn -isystem third_party -isystem third_party/stb \
 	    -o $@ tests/test_textures_format.c runtime/nvn/vulkan/textures.c -fuse-ld=lld -Wl,--gc-sections \
-	    $(if $(filter windows,$(PLATFORM)),-Wl$(comma)--exclude-all-symbols) -lpthread -lm
+	    $(if $(filter windows,$(PLATFORM)),-Wl$(comma)--exclude-all-symbols) $(GC_TEST_UNDEF) -lpthread -lm
 
 test-textures: $(B)/test_textures_format
 	env -u SAVAGEWIND_BC5_UNORM $(B)/test_textures_format
@@ -814,7 +819,7 @@ $(B)/two_button_bindings.o: runtime/hle/bindings.c runtime/input_bind.h
 	$(CC) -O1 -ffunction-sections -fdata-sections -DSDL_STATIC_LIB $(OSFLAGS) $(DEPINC) -Iruntime -c $< -o $@
 
 $(B)/test_two_button_rows: tools/test_two_button_rows.cpp runtime/ui/game_options.mm runtime/ui/binding_row_layout.h $(B)/two_button_bindings.o
-	$(CXX) -std=c++17 -O1 -ffunction-sections -fdata-sections -DSDL_STATIC_LIB $(OSFLAGS) $(DEPINC) -Iruntime -Ithird_party -o $@ $< $(B)/two_button_bindings.o -fuse-ld=lld -Wl,--gc-sections $(if $(filter windows,$(PLATFORM)),-Wl$(comma)--exclude-all-symbols) -lSDL3 -lm
+	$(CXX) -std=c++17 -O1 -ffunction-sections -fdata-sections -DSDL_STATIC_LIB $(OSFLAGS) $(DEPINC) -Iruntime -Ithird_party -o $@ $< $(B)/two_button_bindings.o -fuse-ld=lld -Wl,--gc-sections $(if $(filter windows,$(PLATFORM)),-Wl$(comma)--exclude-all-symbols) $(GC_TEST_UNDEF) -lSDL3 -lm
 
 test-two-button-rows: $(B)/test_two_button_rows
 	$(B)/test_two_button_rows
