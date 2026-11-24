@@ -28,6 +28,7 @@ Settings g_settings = {
     .movie_audio = true,
     .mute_unfocused = false,
     .shrine_sensor_volume = 100,
+    .music_volume = 100,
     .rumble = true,
     .rumble_strength = RUMBLE_STRENGTH_DEFAULT,
     .freecam_sticks = true,
@@ -390,6 +391,7 @@ void settings_load(void) {
         else if (!strcmp(key, "movie_audio")) g_settings.movie_audio = atoi(val) != 0;
         else if (!strcmp(key, "mute_unfocused")) g_settings.mute_unfocused = atoi(val) != 0;
         else if (!strcmp(key, "shrine_sensor_volume")) g_settings.shrine_sensor_volume = atoi(val);
+        else if (!strcmp(key, "music_volume")) g_settings.music_volume = atoi(val);
         else if (!strcmp(key, "amiibo_reader")) snprintf(g_settings.amiibo_reader, sizeof g_settings.amiibo_reader, "%s", strcmp(val, "none") ? val : "");
         else if (!strcmp(key, "amiibo_random_uid")) g_settings.amiibo_random_uid = atoi(val) != 0;
         else if (!strcmp(key, "show_fps")) g_settings.perf_overlay = atoi(val) ? PERF_FPS : PERF_OFF;  // (older files)
@@ -717,6 +719,8 @@ void settings_load(void) {
     if (g_settings.volume > 2) g_settings.volume = 2;
     if (g_settings.shrine_sensor_volume < 0) g_settings.shrine_sensor_volume = 0;
     if (g_settings.shrine_sensor_volume > 100) g_settings.shrine_sensor_volume = 100;
+    if (g_settings.music_volume < 0) g_settings.music_volume = 0;
+    if (g_settings.music_volume > 100) g_settings.music_volume = 100;
     if (g_settings.antialias != AA_OFF) g_settings.game_fxaa = false;  // (one anti-aliasing at a time: settings_aa_row)
     handheld_first_setup();
     if (settings_handheld()) {  // (neither is offered on one)
@@ -800,6 +804,7 @@ bool settings_save_to(const char *path) {
     fprintf(f, "movie_audio = %d\n", g_settings.movie_audio);
     fprintf(f, "mute_unfocused = %d\n", g_settings.mute_unfocused);
     fprintf(f, "shrine_sensor_volume = %d\n", g_settings.shrine_sensor_volume);
+    fprintf(f, "music_volume = %d\n", g_settings.music_volume);
     fprintf(f, "amiibo_reader = %s\n", g_settings.amiibo_reader[0] ? g_settings.amiibo_reader : "none");
     fprintf(f, "amiibo_random_uid = %d\n", g_settings.amiibo_random_uid);
     fprintf(f, "perf_overlay = %s\n", g_settings.perf_overlay == PERF_FULL ? "full" : g_settings.perf_overlay == PERF_FPS ? "fps" : "off");

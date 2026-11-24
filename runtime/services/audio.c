@@ -15,6 +15,7 @@
 #include "../ipc.h"
 #include "../prof.h"
 #include "../shrine_sensor.h"
+#include "../music_volume.h"
 
 // ------------------------------------------------------------------ audren: a CPU mixer modelled on
 // Ryujinx's AudioRenderer (VoiceState / DataSourceHelper / StateUpdater, copies in notes/ryujinx_audio).
@@ -1478,6 +1479,69 @@ HLE_FUNC("_ZN2nn5audio18CloseAudioRendererENS0_19AudioRendererHandleE", hle_audr
         c->x[1] = x1;
     }
     SDK_AUDIO_CALL("_ZN2nn5audio18CloseAudioRendererENS0_19AudioRendererHandleE");
+}
+
+// ------------------------------------------------------------------ music volume (runtime/music_volume.c)
+// The game's own voice calls, on either renderer: a voice acquired with a music coefficient table (its AdpcmParameter,
+// the 16 coefficients) is music, and the volume the game sets on it carries the music_volume setting's gain. Nothing
+// else of the voice or its samples changes.
+#define SDK_SAMPLE_ADPCM 6
+static void music_acquired(Cpu *c, uint64_t voice, uint32_t fmt, uint64_t param, uint64_t psize) {
+    if (!(c->x[0] & 0xff)) return;   // (not acquired)
+    int adpcm = fmt == SDK_SAMPLE_ADPCM && psize >= 32 && in_guest(param, 32);
+    music_voice_set(voice, adpcm ? (const int16_t *)(uintptr_t)param : NULL);
+}
+
+// AcquireVoiceSlot(config, voice, rate, channels, format, priority, parameter, size[, options])
+HLE_FUNC("_ZN2nn5audio16AcquireVoiceSlotEPNS0_19AudioRendererConfigEPNS0_9VoiceTypeEiiNS0_12SampleFormatEiPKvm",
+         hle_acquire_voice) {
+    uint64_t voice = c->x[1], param = c->x[6], psize = c->x[7];
+    uint32_t fmt = (uint32_t)c->x[4];
+    SDK_AUDIO_CALL("_ZN2nn5audio16AcquireVoiceSlotEPNS0_19AudioRendererConfigEPNS0_9VoiceTypeEiiNS0_12SampleFormatEiPKvm");
+    music_acquired(c, voice, fmt, param, psize);
+}
+
+HLE_FUNC("_ZN2nn5audio16AcquireVoiceSlotEPNS0_19AudioRendererConfigEPNS0_9VoiceTypeEiiNS0_12SampleFormatEiPKvmPKNS3_15BehaviorOptionsE",
+         hle_acquire_voice_opt) {
+    uint64_t voice = c->x[1], param = c->x[6], psize = c->x[7];
+    uint32_t fmt = (uint32_t)c->x[4];
+    SDK_AUDIO_CALL("_ZN2nn5audio16AcquireVoiceSlotEPNS0_19AudioRendererConfigEPNS0_9VoiceTypeEiiNS0_12SampleFormatEiPKvmPKNS3_15BehaviorOptionsE");
+    music_acquired(c, voice, fmt, param, psize);
+}
+
+HLE_FUNC("_ZN2nn5audio16ReleaseVoiceSlotEPNS0_19AudioRendererConfigEPNS0_9VoiceTypeE", hle_release_voice) {
+    uint64_t voice = c->x[1];
+    SDK_AUDIO_CALL("_ZN2nn5audio16ReleaseVoiceSlotEPNS0_19AudioRendererConfigEPNS0_9VoiceTypeE");
+    music_voice_drop(voice);
+}
+
+// SetVoiceVolume(voice, volume in s0)
+HLE_FUNC("_ZN2nn5audio14SetVoiceVolumeEPNS0_9VoiceTypeEf", hle_set_voice_volume) {
+    float asked, out;
+    memcpy(&asked, &c->v[0], 4);
+    if (music_voice_volume(c->x[0], asked, &out)) memcpy(&c->v[0], &out, 4);
+    SDK_AUDIO_CALL("_ZN2nn5audio14SetVoiceVolumeEPNS0_9VoiceTypeEf");
+}
+
+// Before the game's renderer update: music voices whose volume no longer carries the setting's gain (the setting
+// moved, a voice was acquired, or its table was noted after it) get it, through the game's own SetVoiceVolume.
+HLE_FUNC("_ZN2nn5audio26RequestUpdateAudioRendererENS0_19AudioRendererHandleEPKNS0_19AudioRendererConfigE",
+         hle_request_update) {
+    uint64_t voice[256];
+    float vol[256];
+    int n = music_voice_changed(voice, vol, 256);
+    if (n) {
+        static uint64_t set;
+        if (!set) set = guest_sym("_ZN2nn5audio14SetVoiceVolumeEPNS0_9VoiceTypeEf");
+        Cpu saved = *c;
+        for (int i = 0; i < n && set; i++) {
+            c->x[0] = voice[i];
+            memcpy(&c->v[0], &vol[i], 4);
+            guest_call(c, set);
+        }
+        *c = saved;
+    }
+    SDK_AUDIO_CALL("_ZN2nn5audio26RequestUpdateAudioRendererENS0_19AudioRendererHandleEPKNS0_19AudioRendererConfigE");
 }
 
 // ------------------------------------------------------------------ audout (buffers released in real time)

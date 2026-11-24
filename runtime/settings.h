@@ -112,6 +112,7 @@ typedef struct {
     bool movie_audio;
     bool mute_unfocused; // mute audio while the window is in the background or minimized
     int shrine_sensor_volume; // Sheikah sensor volume: 0% (mute) .. 100% (normal)
+    int music_volume;         // the game's music: 0% (off) .. 100% (normal); effects and voices keep theirs (music_volume.c)
     char amiibo_reader[128]; // the figure on the virtual reader: its dump as "<series>/<name>" ("": none; runtime/amiibo.h)
     bool amiibo_random_uid;  // give the figure a fresh tag UID on each scan (unlimited daily uses)
     int perf_overlay;    // PERF_*: the performance overlay (F10 cycles it)

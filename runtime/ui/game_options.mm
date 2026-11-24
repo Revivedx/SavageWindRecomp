@@ -1098,6 +1098,18 @@ void build_items(void) {
                        [](const Item &, int x) {
                            g_settings.shrine_sensor_volume = x * 10;
                        }, 10));
+    v.push_back(choice(P_AUDIO, "Music volume",
+                       "Volume of the game's music. Sound effects and voices keep their volume. 0% turns the music off.",
+                       [](const Item &) { return 11; },
+                       [](const Item &, int x) {
+                           static std::string s;
+                           s = x ? pct(x * 10) : std::string(tr("Off"));
+                           return s.c_str();
+                       },
+                       [](const Item &) { return (int)lroundf(g_settings.music_volume / 10.0f); },
+                       [](const Item &, int x) {
+                           g_settings.music_volume = x * 10;
+                       }, 10));
     v.push_back(choice(P_AUDIO, "Audio output", "Stereo, 5.1 surround speakers, or 3D spatial sound for headphones. Surround 5.1 is untested on real 5.1 speakers.",
                        [](const Item &) { return (int)AUDIO_OUT_COUNT; },
                        [](const Item &, int x) {

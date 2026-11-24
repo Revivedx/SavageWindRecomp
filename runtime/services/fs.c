@@ -11,6 +11,7 @@
 #include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <zlib.h>
@@ -26,6 +27,7 @@
 #include "../romfs_image.h"
 #include "../settings.h"
 #include "../shrine_sensor.h"
+#include "../music_volume.h"
 #include "archive.h"
 #include "fs_layout.h"
 #include "save_profiles.h"
@@ -1639,6 +1641,36 @@ static const char *image_file_at(const RomImage *m, uint64_t off) {
     return NULL;
 }
 
+// Music volume (runtime/music_volume.c): at the game's first read of a music file of image m, its channels'
+// coefficients are noted from the file as the game reads it (a mod's copy first): a stream's header and INFO block, or a
+// whole bank. Each file once; a file that is not music costs the path test only.
+static void music_note_read(RomImage *m, uint64_t off) {
+    int lo = 0, hi = m->rom_nfiles - 1;
+    const RomFile *f = NULL;
+    while (lo <= hi && !f) {
+        int mid = (lo + hi) / 2;
+        if (off < m->rom_files[mid].off) hi = mid - 1;
+        else if (off >= m->rom_files[mid].off + m->rom_files[mid].size) lo = mid + 1;
+        else f = &m->rom_files[mid];
+    }
+    if (!f || !music_path(f->path)) return;
+    static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+    static const RomFile *done[2048];
+    static int ndone;
+    pthread_mutex_lock(&lock);
+    int seen = 0;
+    for (int i = 0; i < ndone && !seen; i++) seen = done[i] == f;
+    if (!seen && ndone < 2048) done[ndone++] = f;
+    pthread_mutex_unlock(&lock);
+    if (seen) return;
+    size_t pl = strlen(f->path), n = f->size;
+    if (pl > 6 && !strcasecmp(f->path + pl - 6, ".bfstm") && n > 0x10000) n = 0x10000;   // (header and INFO block)
+    if (!n || n > (32u << 20)) return;
+    uint8_t *d = malloc(n);
+    if (d && romfs_read(m, d, n, f->off) == (ssize_t)n) music_note_file(f->path, d, n);
+    free(d);
+}
+
 // The last RomFS files the game read, newest last, for a crash report (runtime/dispatch.c): a file that makes the
 // game's parser run out of its resource heap names itself only this way (#363).
 static const char *recent_files[8];
@@ -1671,6 +1703,7 @@ static void storage(Service *s, IpcReq *req, IpcResp *resp) {
         perfcount_add(PC_FILE_READS, 1), perfcount_add(PC_FILE_NS, plat_now_ns() - ft0);
         if (n > 0) perfcount_add(PC_FILE_BYTES, (uint64_t)n);
         if (n < 0) LOG("[fs] storage read failed at %llx: %s\n", off, strerror(errno));
+        if (n > 0) music_note_read(m, off);
         if (m != &images[0]) {  // (add-on content: its shrines and Divine Beasts)
             const char *path = image_file_at(m, off);
             static const char *last;

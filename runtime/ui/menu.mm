@@ -1364,6 +1364,11 @@ static void tab_audio(void) {
                    "Volume of the Sheikah Slate sensor beeps. 0% silences the sensor.")) {
         g_settings.shrine_sensor_volume = (int)lroundf(sensor_pct);
     }
+    float music_pct = (float)g_settings.music_volume;
+    if (opt_slider("Music volume", &music_pct, 0, 100, 10, 100, "%g%%",
+                   "Volume of the game's music. Sound effects and voices keep their volume. 0% turns the music off.")) {
+        g_settings.music_volume = (int)lroundf(music_pct);
+    }
     static const char *const audio_out[AUDIO_OUT_COUNT] = {"Stereo", "Surround 5.1", "3D Headphones"};
     opt_choice("Audio output", &g_settings.audio_output, audio_out, AUDIO_OUT_COUNT, AUDIO_OUT_STEREO,
                "Stereo: two-channel mix. Surround 5.1: all six channels (front, centre, subwoofer and rear) for a 5.1 "
