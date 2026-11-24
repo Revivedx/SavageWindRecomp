@@ -229,6 +229,10 @@ typedef struct {
     int weather;             // WEATHER_COUNT: the game's, rain or thunderstorms kept out, or one weather held (weather.c)
     bool god_mode;           // Link takes no damage
     bool one_hit_kill;       // whatever else takes damage loses all its life at once
+    bool hero_soul_wind;     // Revali's Gale works in shrines and the Trial of the Sword (assists.c rt_hero_soul)
+    bool hero_soul_electric; // Urbosa's Fury, likewise
+    bool hero_soul_fire;     // Daruk's Protection, likewise
+    bool hero_soul_water;    // Mipha's Grace, likewise
     int damage_taken;        // percent of the damage Link takes (DAMAGE_CHOICES)
     int damage_dealt;        // percent of the damage everything else takes (DAMAGE_CHOICES)
     bool toggle_zl;          // press ZL once in play to hold shield / focus; press again to release (hle/input.c)

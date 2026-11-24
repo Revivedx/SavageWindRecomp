@@ -28,6 +28,10 @@
     X(frame_loop_interval_ret) /* the frame loop's return address from setting the present interval */                \
     X(title_version_format)    /* "Ver.%s": the title screen's version line */                                         \
     X(player_info)             /* uking::act::PlayerInfo * (test tools) */                                              \
+    X(hero_soul_wind)          /* Revali's Gale: the game's "can this be used" check (assists.c rt_hero_soul) */        \
+    X(hero_soul_electric)      /* Urbosa's Fury: likewise */                                                             \
+    X(hero_soul_fire)          /* Daruk's Protection: likewise */                                                        \
+    X(hero_soul_water)         /* Mipha's Grace: likewise */                                                             \
     X(world_mgr)               /* ksys::world::Manager * (test tools, weather.c)*/                                                \
     X(main_data)               /* main's .data (then .bss, up to main_end) */                                           \
     X(main_end)

@@ -1411,6 +1411,26 @@ static void cheats_options(void) {
     opt_toggle("Infinite stamina", &g_settings.infinite_stamina, false,
                "The stamina wheel never runs out.");
     opt_toggle("One-hit kill", &g_settings.one_hit_kill, false, "Enemies go down in one hit.");
+    {   // the four champion abilities: a row that opens to their four switches
+        static bool open = false;
+        if (opt_action("Unlock champion abilities", open ? "-" : "+",
+                       "The four champion abilities stay usable everywhere, from the start of the game. They cannot be "
+                       "switched off in the pause menu.", true))
+            open = !open;
+        if (open) {
+            opt_indent(1);
+            opt_toggle("Revali's Gale", &g_settings.hero_soul_wind, false,
+                       "Also usable in shrines and in the Trial of the Sword.");
+            opt_toggle("Urbosa's Fury", &g_settings.hero_soul_electric, false,
+                       "Also usable in shrines and in the Trial of the Sword.");
+            opt_toggle("Daruk's Protection", &g_settings.hero_soul_fire, false,
+                       "Also usable in shrines and in the Trial of the Sword.");
+            opt_toggle("Mipha's Grace", &g_settings.hero_soul_water, false,
+                       "Also usable in shrines and in the Trial of the Sword.");
+            opt_indent(-1);
+        }
+    }
+
     opt_toggle("Infinite arrows", &g_settings.infinite_arrows, false,
                "Shooting a bow uses up no arrows. You still need one to shoot.");
     {   // (Accessibility's rows: game_options.mm k_wear and DAMAGE_CHOICES)

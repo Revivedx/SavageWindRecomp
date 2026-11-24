@@ -54,3 +54,16 @@ uint32_t rt_stamina(uint32_t oldv, uint32_t newv) {
 // Infinite arrows: the bow's shot takes its arrows off the pouch through one function, which returns before taking
 // any (tools/patches.py _remove_arrows). One arrow is still needed to shoot.
 int rt_infinite_arrows(void) { return g_settings.infinite_arrows; }
+
+// Champion abilities (tools/patches.py _hero_soul_*): the game's own "can this be used" checks return 0 in shrines, in
+// the Trial of the Sword and while the ability recharges. With the option on the check passes, so the ability works
+// from the start of the game and in those places; off, the check runs as the game wrote it.
+int rt_hero_soul(int which) {
+    switch (which) {
+    case 0: return g_settings.hero_soul_wind;
+    case 1: return g_settings.hero_soul_electric;
+    case 2: return g_settings.hero_soul_fire;
+    case 3: return g_settings.hero_soul_water;
+    }
+    return 0;
+}

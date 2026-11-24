@@ -744,6 +744,38 @@ def _persp_unproject_x(gen, a):
 # the mouse turns both alike. Optional sites (tools/game_sites.py OPTIONAL_GROUPS): without them the mouse moves the
 # stick, as before.
 
+# The four champion abilities' "can this be used" checks (tools/game_sites.py hero_soul_*; runtime/assists.c
+# rt_hero_soul): each returns 0 while the game forbids hero souls, as the shrines and the Trial of the Sword do, and
+# while the ability recharges. With the option on the check passes, so the ability works from the start of the game and
+# in those places; off, the original instruction runs.
+def _hero_soul_entry(gen, a, which, who):
+    w = _word(gen, a)
+    assert (w & 0x9F000000) == 0x90000000, hex(w)  # adrp
+    return (f'{{ extern int rt_hero_soul(int); if (rt_hero_soul({which})) {{ c->x[0] = 1; return; }} '
+            f'c->x[{w & 31}] = {adrp_page(w, a):#x}ull; }}'
+            f'  /* {a:#x}: adrp (the check for {who}) */')
+
+
+def _hero_soul_wind(gen, a):
+    return _hero_soul_entry(gen, a, 0, "Revali's Gale")
+
+
+def _hero_soul_electric(gen, a):
+    return _hero_soul_entry(gen, a, 1, "Urbosa's Fury")
+
+
+def _hero_soul_fire(gen, a):
+    return _hero_soul_entry(gen, a, 2, "Daruk's Protection")
+
+
+def _hero_soul_water(gen, a):
+    # Mipha's check is the one that saves the caller's registers before testing
+    assert _word(gen, a) == 0xa9be7bfd, hex(_word(gen, a))  # stp x29, x30, [sp, #-0x20]!
+    return ('{ extern int rt_hero_soul(int); if (rt_hero_soul(3)) { c->x[0] = 1; return; } '
+            'uint64_t ea = c->sp - 0x20; ST64(ea, c->x[29]); ST64(ea + 8, c->x[30]); c->sp = ea; }'
+            f"  /* {a:#x}: stp x29, x30, [sp, #-0x20]! (the check for Mipha's Grace) */")
+
+
 def _cam_stick(gen, a):
     assert _word(gen, a) == _sub_sp(0x30), hex(_word(gen, a))
     return ('{ extern int rt_cam_stick(uint64_t, uint64_t); if (rt_cam_stick(c->x[0], c->x[30])) return; '
@@ -1181,6 +1213,10 @@ def _tp_gate(gen, a):
 
 
 PATCHES = {
+    'hero_soul_wind': _hero_soul_wind,
+    'hero_soul_electric': _hero_soul_electric,
+    'hero_soul_fire': _hero_soul_fire,
+    'hero_soul_water': _hero_soul_water,
     'ui_layout_draw': _ui_layout_draw,
     'ui_layout_pane': _ui_layout_pane,
     'replace_tick_call': _replace_tick_call,

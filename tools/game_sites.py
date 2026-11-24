@@ -217,6 +217,30 @@ SITES = [
          '7100001f 5400000c/ff00001f 91314260', 1),
     Site('world_mgr', 'ref', '90000008/9f00001f 91000108/ffc003ff f9400108 b4000008/ff00001f b946b908 7100051f '
          '54000001/ff00001f a9bf7bfd', 1),
+    # the four champion abilities' "can this be used" checks (tools/patches.py _hero_soul_*; runtime/assists.c
+    # rt_hero_soul): each returns 0 while the game forbids hero souls, as the shrines and the Trial of the Sword do, and
+    # while the ability recharges. The patterns run from a check's entry to the call or the load that tells it apart.
+    Site('hero_soul_wind', 'code',
+         'f0008468/9f00001f d0008469/9f00001f f9420d08/ffc003ff f944c929/ffc003ff 39400108/ffc003ff '
+         '39400129/ffc003ff 2a090108 34000068/ff00001f 2a1f03e0 d65f03c0 a9be7bfd f9000bf3 910003fd '
+         'aa0003f3 2a1f03e0 94017619/fc000000 2a0003e8 2a1f03e0 36000088/ff00001f f9400bf3/ffc003ff '
+         'a8c27bfd d65f03c0 aa1303e0 94003761/fc000000', 0),
+    Site('hero_soul_electric', 'code',
+         'f0008468/9f00001f d0008469/9f00001f f9420d08/ffc003ff f944c929/ffc003ff 39400108/ffc003ff '
+         '39400129/ffc003ff 2a090108 34000068/ff00001f 2a1f03e0 d65f03c0 a9be7bfd f9000bf3 910003fd '
+         'aa0003f3 2a1f03e0 940175f3/fc000000 2a0003e8 2a1f03e0 36000088/ff00001f f9400bf3/ffc003ff '
+         'a8c27bfd d65f03c0 94069c50/fc000000 360000c0/ff00001f bd5e0660', 0),
+    Site('hero_soul_fire', 'code',
+         'f0008468/9f00001f d0008469/9f00001f f9420d08/ffc003ff f944c929/ffc003ff 39400108/ffc003ff '
+         '39400129/ffc003ff 2a090108 34000068/ff00001f 2a1f03e0 d65f03c0 a9be7bfd f9000bf3 910003fd '
+         'aa0003f3 2a1f03e0 940175d4/fc000000 2a0003e8 2a1f03e0 36000088/ff00001f f9400bf3/ffc003ff '
+         'a8c27bfd d65f03c0 94069c45/fc000000 360000c0/ff00001f bd5e1260', 0),
+    Site('hero_soul_water', 'code',
+         'a9be7bfd f9000bf3 910003fd aa0003f3 2a1f03e0 39712268/ffc003ff 370001e8/ff00001f f0008468/9f00001f '
+         'd0008469/9f00001f f9420d08/ffc003ff 39400108/ffc003ff f944c929/ffc003ff 39400129/ffc003ff 7100011f '
+         '7a400920 540000c1/ff00001f 2a1f03e0 940175b3/fc000000 2a0003e8 2a1f03e0 36000088/ff00001f '
+         'f9400bf3/ffc003ff a8c27bfd d65f03c0 94069c38/fc000000', 0),
+
     # the mouse camera (tools/patches.py _cam_stick, _cam_pitch, _cam_pitch_aim; runtime/hle/input.c): the camera's
     # stick input, which every camera action reads, and the square that the chase-like cameras apply to its vertical
     # part
@@ -691,6 +715,10 @@ KNOWN = {
         'controller_step': 0x7001dad0e0,
         'player_info': 0x7001e13ed0,
         'world_mgr': 0x7001e57580,
+        'hero_soul_wind': 0x7000cd9390,
+        'hero_soul_electric': 0x7000cd9428,
+        'hero_soul_fire': 0x7000cd94a4,
+        'hero_soul_water': 0x7000cd9520,
         'cam_stick': 0x7000d57fe0,
         'cam_stick_end': 0x7000d5801c,
         'horse_cam_lr': 0x7000c29000,
