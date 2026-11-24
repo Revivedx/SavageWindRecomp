@@ -282,5 +282,4 @@ int main(void) {
     puts("input focus checks passed");
 }
 
-void photo_pad(uint32_t buttons) { (void)buttons; }
 uint64_t quick_replace_buttons(uint64_t b) { return b; }
