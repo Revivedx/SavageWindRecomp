@@ -225,12 +225,12 @@ SITES = [
          '39400129/ffc003ff 2a090108 34000068/ff00001f 2a1f03e0 d65f03c0 a9be7bfd f9000bf3 910003fd '
          'aa0003f3 2a1f03e0 94017619/fc000000 2a0003e8 2a1f03e0 36000088/ff00001f f9400bf3/ffc003ff '
          'a8c27bfd d65f03c0 aa1303e0 94003761/fc000000', 0),
-    Site('hero_soul_electric', 'code',
+    Site('hero_soul_fire', 'code',
          'f0008468/9f00001f d0008469/9f00001f f9420d08/ffc003ff f944c929/ffc003ff 39400108/ffc003ff '
          '39400129/ffc003ff 2a090108 34000068/ff00001f 2a1f03e0 d65f03c0 a9be7bfd f9000bf3 910003fd '
          'aa0003f3 2a1f03e0 940175f3/fc000000 2a0003e8 2a1f03e0 36000088/ff00001f f9400bf3/ffc003ff '
          'a8c27bfd d65f03c0 94069c50/fc000000 360000c0/ff00001f bd5e0660', 0),
-    Site('hero_soul_fire', 'code',
+    Site('hero_soul_electric', 'code',
          'f0008468/9f00001f d0008469/9f00001f f9420d08/ffc003ff f944c929/ffc003ff 39400108/ffc003ff '
          '39400129/ffc003ff 2a090108 34000068/ff00001f 2a1f03e0 d65f03c0 a9be7bfd f9000bf3 910003fd '
          'aa0003f3 2a1f03e0 940175d4/fc000000 2a0003e8 2a1f03e0 36000088/ff00001f f9400bf3/ffc003ff '
@@ -716,8 +716,8 @@ KNOWN = {
         'player_info': 0x7001e13ed0,
         'world_mgr': 0x7001e57580,
         'hero_soul_wind': 0x7000cd9390,
-        'hero_soul_electric': 0x7000cd9428,
-        'hero_soul_fire': 0x7000cd94a4,
+        'hero_soul_electric': 0x7000cd94a4,
+        'hero_soul_fire': 0x7000cd9428,
         'hero_soul_water': 0x7000cd9520,
         'cam_stick': 0x7000d57fe0,
         'cam_stick_end': 0x7000d5801c,
