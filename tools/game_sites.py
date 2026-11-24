@@ -443,6 +443,20 @@ SITES = [
     Site('replace_toast_tail_b', 'code', 'aa1303e0 52800021 94000000/fc000000 aa1303e0 a9414ff4 a8c27bfd 14000000/fc000000', 6),
     Site('replace_ui_draw_native', 'code', '39440008 7100011f 39440809 3943f80a 3943fc0b 7a401920 7a400944 7a421964', 0),
     Site('replace_full_info_call', 'code', '91238108 90000009/9f00001f 91000129/ffc003ff f9000268 90000008/9f00001f 91000108/ffc003ff 91004129 a9022269 f9400bf3 a8c27bfd d65f03c0 90000008/9f00001f 91000108/ffc003ff 91004108 f8010408 14000000/fc000000 a9be7bfd f9000bf3 910003fd 90000008/9f00001f aa0003f3 f9400108/ffc003ff 91004108 f8010408 94000000/fc000000 aa1303e0 f9400bf3 a8c27bfd 14000000/fc000000 52800020 d65f03c0 a9bf7bfd 910003fd 91008000 94000000/fc000000', 34),
+    # The read of the record's visit count in the marker update (1.9.0 0x7000d7bea4): the map draws a place's marker
+    # from it, so Cheats > Map reads it as 1 for the places it covers (patches.py _place_count_read) - the count in
+    # memory is not touched, the game marks and draws the place itself.
+    Site('place_count_read', 'code', 'b9401d08 7100011f b9403c09 1211012b 120f7929 b9006008 1a9fd7ea 4a4b3d4c', 0),
+    # The travel bit of a place marker (1.9.0 0x7000d7b904): the update computes a marker's flags - 0x400 for its
+    # state and 0x200 for "the map may travel here". Cheats > Map replaces the 0x200 select (patches.py
+    # _place_travel), so a place the option shows is a travel destination without being activated - no tower
+    # activated, so the map fog stays.
+    Site('place_travel', 'code', '1a9f116b 2a0b0108 2a0a0108 b9003c08 37000009/fff8001f d65f03c0 a9bd7bfd a90157f6', 0),
+    # The tower marker's colour decision (1.9.0 0x7000dac488): the map's marker draw reads the marker's flags and
+    # tests the travel bit (0x200) - that test is what draws a tower the option made warpable as an activated one.
+    # Cheats > Map hooks the read (patches.py _place_icon) and clears the bit for places that were never visited,
+    # so they keep the normal look while staying travel destinations.
+    Site('place_icon', 'code', 'b9403e68 7217011f f9406121 a9414ff4 1e200c20 a8c27bfd d61f0020 a9414ff4', 0),
     Site('main_data', 'data', '', 0),
     Site('main_end', 'end', '', 0),
 ]
@@ -734,6 +748,9 @@ KNOWN = {
         'item_tick': 0x7000cc4c3c,
         'pouch_item_get': 0x7000d921bc,
         'pouch_mgr': 0x7001e18570,
+        'place_count_read': 0x7000d7bea4,
+        'place_travel': 0x7000d7b904,
+        'place_icon': 0x7000dac488,
         'main_data': 0x7001b7a000,
         'main_end': 0x7001e98000,
     },

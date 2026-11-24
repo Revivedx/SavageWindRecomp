@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "i18n.h"
+#include "../place_display.h"
 #include "quick_hint_font.h"
 #include "imgui.h"
 #include "gyro_drag.h"
@@ -1449,6 +1450,12 @@ static void cheats_options(void) {
             } else
                 heart_buf[0] = 0;
         }
+    }
+    {   // every place the map has a marker for (runtime/place_display.c: its count, travel bit and colour)
+        opt_toggle("Show shrines and towers", &g_settings.show_all_places, false,
+                   "Shows every shrine, tower, stable and ancient lab on the map, and makes the shrines, towers and "
+                   "labs travel destinations (a stable is shown but never travelled to). Nothing is saved and no "
+                   "tower is activated, so the map fog stays as it is.");
     }
     static const char *const weather[WEATHER_COUNT] = {"Automatic", "No rain", "No thunderstorms", "Clear", "Cloudy",
                                                        "Rain", "Heavy rain", "Snow", "Heavy snow", "Thunderstorm",

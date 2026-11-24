@@ -1,4 +1,4 @@
-// Addresses in the game's main module that the runtime reads or writes. They differ between game versions:
+﻿// Addresses in the game's main module that the runtime reads or writes. They differ between game versions:
 // tools/game_sites.py finds them for the version the game code was generated from, and the game library carries them
 // (runtime/gamelib.h, the generated layout.c). g_site holds them once the library is loaded (gamelib_load).
 #pragma once
@@ -29,6 +29,9 @@
     X(title_version_format)    /* "Ver.%s": the title screen's version line */                                         \
     X(player_info)             /* uking::act::PlayerInfo * (test tools) */                                              \
     X(world_mgr)               /* ksys::world::Manager * (test tools, weather.c)*/                                                \
+    X(place_count_read)        /* the map marker update's count read (Cheats > Map, patches.py) */                        \
+    X(place_travel)            /* the marker's travel bit (Cheats > Map, patches.py) */                                     \
+    X(place_icon)              /* the tower marker's colour decision (Cheats > Map, patches.py) */                          \
     X(main_data)               /* main's .data (then .bss, up to main_end) */                                           \
     X(main_end)
 

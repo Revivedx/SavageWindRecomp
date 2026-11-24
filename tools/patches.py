@@ -1180,6 +1180,39 @@ def _tp_gate(gen, a):
             f'  /* {a:#x}: sub sp, sp, #0xa0 (is the ground around Link still loading?) */')
 
 
+# The read the whole marker update is built on: the record's visit count. With the option on it reads as 1 for a place
+# never visited, so the game marks it as visited itself and draws its marker - no game data is written at all. The
+# record pointer goes along so the runtime can leave everything that is not a shrine, tower, stable or lab alone.
+def _place_count_read(gen, a):
+    assert _word(gen, a) == 0xb9401d08, hex(_word(gen, a))  # ldr w8, [x8, #0x1c]
+    return ('{ extern uint32_t rt_place_count(uint64_t, uint32_t); '
+            'c->x[8] = rt_place_count(c->x[8], LD32(c->x[8] + 0x1c)); }'
+            f'  /* {a:#x}: ldr w8, [x8, #0x1c] (map markers: Cheats > Map) */')
+
+
+# The travel bit of a place marker: the update computes a marker's flags with 0x400 for its state and 0x200 for "the
+# map may travel here". Cheats > Map replaces that select: a place the option shows is a travel destination without
+# being activated, which is also what leaves the map fog alone (activating a tower is what reveals its region). The
+# original select is kept for everything the option does not cover.
+def _place_travel(gen, a):
+    assert _word(gen, a) == 0x1a9f116b, hex(_word(gen, a))  # csel w11, w11, wzr, ne
+    return ('{ extern uint32_t rt_place_travel(uint64_t, uint32_t); '
+            'c->x[11] = ((c->x[1] & 1u) ? (uint32_t)c->x[11] : 0u); '
+            'c->x[11] = rt_place_travel(c->x[0], (uint32_t)c->x[11]); }'
+            f'  /* {a:#x}: csel w11, w11, wzr, ne (map markers: Cheats > Map) */')
+
+
+# The marker draw's colour decision: it reads the marker's flags and tests the travel bit (0x200) - a marker the
+# option made travelable would be drawn as an activated tower. For a place that was never visited (its record's count
+# is still 0 in memory), the bit is cleared for this read only, so the marker keeps its normal look while the travel
+# point stays in the flags.
+def _place_icon(gen, a):
+    assert _word(gen, a) == 0xb9403e68, hex(_word(gen, a))  # ldr w8, [x19, #0x3c]
+    return ('{ extern uint32_t rt_place_icon(uint64_t, uint32_t); '
+            'c->x[8] = rt_place_icon(c->x[19], LD32(c->x[19] + 0x3c)); }'
+            f'  /* {a:#x}: ldr w8, [x19, #0x3c] (map markers: Cheats > Map) */')
+
+
 PATCHES = {
     'ui_layout_draw': _ui_layout_draw,
     'ui_layout_pane': _ui_layout_pane,
@@ -1312,6 +1345,9 @@ PATCHES = {
     'horse_crash': _horse_crash,
     'horse_look_ahead': _horse_look_ahead,
     'item_tick': _item_tick,
+    'place_count_read': _place_count_read,
+    'place_travel': _place_travel,
+    'place_icon': _place_icon,
 }
 
 
