@@ -69,7 +69,15 @@ static uint64_t stat_clear_folds;  // clears that became their pass's load op (c
 // A clear that is the first command of its pass and covers the whole render area is recorded as the attachment's load op
 // (CLEAR) instead of a LOAD followed by vkCmdClearAttachments: the target is not read just to be overwritten.
 // clear() offers it (want, the value) and begin_pass() takes what it can (c, d, s: the aspects it folded).
-static struct { bool want, c, d, s; int idx; float val[4]; float dval; uint32_t sval; } clear_fold;
+typedef struct PassClearFold {
+    bool     want;
+    bool     c, d, s;
+    int      idx;
+    float    val[4];
+    float    dval;
+    uint32_t sval;
+} PassClearFold;
+static PassClearFold clear_fold;
 static bool clear_fold_on(void) {  // SAVAGEWIND_VK_NO_CLEAR_FOLD=1: every clear is a vkCmdClearAttachments, as before
     static int v = -1;
     if (v < 0) { v = getenv("SAVAGEWIND_VK_NO_CLEAR_FOLD") == NULL; LOG("[vk] clears folded into the load op: %s\n", v ? "on" : "off"); }
@@ -2175,6 +2183,46 @@ static void vk_end_pass_at(int line) {
 
 uint32_t level_extent(uint32_t v, uint32_t lv) { v >>= lv; return v ? v : 1; }
 
+static void pass_clear_fold_apply(PassClearFold *const st,
+                                  const VkRect2D rc,
+                                  const uint32_t minw, const uint32_t minh,
+                                  VkRenderingAttachmentInfo *const ca,
+                                  const uint32_t ncolor,
+                                  VkRenderingAttachmentInfo *const da,
+                                  VkRenderingAttachmentInfo *const sa)
+{
+    bool fold_c = false, fold_d = false, fold_s = false;
+
+    if (st->want &&
+        rc.offset.x <= 0 && rc.offset.y <= 0 &&
+        rc.extent.width >= minw && rc.extent.height >= minh) {
+        const int ci = st->idx;
+
+        /* All three decisions are taken before any attachment is mutated. */
+        fold_c = ci >= 0 && ci < (int)ncolor && ca[ci].imageView &&
+                 ca[ci].loadOp == VK_ATTACHMENT_LOAD_OP_LOAD;
+        fold_d = st->d && da && da->loadOp == VK_ATTACHMENT_LOAD_OP_LOAD;
+        fold_s = st->s && sa && sa->loadOp == VK_ATTACHMENT_LOAD_OP_LOAD;
+
+        if (fold_c) {
+            ca[ci].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+            memcpy(ca[ci].clearValue.color.float32, st->val, sizeof st->val); /* 16 bytes */
+        }
+        if (fold_d) {
+            da->loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+            da->clearValue.depthStencil.depth = st->dval;
+        }
+        if (fold_s) {
+            sa->loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+            sa->clearValue.depthStencil.stencil = st->sval;
+        }
+    }
+
+    st->c = fold_c;
+    st->d = fold_d;
+    st->s = fold_s;
+}
+
 static VkRect2D scissor_rect(void);
 static void begin_pass(void) {
     barr.after_dispatch = false;  // (dispatch_compute: a pass in between)
@@ -2464,23 +2512,12 @@ static void begin_pass(void) {
         stat_passes++;
         return;
     }
-    bool fold_c = false, fold_d = false, fold_s = false;
-    if (clear_fold.want) {
-        VkRect2D rc = scissor_rect();
-        if (rc.offset.x <= 0 && rc.offset.y <= 0 && rc.extent.width >= minw && rc.extent.height >= minh) {
-            int ci = clear_fold.idx;
-            fold_c = ci >= 0 && ci < (int)ps.ncolor && ca[ci].imageView && ca[ci].loadOp == VK_ATTACHMENT_LOAD_OP_LOAD;
-            fold_d = clear_fold.d && has_d && da.loadOp == VK_ATTACHMENT_LOAD_OP_LOAD;
-            fold_s = clear_fold.s && has_s && sa.loadOp == VK_ATTACHMENT_LOAD_OP_LOAD;
-            if (fold_c) {
-                ca[ci].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-                memcpy(ca[ci].clearValue.color.float32, clear_fold.val, 16);
-            }
-            if (fold_d) { da.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; da.clearValue.depthStencil.depth = clear_fold.dval; }
-            if (fold_s) { sa.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; sa.clearValue.depthStencil.stencil = clear_fold.sval; }
-        }
-    }
-    clear_fold.c = fold_c; clear_fold.d = fold_d; clear_fold.s = fold_s;
+    pass_clear_fold_apply(&clear_fold,
+                          clear_fold.want ? scissor_rect() : (VkRect2D){0},
+                          minw, minh,
+                          ca, ps.ncolor,
+                          has_d ? &da : NULL,
+                          has_s ? &sa : NULL);
     ps.mvec = -1;
     if (mvec_enabled() && has_d && ps.ncolor < 8 && ps.samples == 1) {  // (mvec.c) the motion target, appended
         TexBackend *mt = mvec_pass_target(st.rt.depth, minw, minh);
