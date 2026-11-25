@@ -7416,6 +7416,22 @@ static inline void tex_prefetch(int stage, const ShaderInfo *si, int level) {
     }
 }
 
+// texture_info's memos: what a texture handle resolved to this frame (info), and the view of a texture object for a
+// lookup type (view). Both are keyed by generations and the frame, see where they are read.
+static struct {
+    struct {
+        uint64_t h, frame;
+        const void *tpool, *spool, *tex;
+        NvnTextureView view;
+        uint8_t has_view;
+        uint32_t gen, sampler_gen;
+        uint8_t type, stage, blend, valid;
+        float bias, sc[2];
+        uint32_t wh[2];
+        VkDescriptorImageInfo ii;
+    } info[2048];
+    struct { NvnTexture *tex; uint64_t vh, frame; uint32_t gen; uint8_t type, has_view; VkImageView view; } view[1024];
+} texmemo;
 static void texture_info(int stage, ShaderInfo *si, int i, VkDescriptorImageInfo *out, float sc[2], uint32_t wh[2]) {
     ShaderTexture *st_ = &si->tex[i];
     int slot = ((int)st_->handle_offset - 0x20) / 8;
@@ -7431,24 +7447,13 @@ static void texture_info(int stage, ShaderInfo *si, int i, VkDescriptorImageInfo
         texture_info_(stage, si, i, out, sc, wh);
         return;
     }
-    static struct {
-        uint64_t h, frame;
-        const void *tpool, *spool, *tex;
-        NvnTextureView view;
-        uint8_t has_view;
-        uint32_t gen, sampler_gen;
-        uint8_t type, stage, blend, valid;
-        float bias, sc[2];
-        uint32_t wh[2];
-        VkDescriptorImageInfo ii;
-    } m[2048];
     uint8_t blend = st.color_state[0] & 1;
     float bias = stage == 1 && ps.mvec >= 0 && rt_jitter_on() ? scene_mip_bias : 0;  // (the material bias, if it is one)
     uint64_t frame = vk_frame_counter();
     uint32_t sampler_gen = st.spool ? __atomic_load_n(&st.spool->sampler_gen, __ATOMIC_ACQUIRE) : 0;
     uint32_t k = (uint32_t)(h * 0x9E3779B97F4A7C15ull >> 53) ^ ((uint32_t)st_->type << 3) ^ ((uint32_t)stage << 7) ^ blend;
     k &= 2047;
-    __typeof__(m[0]) *e = &m[k];
+    __typeof__(texmemo.info[0]) *e = &texmemo.info[k];
     if (e->valid && e->h == h && e->frame == frame && e->gen == vk_view_gen && e->tpool == st.tpool && e->spool == st.spool && e->sampler_gen == sampler_gen &&
         e->type == st_->type && e->stage == stage && e->blend == blend && e->bias == bias && e->tex == te->tex &&
         e->has_view == te->has_view && (!te->has_view || !memcmp(&e->view, &te->view, sizeof te->view))) {
@@ -7489,16 +7494,15 @@ static void texture_info_(int stage, ShaderInfo *si, int i, VkDescriptorImageInf
             extern uint64_t vk_frame_counter(void);
             static int nomemo = -1;
             if (nomemo < 0) nomemo = getenv("SAVAGEWIND_VK_NO_TEX_MEMO") != NULL;
-            static struct { NvnTexture *tex; uint64_t vh, frame; uint32_t gen; uint8_t type, has_view; VkImageView view; } memo[1024];
             uint64_t vh = e->has_view ? hash_words(0, &e->view, sizeof e->view) : 0, frame = vk_frame_counter();
             uint32_t ms = (uint32_t)((((uintptr_t)et >> 4) ^ vh ^ (uint64_t)st_->type * 0x9E3779B97F4A7C15ull) & 1023);
-            if (!nomemo && memo[ms].tex == et && memo[ms].vh == vh && memo[ms].frame == frame && memo[ms].gen == vk_view_gen &&
-                memo[ms].type == st_->type && memo[ms].has_view == e->has_view) {
-                view = memo[ms].view;
+            if (!nomemo && texmemo.view[ms].tex == et && texmemo.view[ms].vh == vh && texmemo.view[ms].frame == frame && texmemo.view[ms].gen == vk_view_gen &&
+                texmemo.view[ms].type == st_->type && texmemo.view[ms].has_view == e->has_view) {
+                view = texmemo.view[ms].view;
             } else {
                 view = vk_view(et, &e->view, e->has_view, false, st_->type);
-                memo[ms].tex = et; memo[ms].vh = vh; memo[ms].frame = frame; memo[ms].gen = vk_view_gen;
-                memo[ms].type = (uint8_t)st_->type; memo[ms].has_view = e->has_view; memo[ms].view = view;
+                texmemo.view[ms].tex = et; texmemo.view[ms].vh = vh; texmemo.view[ms].frame = frame; texmemo.view[ms].gen = vk_view_gen;
+                texmemo.view[ms].type = (uint8_t)st_->type; texmemo.view[ms].has_view = e->has_view; texmemo.view[ms].view = view;
             }
             renderer_texture_scale(et, &sc[0], &sc[1]);
             material = et->backend && !((TexBackend *)et->backend)->gpu_owned;
