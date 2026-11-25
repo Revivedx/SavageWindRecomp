@@ -250,7 +250,8 @@ typedef struct {
     bool infinite_rupees;    // the wallet is kept at 9999 rupees (runtime/rupees.c)
     int item_multiplier;     // 1, 2, 4 or 8: multiply stackable item pickups (runtime/items.c)
     bool free_sprint;        // sprinting takes no stamina while no enemy is fighting Link (runtime/free_sprint.c)
-    bool sure_footed;        // a running horse doesn't stop dead and rear when it hits something (runtime/sure_footed.c)
+    bool improved_horse;     // the horse steers at once, keeps its speed through a turn, and doesn't stop dead and rear
+                             // when it hits something (runtime/improved_horse.c, runtime/sure_footed.c)
     bool collectibles_map;   // the Korok seeds and shrines not found yet on the game's map (runtime/collectibles_map.c)
     bool show_all_places;    // every shrine, tower, lab and stable on the map (runtime/place_display.c)
     int weather;             // WEATHER_COUNT: the game's, rain or thunderstorms kept out, or one weather held (weather.c)

@@ -384,7 +384,7 @@ SITES = [
          'b941dc08', 0),
     Site('battle_info_c', 'code', 'b9400028 b901d008 d65f03c0', 0),
     # the horse's crash check loading its gear, and the entry of its stop check's look-ahead (tools/patches.py
-    # _horse_crash, _horse_look_ahead; Cheats > Sure-footed horse)
+    # _horse_crash, _horse_look_ahead; Cheats > Improved horse controls)
     Site('horse_crash', 'code', 'b9403428 7100111f 54000001/ff00001f d10303ff 6d072beb f90053f5 6d0823e9 a9097bfd', 0),
     Site('horse_look_ahead', 'code', 'd105c3ff fd00a3e8 f900affc a914fbfd a9164ff4 910523fd aa0103f4 aa0003f3', 0),
     # Gameplay > Keep crouch after camera (tools/patches.py _camera_*; runtime/camera_stealth.c): crouch idle
@@ -405,6 +405,14 @@ SITES = [
     Site('camera_leave', 'code',
          '94000000/fc000000 14000000/fc000000 90000008/9f00001f 91000108/ffc003ff f9400100 14000000/fc000000 '
          'a9be7bfd f9000bf3 910003fd aa0003f3 f9400400 94000000/fc000000 37000000/fff8001f 94000000/fc000000', 4),
+    # the ridden horse's update after its prologue (x0: the riding action), its steering loading the gear's stick
+    # scale, and its steering storing the horse's play rate (tools/patches.py _horse_ride, _horse_stick_scale,
+    # _horse_play_rate; runtime/improved_horse.c; Cheats > Improved horse controls)
+    Site('horse_ride', 'code', 'd10a03ff aa0003f3 52804702 910123e0 2a1f03e1 910123f6 94000000/fc000000 f9400660', 0),
+    Site('horse_stick_scale', 'code', 'bc697901 1e210800 bc1b43a0 94000000/fc000000 d10153a1 aa1403e0 aa1303e2 '
+         '94000000/fc000000', 0),
+    Site('horse_play_rate', 'code', 'bd015500 14000000/fc000000 3948b669 1e2e2140 3948ba68 54000004/ff00001f '
+         '35000009/ff00001f 34000008/ff00001f', 0),
     # the pouch taking arrows off for the player's bow (tools/patches.py _remove_arrows; Accessibility > Infinite arrows)
     Site('pouch_remove_arrows', 'code', 'd101c3ff a9017bfd a9026ffc a90367fa a9045ff8 a90557f6 a9064ff4 910043fd '
          '90000008/9f00001f aa0003f3 f9400108/ffc003ff aa0103e0', 0),
@@ -641,8 +649,9 @@ OPTIONAL_GROUPS = [
     ('link_life_store', 'link_life_tick'),
     ('stamina_store',),
     ('sprint_cost', 'sprint_press_cost', 'battle_info_field', 'battle_info_b', 'battle_info_c'),  # (Cheats > Free sprint: without them it does nothing)
-    ('horse_crash', 'horse_look_ahead'),  # (Cheats > Sure-footed horse: without them it does nothing)
     ('camera_squat_idle', 'camera_enter_start', 'camera_exit_finished', 'camera_exit_active', 'camera_leave'),
+    ('horse_crash', 'horse_look_ahead'),  # (Cheats > Improved horse controls' stops: without them it does nothing)
+    ('horse_ride', 'horse_stick_scale', 'horse_play_rate'),  # (Cheats > Improved horse controls' steering: without them it does nothing)
     ('tp_gate',),  # (a far teleport of the control endpoint: without it a long jump freezes the world)
     ('title_version_text_a', 'title_version_text_b'),  # (the title's version line in full: without them it stops at 15 letters)
     ('item_tick', 'pouch_item_get', 'pouch_mgr'),
@@ -904,6 +913,9 @@ KNOWN = {
         'camera_exit_finished': 0x7000cabfb4,
         'camera_exit_active': 0x7000cacfac,
         'camera_leave': 0x7000ca3734,
+        'horse_ride': 0x70006afe60,
+        'horse_stick_scale': 0x70006b1cf4,
+        'horse_play_rate': 0x70006b218c,
         'item_tick': 0x7000cc4c3c,
         'pouch_item_get': 0x7000d921bc,
         'pouch_mgr': 0x7001e18570,

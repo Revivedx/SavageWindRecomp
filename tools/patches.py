@@ -1248,15 +1248,15 @@ def _battle_info(which):
         return (f'{{ extern void rt_battle_info(int, int32_t); {load} rt_battle_info({which}, (int32_t)c->x[8]); }}'
                 f'  /* {a:#x}: the battle info\'s count (enemies in battle: Cheats) */')
     return patch
-# Cheats > Sure-footed horse (runtime/sure_footed.c): every frame the horse's update (1.9.0 0x70006afe4c; x1 of its
-# checks is its state: the gear at +0x34) asks two checks whether to stop the horse (new gear 0). The crash check
-# (0x70006b16c4), only at the top gear (4), looks at what the horse's Body touches: a steep face ahead, higher than the
-# horse can step, is a crash, flagged (+0x3ac bit 15) for the animation picker (0x70006b26bc) to play Crash. Without a
-# crash, the stop check (0x70006b19c8) stops a horse at the top gear when its look-ahead (0x70006b4218, as far as the
-# gear and speed carry it) finds the way blocked: a tree, a rock, a cliff edge; at lower gears it stops only a horse
-# nothing drives. The picker plays Courbette for a stop from gear 3 or 4. Both rears are the long stop at an obstacle;
-# with the option on, the crash check reads gear 0 and the look-ahead finds the way clear, so no obstacle stops a
-# horse, and the stop check's other stop stays the game's.
+# Cheats > Improved horse controls, its stops (runtime/sure_footed.c): every frame the horse's update (1.9.0
+# 0x70006afe4c; x1 of its checks is its state: the gear at +0x34) asks two checks whether to stop the horse (new gear
+# 0). The crash check (0x70006b16c4), only at the top gear (4), looks at what the horse's Body touches: a steep face
+# ahead, higher than the horse can step, is a crash, flagged (+0x3ac bit 15) for the animation picker (0x70006b26bc) to
+# play Crash. Without a crash, the stop check (0x70006b19c8) stops a horse at the top gear when its look-ahead
+# (0x70006b4218, as far as the gear and speed carry it) finds the way blocked: a tree, a rock, a cliff edge; at lower
+# gears it stops only a horse nothing drives. The picker plays Courbette for a stop from gear 3 or 4. Both rears are
+# the long stop at an obstacle; with the option on, the crash check reads gear 0 and the look-ahead finds the way
+# clear, so no obstacle stops a horse, and the stop check's other stop stays the game's.
 
 def _horse_crash(gen, a):
     assert _word(gen, a) == 0xb9403428, hex(_word(gen, a))  # ldr w8, [x1, #0x34]
@@ -1268,6 +1268,37 @@ def _horse_look_ahead(gen, a):
     assert _word(gen, a) == _sub_sp(0x170), hex(_word(gen, a))
     return ('{ extern int rt_sure_footed(void); if (rt_sure_footed()) { c->x[0] = 1; return; } c->sp -= 0x170; }'
             f'  /* {a:#x}: sub sp, sp, #0x170 (the horse\'s look-ahead: the way clear with Cheats) */')
+
+
+# Cheats > Improved horse controls, its steering (runtime/improved_horse.c). The ridden horse's update (1.9.0
+# 0x70006afe4c, x0 the riding action) runs its stick through smoothers that take the frame's delta: the lean
+# (+0x268) is the rider's steering (the turn at +0x278 and the term at +0x290 are the horse's own: roads, obstacles).
+# Its steering scales the stick by a per-gear table first (0x70006b1cf4: half at the top gear). The runtime sets the
+# lean's rates in the action at the update's entry and answers the table load. The steering then stores the horse's
+# play rate in its unit (0x70006b218c, +0x154): the runtime raises it while the horse turns, so the turning run keeps
+# the straight run's speed.
+
+def _horse_ride(gen, a):
+    assert _word(gen, a) == _sub_sp(0x280), hex(_word(gen, a))
+    return ('{ extern void rt_horse_ride(uint64_t); rt_horse_ride(c->x[0]); c->sp -= 0x280; }'
+            f'  /* {a:#x}: sub sp, sp, #0x280 (the ridden horse\'s update: its steering rates) */')
+
+
+def _horse_stick_scale(gen, a):
+    # s0 holds the stick's x (loaded from [x19, #0x18] just before), multiplied by s1 next
+    assert _word(gen, a) == 0xbc697901, hex(_word(gen, a))  # ldr s1, [x8, x9, lsl #2]
+    return ('{ extern float rt_horse_stick_scale(int64_t, float, float *); union { uint32_t u; float f; } r = '
+            '{ .u = LD32(c->x[8] + (c->x[9] << 2)) }, s = { .u = (uint32_t)c->v[0] }; '
+            'r.f = rt_horse_stick_scale((int64_t)c->x[9], r.f, &s.f); c->v[0] = s.u; c->v[1] = r.u; }'
+            f'  /* {a:#x}: ldr s1, [x8, x9, lsl #2] (the stick\'s share of the horse\'s steering for its gear) */')
+
+
+def _horse_play_rate(gen, a):
+    # x8: the horse's unit (the steering's [x19]), x20: the riding action; s0 the value stored
+    assert _word(gen, a) == 0xbd015500, hex(_word(gen, a))  # str s0, [x8, #0x154]
+    return ('{ extern float rt_horse_play_rate(uint64_t, float); union { uint32_t u; float f; } r = '
+            '{ .u = (uint32_t)c->v[0] }; r.f = rt_horse_play_rate(c->x[20], r.f); ST32(c->x[8] + 0x154, r.u); }'
+            f'  /* {a:#x}: str s0, [x8, #0x154] (the ridden horse\'s rate while it steers) */')
 
 
 # Adding items (runtime/items.c rt_item_tick): at the entry of Link's damage handling (every frame in play, on the game
@@ -1622,6 +1653,9 @@ PATCHES = {
     'camera_exit_finished': _camera_exit_finished,
     'camera_exit_active': _camera_exit_active,
     'camera_leave': _camera_leave,
+    'horse_ride': _horse_ride,
+    'horse_stick_scale': _horse_stick_scale,
+    'horse_play_rate': _horse_play_rate,
     'item_tick': _item_tick,
     'place_count_read': _place_count_read,
     'place_travel': _place_travel,

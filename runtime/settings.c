@@ -658,7 +658,7 @@ void settings_load(void) {
         else if (!strcmp(key, "item_multiplier")) g_settings.item_multiplier = atoi(val);
         else if (!strcmp(key, "free_sprint")) g_settings.free_sprint = atoi(val) != 0;
         else if (!strcmp(key, "show_all_places")) g_settings.show_all_places = atoi(val) != 0;
-        else if (!strcmp(key, "sure_footed")) g_settings.sure_footed = atoi(val) != 0;
+        else if (!strcmp(key, "improved_horse")) g_settings.improved_horse = atoi(val) != 0;
         else if (!strcmp(key, "collectibles_map")) g_settings.collectibles_map = atoi(val) != 0;
         else if (!strcmp(key, "weather")) {
             g_settings.weather = 0;
@@ -974,7 +974,7 @@ bool settings_save_to(const char *path) {
     fprintf(f, "item_multiplier = %d\n", g_settings.item_multiplier);
     fprintf(f, "free_sprint = %d\n", g_settings.free_sprint);
     fprintf(f, "show_all_places = %d\n", g_settings.show_all_places);
-    fprintf(f, "sure_footed = %d\n", g_settings.sure_footed);
+    fprintf(f, "improved_horse = %d\n", g_settings.improved_horse);
     fprintf(f, "collectibles_map = %d\n", g_settings.collectibles_map);
     int wx = g_settings.weather;
     fprintf(f, "weather = %s\n", g_weather_keys[wx >= 0 && wx < WEATHER_COUNT ? wx : 0]);
