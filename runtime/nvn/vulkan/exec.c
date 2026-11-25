@@ -66,12 +66,6 @@ static void ubo_check_submit(uint64_t seq);
 static uint64_t stat_feedback_live;  // depth attachments sampled as they are (read-only feedback, no copy)
 static uint64_t stat_feedback_loops, stat_feedback_barriers;  // draws sampling a target they write, in a feedback loop
 static uint64_t stat_clear_folds;  // clears that became their pass's load op (clear_fold_on)
-static bool pass_ds_written;         // a draw of the current pass wrote depth or stencil
-static uint8_t pass_color_written;   // the color targets (bits) a draw of the current pass wrote
-static uint8_t pass_color_unsynced;  // the color targets drawn or cleared since the pass began or its last feedback barrier
-static uint8_t pass_feedback;        // the color targets (bits) the current pass began with a feedback loop enabled
-static TexBackend *pass_fbl[8];      // (g_vk.feedback_layout) its targets moved to ATTACHMENT_FEEDBACK_LOOP_OPTIMAL
-static int pass_nfbl;
 // A clear that is the first command of its pass and covers the whole render area is recorded as the attachment's load op
 // (CLEAR) instead of a LOAD followed by vkCmdClearAttachments: the target is not read just to be overwritten.
 // clear() offers it (want, the value) and begin_pass() takes what it can (c, d, s: the aspects it folded).
@@ -81,8 +75,6 @@ static bool clear_fold_on(void) {  // SAVAGEWIND_VK_NO_CLEAR_FOLD=1: every clear
     if (v < 0) { v = getenv("SAVAGEWIND_VK_NO_CLEAR_FOLD") == NULL; LOG("[vk] clears folded into the load op: %s\n", v ? "on" : "off"); }
     return v;
 }
-static TexBackend *pass_block[8];    // its targets drawn through a view of a compressed image's blocks (vk_block_flush)
-static int pass_nblock;
 static bool draw_feedback;           // the current draw samples a target it writes (its pipeline allows the loop)
 static uint64_t stat_upload_bytes;
 // PC_UPLOAD_BYTES not added to perfcount yet: added once a frame (vk_prof_frame), not for each span. A locked add on x86
@@ -132,6 +124,7 @@ static uint64_t cum_draws;  // draws so far (vk_pso_wait_needed)
 uint64_t dyn_epoch = 1;
 int no_dyn_cache = -1;
 ExecDrawCache dc;
+ExecPass ps = {.sx = 1, .sy = 1, .samples = 1, .mvec = -1};
 void vk_dyn_forget(void) { dyn_epoch++; }
 // Bumped by every command that changes what goes into the program and pipeline keys (exec_list) and by passes
 // (begin_pass): while it stays, a draw takes the last draw's program and pipeline without building and comparing the
@@ -166,8 +159,6 @@ static uint64_t gmem_sparse_bind_seq;
 static uint64_t deferred_seq;  // (seq_lock; renderer_wait_seq, GPU_OVERLAP) a fence the game was told is done whose
                                // submission wasn't waited for
 static uint64_t oneshot_seq;   // (seq_lock) the latest submission with a one-off readback: a wait on it is never deferred
-static bool in_pass;
-static bool pass_void;  // the pass in progress has nothing to draw into: not begun, its draws and clears skipped (begin_pass)
 static uint32_t chunk_draws;  // draws and dispatches recorded since the last submission
 static bool chunk_hold;       // a shader that stores to guest memory was recorded since the last submission
 
@@ -1505,8 +1496,6 @@ bool renderer_texture_frame_fresh(NvnTexture *t);
 void renderer_texture_mark_presented(NvnTexture *t);
 uint64_t renderer_present_count(void);
 void renderer_save_texture_tex(TexBackend *b, const char *path);
-static float pass_sx = 1, pass_sy = 1;
-static bool pass_out;  // the pass draws into the game's final image (RS_OUT: the HUD and menus draw there)
 static bool hud_clip;  // the draw in progress is a 16:9 layout's pane wholly off a 16:9 screen: not drawn (hud_patch)
 static bool hud_cut;   // a pause menu pane across a 16:9 screen's side: cut there, as the console's screen does (hud_patch)
 // Snapshot shared state once per presented frame. Ownership is recorded alongside the actual UI draw.
@@ -1602,10 +1591,7 @@ static float tex_sc[2][64][2];
 static uint32_t tex_wh[2][64][2];
 
 // ================================================================== render passes
-static VkFormat pass_color[8], pass_depth, pass_stencil;
-static uint32_t pass_ncolor, pass_samples = 1, pass_w, pass_h;
 // (mvec.c) the motion target's slot in the current pass (-1: none), the frame it was last cleared in
-static int pass_mvec = -1;
 static uint64_t mvec_cleared = ~0ull;
 static TexBackend *post_image(int i, uint32_t w, uint32_t h, VkFormat f);
 // A native-size background capture excludes the map cursor from refraction.
@@ -1644,8 +1630,6 @@ void vk_trace_event(NvnTexture *t, uint64_t key, NvnTexture *const *srcs, int ns
 void vk_trace_dump(NvnTexture *t);
 
 static int debug_pass_no;
-static NvnTexture *pass_dbg[8];  // (debug frame) the color targets of the pass in progress
-static int pass_dbg_n, pass_dbg_draws;
 
 // ---- linear render targets (NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET) go back to guest memory: the CPU reads them.
 // BOTW samples its sky into an 8x8 RGBA32F linear target and reads the texels back for its fog and ambient colours
@@ -1657,10 +1641,6 @@ static uint64_t g_cur_fs_hash;  // (the fragment shader of the draw in progress:
 static Readback readbacks[64];
 static int nreadbacks;
 static pthread_mutex_t readback_lock = PTHREAD_MUTEX_INITIALIZER;
-static NvnTexture *pass_linear[8];  // the pass's linear color targets (begin_pass), with their views
-static NvnTextureView pass_linear_view[8];
-static bool pass_linear_has_view[8];
-static int pass_nlinear;
 
 // What guest memory held after the last copy back, per linear target, and which image (TexBackend serial) it matches:
 // a different hash later means the CPU wrote there, and the image takes those texels before the GPU draws into it
@@ -2082,10 +2062,9 @@ static DepthTwin *depth_twin_update(VkCommandBuffer cb, TexBackend *b) {
     return t;
 }
 
-static TexBackend *pass_twin;  // (the pass in progress draws into the shadow copy: its twin made again after it)
 static void depth_twin_after_pass(VkCommandBuffer cb) {
-    if (pass_twin) depth_twin_update(cb, pass_twin);
-    pass_twin = NULL;
+    if (ps.twin) depth_twin_update(cb, ps.twin);
+    ps.twin = NULL;
 }
 
 // The view a shadow sampler of the shader's textype reads for colour image b: its depth twin, or VK_NULL_HANDLE (b's
@@ -2106,16 +2085,11 @@ static VkImageView depth_twin_sample(TexBackend *b, int textype, bool update) {
 // as the texture it then is (no snapshot copy).
 #define DET_TAB 8192
 static struct { uint64_t key; uint8_t written; bool used; } det_tab[DET_TAB];
-static uint64_t pass_key;
-static uint8_t pass_detached;
 static bool det_no_next;  // (a clear begins this pass: everything attached)
 static uint8_t det_written;  // color slots the open pass drew into or cleared
 static uint8_t det_draw;     // (during resolve_feedback) the slots the draw's pass leaves out: not attachments then
 static uint64_t stat_det_miss;
-static bool pass_frag_only;      // the open pass began behind a fragment-only barrier (SAVAGEWIND_VK_BARRIER_FRAG)
-static bool pass_vs_reads_next;  // the pass about to begin has a draw whose vertex stage reads textures / memory
 static uint64_t stat_frag_barriers, stat_frag_restarts;
-static uint64_t pass_serial;  // passes begun
 static int det_on(void) {
     static int on = -1;
     if (on < 0) {
@@ -2138,7 +2112,7 @@ static uint8_t det_predict(uint64_t key) {  // the color slots to leave out of a
     uint8_t present = 0;
     for (int i = 0; i < st.rt.ncolor && i < 8; i++) if (st.rt.color[i]) present |= (uint8_t)(1u << i);
     uint8_t out = (uint8_t)(present & ~det_tab[slot].written);
-    if (out == present && !st.rt.depth) return 0;  // (never all of them: a pass with nothing attached is skipped, pass_void)
+    if (out == present && !st.rt.depth) return 0;  // (never all of them: a pass with nothing attached is skipped, ps.void_)
     return out;
 }
 static void det_note(uint64_t key, uint8_t written) {
@@ -2147,14 +2121,14 @@ static void det_note(uint64_t key, uint8_t written) {
     else { det_tab[slot].key = key; det_tab[slot].written = written; det_tab[slot].used = true; }
 }
 // The slots left out of the pass the next draw lands in (the open one, or the one about to begin)
-static uint8_t det_current(void) { return in_pass && !st.rt_dirty ? pass_detached : det_predict(det_key()); }
-static uint64_t det_current_key(void) { return in_pass && !st.rt_dirty ? pass_key : det_key(); }
+static uint8_t det_current(void) { return ps.open && !st.rt_dirty ? ps.detached : det_predict(det_key()); }
+static uint64_t det_current_key(void) { return ps.open && !st.rt_dirty ? ps.key : det_key(); }
 
 static void vk_end_pass_at(int line);
 void vk_end_pass(void) { vk_end_pass_at(0); }
 #define vk_end_pass() vk_end_pass_at(__LINE__)
 static void vk_end_pass_at(int line) {
-    if (!in_pass) return;
+    if (!ps.open) return;
     if (prof && line < 4096) prof_end_line[line]++;
     if (prof_enabled() && line < 4096) {  // (the profiler) passes ended, by the line that ended them
         static ProfSite end_site[4096];
@@ -2165,20 +2139,20 @@ static void vk_end_pass_at(int line) {
         }
         prof_acc_add_gen(prof_generation(), &end_site[line], 0);
     }
-    if (!pass_void) rec_CmdEndRendering(vk_cmd());
-    in_pass = false;
-    pass_void = false;
-    if (det_on()) det_note(pass_key, det_written);
-    for (int i = 0; i < pass_nfbl; i++) feedback_layout_move(vk_cmd(), pass_fbl[i], false);
-    pass_nfbl = 0;
-    for (int i = 0; i < pass_nblock; i++) vk_block_flush(vk_cmd(), pass_block[i]);
-    pass_nblock = 0;
+    if (!ps.void_) rec_CmdEndRendering(vk_cmd());
+    ps.open = false;
+    ps.void_ = false;
+    if (det_on()) det_note(ps.key, det_written);
+    for (int i = 0; i < ps.nfbl; i++) feedback_layout_move(vk_cmd(), ps.fbl[i], false);
+    ps.nfbl = 0;
+    for (int i = 0; i < ps.nblock; i++) vk_block_flush(vk_cmd(), ps.block[i]);
+    ps.nblock = 0;
     depth_twin_after_pass(vk_cmd());  // (the shadow copy just drawn: its depth twin)
-    if (pass_nlinear) bar_other = true;  // (copies to memory)
-    for (int i = 0; i < pass_nlinear; i++) readback_schedule(vk_cmd(), pass_linear[i], &pass_linear_view[i], pass_linear_has_view[i]);
-    pass_nlinear = 0;
+    if (ps.nlinear) bar_other = true;  // (copies to memory)
+    for (int i = 0; i < ps.nlinear; i++) readback_schedule(vk_cmd(), ps.linear[i], &ps.linear_view[i], ps.linear_has_view[i]);
+    ps.nlinear = 0;
     // (debug frame) what the pass drew: its targets, as begin_pass recorded them (st.rt may name the next pass's)
-    if (g_debug_frame && pass_dbg_n && pass_dbg[0] && pass_dbg[0]->backend) {
+    if (g_debug_frame && ps.dbg_n && ps.dbg[0] && ps.dbg[0]->backend) {
         char path[256];
         static uint64_t debug_pass_frame = ~0ull;
         static int multi = -1;
@@ -2186,7 +2160,7 @@ static void vk_end_pass_at(int line) {
         if (multi && renderer_present_count() != debug_pass_frame) { debug_pass_frame = renderer_present_count(); debug_pass_no = 0; }
         if (multi) snprintf(path, sizeof path, "build/pass_%llu_%03d.png", (unsigned long long)debug_pass_frame, debug_pass_no++);
         else snprintf(path, sizeof path, "build/pass_%03d.png", debug_pass_no++);
-        LOG("[pass] %s: %d targets, %d draws\n", path, pass_dbg_n, pass_dbg_draws);
+        LOG("[pass] %s: %d targets, %d draws\n", path, ps.dbg_n, ps.dbg_draws);
         // a frame saves hundreds of images (minutes, the window stalls meanwhile): SAVAGEWIND_DEBUG_PASS_FROM=<n> /
         // SAVAGEWIND_DEBUG_PASS_TO=<n> save only those passes, SAVAGEWIND_DEBUG_MAIN_ONLY only each pass's first target
         static int from = -1, to = -1, main_only = -1;
@@ -2194,12 +2168,12 @@ static void vk_end_pass_at(int line) {
         if (to < 0) to = getenv("SAVAGEWIND_DEBUG_PASS_TO") ? atoi(getenv("SAVAGEWIND_DEBUG_PASS_TO")) : 1 << 30;
         if (main_only < 0) main_only = getenv("SAVAGEWIND_DEBUG_MAIN_ONLY") != NULL;
         if (debug_pass_no - 1 < from || debug_pass_no - 1 > to) return;
-        renderer_save_texture_tex(pass_dbg[0]->backend, path);
-        for (int i = 1; i < pass_dbg_n && !main_only; i++) {  // the other targets of a multi-target pass: pass_NNN_c<i>.png
-            if (!pass_dbg[i] || !pass_dbg[i]->backend) continue;
+        renderer_save_texture_tex(ps.dbg[0]->backend, path);
+        for (int i = 1; i < ps.dbg_n && !main_only; i++) {  // the other targets of a multi-target pass: pass_NNN_c<i>.png
+            if (!ps.dbg[i] || !ps.dbg[i]->backend) continue;
             char p2[300];
             snprintf(p2, sizeof p2, "%.*s_c%d.png", (int)strlen(path) - 4, path, i);
-            renderer_save_texture_tex(pass_dbg[i]->backend, p2);
+            renderer_save_texture_tex(ps.dbg[i]->backend, p2);
         }
     }
 }
@@ -2209,14 +2183,14 @@ uint32_t level_extent(uint32_t v, uint32_t lv) { v >>= lv; return v ? v : 1; }
 static VkRect2D scissor_rect(void);
 static void begin_pass(void) {
     after_dispatch = false;  // (dispatch_compute: a pass in between)
-    if (in_pass && !st.rt_dirty) return;
+    if (ps.open && !st.rt_dirty) return;
     uint64_t new_key = det_on() ? det_key() : 0;  // (the hash of st.rt: only where targets are left out, Mali)
     uint8_t new_detached = det_predict(new_key);
     det_no_next = false;
     vk_end_pass();  // (notes what the pass that ends wrote under its own key)
-    pass_key = new_key;
-    pass_detached = new_detached;
-    pass_serial++;
+    ps.key = new_key;
+    ps.detached = new_detached;
+    ps.serial++;
     if (det_on()) {
         static uint64_t passes, slots, t0;
         passes++;
@@ -2231,8 +2205,8 @@ static void begin_pass(void) {
             t0 = now;
         }
     }
-    pass_ds_written = false;
-    pass_color_written = pass_color_unsynced = pass_feedback = 0;
+    ps.ds_written = false;
+    ps.color_written = ps.color_unsynced = ps.feedback = 0;
     det_written = 0;
     if (dl_on == 2) renderer_flush();  // (SAVAGEWIND_VK_DEVLOST_TRACE=2: each pass its own submission)
     // BOTW records a whole frame into one command list. Submitted only at its end, the GPU sat idle while the list was
@@ -2267,9 +2241,9 @@ static void begin_pass(void) {
         bfrag = e ? atoi(e) != 0 : g_vk.is_mali;
         LOG("[vk] pass barriers hold back only fragment work where they can: %s\n", bfrag ? "on" : "off");
     }
-    bool frag_only = bfrag && !vtx_hazard && !pass_vs_reads_next;
-    pass_frag_only = frag_only;
-    pass_vs_reads_next = false;
+    bool frag_only = bfrag && !vtx_hazard && !ps.vs_reads_next;
+    ps.frag_only = frag_only;
+    ps.vs_reads_next = false;
     if (frag_only) {
         stat_frag_barriers++;
         VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2, .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
@@ -2315,35 +2289,35 @@ static void begin_pass(void) {
     VkAttachmentFeedbackLoopInfoEXT ca_fb[8];
 #endif
     uint32_t w = 0, minw = UINT32_MAX, minh = UINT32_MAX;  // w: first attachment seen
-    pass_out = false;
-    pass_ncolor = (uint32_t)st.rt.ncolor;
-    pass_dbg_n = st.rt.ncolor > 8 ? 8 : st.rt.ncolor;
-    for (int i = 0; i < pass_dbg_n; i++) pass_dbg[i] = st.rt.color[i];
+    ps.out = false;
+    ps.ncolor = (uint32_t)st.rt.ncolor;
+    ps.dbg_n = st.rt.ncolor > 8 ? 8 : st.rt.ncolor;
+    for (int i = 0; i < ps.dbg_n; i++) ps.dbg[i] = st.rt.color[i];
     {   // (debugging) SAVAGEWIND_LOG_RENDER_TEX=<w>x<h>: passes that draw into textures of that size
         static int lw = -1, lh;
         if (lw < 0) { lw = 0; if (getenv("SAVAGEWIND_LOG_RENDER_TEX")) sscanf(getenv("SAVAGEWIND_LOG_RENDER_TEX"), "%dx%d", &lw, &lh); }
         static int n;
-        for (int i = 0; lw && i < pass_dbg_n && n < 5000; i++)
+        for (int i = 0; lw && i < ps.dbg_n && n < 5000; i++)
             if (st.rt.color[i] && (int)st.rt.color[i]->width == lw && (int)st.rt.color[i]->height == lh)
                 LOG("[rt] frame %llu: #%llu %ux%ux%u f%#x target %u drawn at level %u layer %u (view set %#x)\n",
                     (unsigned long long)renderer_present_count(), (unsigned long long)st.rt.color[i]->debug_id, lw, lh,
                     st.rt.color[i]->depth, st.rt.color[i]->format, st.rt.color[i]->target, st.rt.cview[i].base_level,
                     st.rt.cview[i].min_layer, st.rt.has_cview[i] ? st.rt.cview[i].setmask : 0), n++;
     }
-    pass_nlinear = 0;
-    for (int i = 0; i < pass_dbg_n; i++)
+    ps.nlinear = 0;
+    for (int i = 0; i < ps.dbg_n; i++)
         if (st.rt.color[i] && (st.rt.color[i]->flags & 0x40)) {  // NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET
-            pass_linear[pass_nlinear] = st.rt.color[i];
-            pass_linear_view[pass_nlinear] = st.rt.cview[i];
-            pass_linear_has_view[pass_nlinear++] = st.rt.has_cview[i];
+            ps.linear[ps.nlinear] = st.rt.color[i];
+            ps.linear_view[ps.nlinear] = st.rt.cview[i];
+            ps.linear_has_view[ps.nlinear++] = st.rt.has_cview[i];
             linear_target_sync(st.rt.color[i]);
         }
-    pass_dbg_draws = 0;
-    pass_samples = 1;
+    ps.dbg_draws = 0;
+    ps.samples = 1;
     for (int i = 0; i < st.rt.ncolor; i++) {
         NvnTexture *t = st.rt.color[i];
         ca[i] = (VkRenderingAttachmentInfo){.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
-        pass_color[i] = VK_FORMAT_UNDEFINED;
+        ps.color[i] = VK_FORMAT_UNDEFINED;
         if (!t) continue;
         renderer_mark_gpu_owned(t);
         VkImageView v = vk_view(t, &st.rt.cview[i], st.rt.has_cview[i], true, TEXTYPE_2D);
@@ -2353,10 +2327,10 @@ static void begin_pass(void) {
         bool blocks = b && b->block_pending;  // (a view of a compressed image's blocks: drawn into b->block)
         if (blocks) {
             b->block_pending = false;
-            if (v && pass_nblock < 8) pass_block[pass_nblock++] = b;
+            if (v && ps.nblock < 8) ps.block[ps.nblock++] = b;
         }
         if (!v) continue;
-        if (pass_detached & (1u << i)) continue;  // (left out: this pass doesn't draw into it, det_tab)
+        if (ps.detached & (1u << i)) continue;  // (left out: this pass doesn't draw into it, det_tab)
         // #385: RenderDoc also shows duplicate G-buffer attachments on RADV Phoenix.
         // Opt-in test of the existing Mali correction, without enabling unrelated Mali paths.
         static int dedup = -1;
@@ -2382,9 +2356,9 @@ static void begin_pass(void) {
         ca[i].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
         if (b->feedback_seen && b->feedback_ok) {  // a target some draw samples while writing it (resolve_feedback)
             if (g_vk.feedback_layout) {
-                if (!b->in_feedback_layout && pass_nfbl < 8) {
+                if (!b->in_feedback_layout && ps.nfbl < 8) {
                     feedback_layout_move(cb, b, true);
-                    pass_fbl[pass_nfbl++] = b;
+                    ps.fbl[ps.nfbl++] = b;
                 }
                 ca[i].imageLayout = VK_IMAGE_LAYOUT_ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT;
             } else {
@@ -2394,31 +2368,31 @@ static void begin_pass(void) {
                 ca[i].pNext = &ca_fb[i];
 #endif
             }
-            pass_feedback |= (uint8_t)(1u << i);
+            ps.feedback |= (uint8_t)(1u << i);
         }
         bool fresh = (int)renderer_texture_level_fresh(t) | (int)renderer_texture_frame_fresh(t);  // both: each marks its state
         if (renderer_texture_first_write(t) || fresh) {
             ca[i].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
             ca[i].clearValue.color.float32[3] = fresh ? 0.0f : 1.0f;
         }
-        pass_color[i] = st.rt.has_cview[i] && (st.rt.cview[i].setmask & 4) && vk_format(t->format) == b->format
+        ps.color[i] = st.rt.has_cview[i] && (st.rt.cview[i].setmask & 4) && vk_format(t->format) == b->format
                       ? vk_format(st.rt.cview[i].format) : b->format;
-        pass_color[i] = vk_view_format(b, pass_color[i]);  // (g_vk.lean_usage: the format its view really has)
+        ps.color[i] = vk_view_format(b, ps.color[i]);  // (g_vk.lean_usage: the format its view really has)
         // Drawn into through a view of a compressed image's blocks: the pipeline's format is the block image's, the one
         // attached. (The same as above for a real BC image. For Mali's R8 images (SAVAGEWIND_VK_BC4_CPU) the line above
         // gives R8_UNORM, so the NPC speech bubbles' encode draws ran pipelines made for one UNORM channel into the
         // RGBA16 UINT block image: undefined in Vulkan (VUID-vkCmdDraw-colorAttachmentCount-06180), and the G / B / A
         // channels are the blocks' 48 index bits - what shapes the bubble's edges and rounded ends.)
-        if (blocks && b->block) pass_color[i] = b->block->format;
+        if (blocks && b->block) ps.color[i] = b->block->format;
         uint32_t lv = st.rt.has_cview[i] && (st.rt.cview[i].setmask & 1) ? st.rt.cview[i].base_level : 0;
         uint32_t ew = level_extent(b->width, lv), eh = level_extent(b->height, lv);
         if (blocks) ew = b->block->width, eh = b->block->height;
-        if (!w) { renderer_texture_scale(t, &pass_sx, &pass_sy); pass_out = b->rs_group == RS_OUT; w = ew; }
+        if (!w) { renderer_texture_scale(t, &ps.sx, &ps.sy); ps.out = b->rs_group == RS_OUT; w = ew; }
         if (ew < minw) minw = ew;
         if (eh < minh) minh = eh;
-        pass_samples = b->samples;
+        ps.samples = b->samples;
     }
-    pass_depth = pass_stencil = VK_FORMAT_UNDEFINED;
+    ps.depth = ps.stencil = VK_FORMAT_UNDEFINED;
     bool has_d = false, has_s = false;
     if (st.rt.depth) {
         renderer_mark_gpu_owned(st.rt.depth);
@@ -2430,14 +2404,14 @@ static void begin_pass(void) {
             VkRenderingAttachmentInfo a = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, .imageView = v,
                                            .imageLayout = VK_IMAGE_LAYOUT_GENERAL, .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
                                            .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
-            if (b->aspect & VK_IMAGE_ASPECT_DEPTH_BIT) { da = a; has_d = true; pass_depth = b->format; }
-            if (b->aspect & VK_IMAGE_ASPECT_STENCIL_BIT) { sa = a; has_s = true; pass_stencil = b->format; }
+            if (b->aspect & VK_IMAGE_ASPECT_DEPTH_BIT) { da = a; has_d = true; ps.depth = b->format; }
+            if (b->aspect & VK_IMAGE_ASPECT_STENCIL_BIT) { sa = a; has_s = true; ps.stencil = b->format; }
             uint32_t lv = st.rt.has_dview && (st.rt.dview.setmask & 1) ? st.rt.dview.base_level : 0;
             uint32_t ew = level_extent(b->width, lv), eh = level_extent(b->height, lv);
-            if (!w) { renderer_texture_scale(st.rt.depth, &pass_sx, &pass_sy); w = ew; }
+            if (!w) { renderer_texture_scale(st.rt.depth, &ps.sx, &ps.sy); w = ew; }
             if (ew < minw) minw = ew;
             if (eh < minh) minh = eh;
-            if (!pass_ncolor) pass_samples = b->samples;
+            if (!ps.ncolor) ps.samples = b->samples;
         }
     }
     if (st.rt.depth) {
@@ -2448,14 +2422,14 @@ static void begin_pass(void) {
             }
         }
     }
-    if (!w) { pass_sx = pass_sy = 1; minw = minh = 16; }
-    pass_w = minw; pass_h = minh;
+    if (!w) { ps.sx = ps.sy = 1; minw = minh = 16; }
+    ps.w = minw; ps.h = minh;
     {   // (debugging) SAVAGEWIND_LOG_NULL_VIEWS=1: each new shape of pass with a target slot that has no view
         static int on = -1, nseen;
         static uint32_t seen[64];
         if (on < 0) on = getenv("SAVAGEWIND_LOG_NULL_VIEWS") != NULL;
         uint32_t unbound = 0, noview = 0, vol = 0, lin = 0;
-        for (uint32_t i = 0; on && i < pass_ncolor && i < 8; i++) {
+        for (uint32_t i = 0; on && i < ps.ncolor && i < 8; i++) {
             if (!st.rt.color[i]) unbound |= 1u << i;
             else if (!ca[i].imageView) noview |= 1u << i;
             else {
@@ -2465,18 +2439,18 @@ static void begin_pass(void) {
             }
         }
         bool d_lost = on && st.rt.depth && !has_d && !has_s;
-        uint32_t key = pass_ncolor | unbound << 4 | noview << 12 | (uint32_t)d_lost << 20 | (uint32_t)has_d << 21 |
-                       (uint32_t)(vol != 0) << 22 | (uint32_t)(lin != 0) << 23 | (uint32_t)(pass_nblock != 0) << 24;
+        uint32_t key = ps.ncolor | unbound << 4 | noview << 12 | (uint32_t)d_lost << 20 | (uint32_t)has_d << 21 |
+                       (uint32_t)(vol != 0) << 22 | (uint32_t)(lin != 0) << 23 | (uint32_t)(ps.nblock != 0) << 24;
         static int nvoid;
-        bool known = !on || (!unbound && !noview && !d_lost && w && !vol && !lin && !pass_nblock);
+        bool known = !on || (!unbound && !noview && !d_lost && w && !vol && !lin && !ps.nblock);
         for (int k = 0; !known && k < nseen; k++) known = seen[k] == key;
         if (on && !w && nvoid < 40) known = false, nvoid++;
         if (!known && nseen < 64) {
             seen[nseen++] = key;
             LOG("[rt] frame %llu: pass of %u color (unbound %#x, no view %#x, 3D slice %#x, linear %#x, blocks %u), depth %s%s\n",
-                (unsigned long long)renderer_present_count(), pass_ncolor, unbound, noview, vol, lin, pass_nblock,
+                (unsigned long long)renderer_present_count(), ps.ncolor, unbound, noview, vol, lin, ps.nblock,
                 d_lost ? "without a view" : has_d ? "yes" : "no", w ? "" : ": nothing to draw into");
-            for (uint32_t i = 0; i < pass_ncolor && i < 8; i++)
+            for (uint32_t i = 0; i < ps.ncolor && i < 8; i++)
                 if (noview >> i & 1)
                     LOG("[rt]   slot %u: %ux%ux%u format %#x target %u\n", i, st.rt.color[i]->width, st.rt.color[i]->height,
                         st.rt.color[i]->depth, st.rt.color[i]->format, st.rt.color[i]->target);
@@ -2488,9 +2462,9 @@ static void begin_pass(void) {
     // dereference in the first seconds of the game (#132). SAVAGEWIND_VK_EMPTY_PASS=1: begun anyway, as before.
     static int empty_pass = -1;
     if (empty_pass < 0) empty_pass = getenv("SAVAGEWIND_VK_EMPTY_PASS") != NULL;
-    pass_void = !w && !empty_pass;
-    if (pass_void) {
-        in_pass = true;
+    ps.void_ = !w && !empty_pass;
+    if (ps.void_) {
+        ps.open = true;
         key_gen++;
         stat_passes++;
         return;
@@ -2500,7 +2474,7 @@ static void begin_pass(void) {
         VkRect2D rc = scissor_rect();
         if (rc.offset.x <= 0 && rc.offset.y <= 0 && rc.extent.width >= minw && rc.extent.height >= minh) {
             int ci = clear_fold.idx;
-            fold_c = ci >= 0 && ci < (int)pass_ncolor && ca[ci].imageView && ca[ci].loadOp == VK_ATTACHMENT_LOAD_OP_LOAD;
+            fold_c = ci >= 0 && ci < (int)ps.ncolor && ca[ci].imageView && ca[ci].loadOp == VK_ATTACHMENT_LOAD_OP_LOAD;
             fold_d = clear_fold.d && has_d && da.loadOp == VK_ATTACHMENT_LOAD_OP_LOAD;
             fold_s = clear_fold.s && has_s && sa.loadOp == VK_ATTACHMENT_LOAD_OP_LOAD;
             if (fold_c) {
@@ -2512,30 +2486,30 @@ static void begin_pass(void) {
         }
     }
     clear_fold.c = fold_c; clear_fold.d = fold_d; clear_fold.s = fold_s;
-    pass_mvec = -1;
-    if (mvec_enabled() && has_d && pass_ncolor < 8 && pass_samples == 1) {  // (mvec.c) the motion target, appended
+    ps.mvec = -1;
+    if (mvec_enabled() && has_d && ps.ncolor < 8 && ps.samples == 1) {  // (mvec.c) the motion target, appended
         TexBackend *mt = mvec_pass_target(st.rt.depth, minw, minh);
         if (mt) {
             pass_barrier_note(mt);  // (the motion target is drawn into too)
             uint64_t frame = renderer_present_count();
-            ca[pass_ncolor] = (VkRenderingAttachmentInfo){.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+            ca[ps.ncolor] = (VkRenderingAttachmentInfo){.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
                                                           .imageView = post_view(mt), .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
                                                           .loadOp = mvec_cleared == frame ? VK_ATTACHMENT_LOAD_OP_LOAD
                                                                                           : VK_ATTACHMENT_LOAD_OP_CLEAR,
                                                           .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
             mvec_cleared = frame;
             mvec_depth = st.rt.depth;
-            pass_color[pass_ncolor] = mt->format;
-            pass_mvec = (int)pass_ncolor++;
+            ps.color[ps.ncolor] = mt->format;
+            ps.mvec = (int)ps.ncolor++;
         }
     }
     VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = {{0, 0}, {minw, minh}}, .layerCount = 1,
-                          .colorAttachmentCount = pass_ncolor, .pColorAttachments = ca,
+                          .colorAttachmentCount = ps.ncolor, .pColorAttachments = ca,
                           .pDepthAttachment = has_d ? &da : NULL, .pStencilAttachment = has_s ? &sa : NULL};
     rec_CmdBeginRendering(cb, &ri);
-    in_pass = true;
+    ps.open = true;
     key_gen++;  // (the pass's formats are in the pipeline key)
-    vp_sx = pass_sx; vp_sy = pass_sy; vp_ox = 0; vp_oy = 0;
+    vp_sx = ps.sx; vp_sy = ps.sy; vp_ox = 0; vp_oy = 0;
     stat_passes++;
 }
 
@@ -2544,21 +2518,21 @@ static void pass_size(int *w, int *h) {
     for (int i = 0; i < st.rt.ncolor && !*w; i++)
         if (st.rt.color[i]) { *w = (int)st.rt.color[i]->width; *h = (int)st.rt.color[i]->height; }
     if (!*w && st.rt.depth) { *w = (int)st.rt.depth->width; *h = (int)st.rt.depth->height; }
-    *w = (int)lroundf(*w * pass_sx);
-    *h = (int)lroundf(*h * pass_sy);
+    *w = (int)lroundf(*w * ps.sx);
+    *h = (int)lroundf(*h * ps.sy);
 }
 
 static VkRect2D scissor_rect(void) {
     int w, h;
     pass_size(&w, &h);
-    if (!w) return (VkRect2D){{0, 0}, {pass_w, pass_h}};
+    if (!w) return (VkRect2D){{0, 0}, {ps.w, ps.h}};
     int x = st.scissor[0][0], y = st.scissor[0][1], sw = st.scissor[0][2], sh = st.scissor[0][3];
     // The views widened to a wider window (output_scale.c rt_persp): the HUD's layers are 16:9 views too, so their
     // content keeps its shape in the middle of the image, narrower than it. A scissor that doesn't span the final
     // image (the minimap's mask, menus' lists) moves with them; on a taller window, vertically.
     extern float output_view_shape(void);
     float shape = output_view_shape();
-    if (shape > 1 && pass_out && pass_sx > 0 && sw < 16384) {
+    if (shape > 1 && ps.out && ps.sx > 0 && sw < 16384) {
         FsInventoryClipLayout list;
         if (framepace_menu_ui() && st.rt.color[0] && fs_inventory_clip_layout(&list)) {
             double sx = (double)st.rt.color[0]->width / list.root_w;
@@ -2575,14 +2549,14 @@ static VkRect2D scissor_rect(void) {
                 }
             }
         }
-        double gw = w / pass_sx;  // (the target's own width)
+        double gw = w / ps.sx;  // (the target's own width)
         if (x > 0 || x + sw < gw - 0.5) {
             double c = gw / 2, x0 = c + (x - c) / shape, x1 = c + (x + sw - c) / shape;
             x = (int)floor(x0); sw = (int)ceil(x1) - x;
             int edge_mode = hud_edges_now(shape);
             if (edge_mode) {
                 double sdx = hud_edge_scissor_dx((x0 + x1) / 2.0, gw, shape);
-                double gh = pass_sy > 0 ? h / pass_sy : h;
+                double gh = ps.sy > 0 ? h / ps.sy : h;
                 float edge_x = 1.0f / (float)shape;
                 float mx = (float)((x0 + x1) / gw - 1.0);
                 float my = (float)(1.0 - (y * 2.0 + sh) / gh);
@@ -2593,8 +2567,8 @@ static VkRect2D scissor_rect(void) {
             }
         }
     }
-    if (shape < 1 && pass_out && pass_sy > 0 && sh < 16384) {  // (a taller window: the same, vertically)
-        double gh = h / pass_sy;
+    if (shape < 1 && ps.out && ps.sy > 0 && sh < 16384) {  // (a taller window: the same, vertically)
+        double gh = h / ps.sy;
         if (y > 0 || y + sh < gh - 0.5) {
             double c = gh / 2, y0 = c + (y - c) * shape, y1 = c + (y + sh - c) * shape;
             y = (int)floor(y0); sh = (int)ceil(y1) - y;
@@ -2604,7 +2578,7 @@ static VkRect2D scissor_rect(void) {
             int edge_mode = hud_edges_now(shape);
             if (edge_mode) {
                 double sdy = hud_edge_scissor_dy((y0 + y1) / 2.0, gh, shape);
-                double gw = pass_sx > 0 ? w / pass_sx : w;  // (a quick menu's bar, an event: as for the panes)
+                double gw = ps.sx > 0 ? w / ps.sx : w;  // (a quick menu's bar, an event: as for the panes)
                 if (!hud_context_native(shape, (float)((x + sw / 2.0) / gw * 2 - 1),
                                        (float)(1 - (y0 + y1) / gh), 1, shape) && sdy != 0 && hud_edge_moves(edge_mode, (float)(1 - (y0 + y1) / gh), (float)shape) &&
                     !(hud_quick && hud_quick_bar_px(x + sw / 2.0, (y0 + y1) / 2.0, gw, gh, shape)))
@@ -2612,9 +2586,9 @@ static VkRect2D scissor_rect(void) {
             }
         }
     }
-    float hud_s = pass_out && sw < 16384 && sh < 16384 && pass_sx > 0 && pass_sy > 0 ? hud_scale_now() : 1;
+    float hud_s = ps.out && sw < 16384 && sh < 16384 && ps.sx > 0 && ps.sy > 0 ? hud_scale_now() : 1;
     if (hud_s != 1) {  // (the minimap's mask goes with the minimap: a scissor over about the whole image is left alone)
-        double gw = w / pass_sx, gh = h / pass_sy;
+        double gw = w / ps.sx, gh = h / ps.sy;
         float mx = (float)((x + sw / 2.0) / gw * 2 - 1), my = (float)((y + sh / 2.0) / gh * 2 - 1);
         if (!hud_context_native(shape, mx, -my, 1 / fmaxf(shape, 1), fminf(shape, 1)) &&
             sw < gw * 0.9 && sh < gh * 0.9 && !(hud_quick && fabsf(mx) < 0.72f && fabsf(my) < 0.6f)) {
@@ -2634,8 +2608,8 @@ static VkRect2D scissor_rect(void) {
         if (y1 > 1e9) y1 = 1e9;
         x = (int)x0; y = (int)y0; sw = (int)(x1 - x0); sh = (int)(y1 - y0);
     }
-    if (hud_clip && pass_out) sw = sh = 0;  // (a pane wholly off a 16:9 screen: see hud_patch)
-    if (hud_cut && pass_out && shape > 1) {  // (a pause menu pane across a 16:9 screen's side: see hud_patch)
+    if (hud_clip && ps.out) sw = sh = 0;  // (a pane wholly off a 16:9 screen: see hud_patch)
+    if (hud_cut && ps.out && shape > 1) {  // (a pause menu pane across a 16:9 screen's side: see hud_patch)
         double c = w / 2.0, half = w / 2.0 / shape;
         int bx0 = (int)floor(c - half), bx1 = (int)ceil(c + half);
         int x1 = x + sw;
@@ -2645,8 +2619,8 @@ static VkRect2D scissor_rect(void) {
     }
     if (x < 0) { sw += x; x = 0; }
     if (y < 0) { sh += y; y = 0; }
-    if (w > (int)pass_w) w = (int)pass_w;
-    if (h > (int)pass_h) h = (int)pass_h;
+    if (w > (int)ps.w) w = (int)ps.w;
+    if (h > (int)ps.h) h = (int)ps.h;
     if (x >= w || y >= h) { x = y = 0; sw = sh = 0; }
     if (x + sw > w) sw = w - x;
     if (y + sh > h) sh = h - y;
@@ -2660,14 +2634,14 @@ static void apply_scissor(void) {
     // draws; scissor_rect was ~2 % of the render thread)
     static struct { const void *c, *d; uint32_t w, h; float s[6]; int32_t sc[4]; VkRect2D r; bool ok; } m;
     VkRect2D r;
-    const float s6[6] = {pass_sx, pass_sy, vp_sx, vp_sy, vp_ox, vp_oy};
-    if (!pass_out && m.ok && m.c == st.rt.color[0] && m.d == st.rt.depth && m.w == pass_w && m.h == pass_h &&
+    const float s6[6] = {ps.sx, ps.sy, vp_sx, vp_sy, vp_ox, vp_oy};
+    if (!ps.out && m.ok && m.c == st.rt.color[0] && m.d == st.rt.depth && m.w == ps.w && m.h == ps.h &&
         !memcmp(m.s, s6, sizeof s6) && !memcmp(m.sc, st.scissor[0], sizeof m.sc)) {
         r = m.r;
     } else {
         r = scissor_rect();
-        m.ok = !pass_out;
-        m.c = st.rt.color[0], m.d = st.rt.depth, m.w = pass_w, m.h = pass_h, m.r = r;
+        m.ok = !ps.out;
+        m.c = st.rt.color[0], m.d = st.rt.depth, m.w = ps.w, m.h = ps.h, m.r = r;
         memcpy(m.s, s6, sizeof s6);
         memcpy(m.sc, st.scissor[0], sizeof m.sc);
     }
@@ -2738,8 +2712,8 @@ static PipeEnt clear_tab[CLEAR_TAB];
 static VkPipeline clear_pipeline(int index, int kind, uint32_t mask, bool depth, bool stencil) {
     uint64_t key = 0xcbf29ce484222325ull;
 #define MIX(v) do { uint64_t v_ = (uint64_t)(v); for (int b_ = 0; b_ < 8; b_++) { key ^= (v_ >> (b_ * 8)) & 0xFF; key *= 0x100000001B3ull; } } while (0)
-    MIX(index); MIX(kind); MIX(mask); MIX(depth); MIX(stencil); MIX(pass_ncolor); MIX(pass_depth); MIX(pass_stencil); MIX(pass_samples);
-    for (uint32_t i = 0; i < pass_ncolor; i++) MIX(pass_color[i]);
+    MIX(index); MIX(kind); MIX(mask); MIX(depth); MIX(stencil); MIX(ps.ncolor); MIX(ps.depth); MIX(ps.stencil); MIX(ps.samples);
+    for (uint32_t i = 0; i < ps.ncolor; i++) MIX(ps.color[i]);
     uint32_t slot = (uint32_t)key & (CLEAR_TAB - 1);
     for (int p = 0; p < CLEAR_TAB; p++, slot = (slot + 1) & (CLEAR_TAB - 1)) {
         if (clear_tab[slot].key == key) return clear_tab[slot].pipe;
@@ -2760,18 +2734,18 @@ static VkPipeline clear_pipeline(int index, int kind, uint32_t mask, bool depth,
     VkPipelineRasterizationStateCreateInfo rs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
                                                  .polygonMode = VK_POLYGON_MODE_FILL, .lineWidth = 1};
     VkPipelineMultisampleStateCreateInfo ms = {.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
-                                               .rasterizationSamples = (VkSampleCountFlagBits)pass_samples};
+                                               .rasterizationSamples = (VkSampleCountFlagBits)ps.samples};
     VkPipelineDepthStencilStateCreateInfo ds = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
     VkPipelineColorBlendAttachmentState cba[8] = {0};
-    for (uint32_t i = 0; i < pass_ncolor; i++)
+    for (uint32_t i = 0; i < ps.ncolor; i++)
         if ((int)i == index) cba[i].colorWriteMask = mask & 0xF;
     VkPipelineColorBlendStateCreateInfo cb = {.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
-                                              .attachmentCount = pass_ncolor, .pAttachments = cba};
+                                              .attachmentCount = ps.ncolor, .pAttachments = cba};
     VkPipelineDynamicStateCreateInfo dy = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
                                            .dynamicStateCount = NDYN, .pDynamicStates = DYN};
-    VkPipelineRenderingCreateInfo rinfo = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO, .colorAttachmentCount = pass_ncolor,
-                                           .pColorAttachmentFormats = pass_color, .depthAttachmentFormat = pass_depth,
-                                           .stencilAttachmentFormat = pass_stencil};
+    VkPipelineRenderingCreateInfo rinfo = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO, .colorAttachmentCount = ps.ncolor,
+                                           .pColorAttachmentFormats = ps.color, .depthAttachmentFormat = ps.depth,
+                                           .stencilAttachmentFormat = ps.stencil};
     VkGraphicsPipelineCreateInfo pi = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .pNext = &rinfo, .stageCount = 2,
                                        .pStages = stages, .pVertexInputState = &vi, .pInputAssemblyState = &ia, .pViewportState = &vs,
                                        .pRasterizationState = &rs, .pMultisampleState = &ms, .pDepthStencilState = &ds,
@@ -2866,15 +2840,15 @@ static void clear(int index, int kind, const void *color, uint32_t mask, bool de
             vk_hdr_record(cb_->image, VK_NULL_HANDLE, VK_FORMAT_UNDEFINED, 0, 0);
     }
     if (index >= 0 && index < 8) {  // (a color target left out of the open pass: the pass ends, the next has it)
-        if (in_pass && !st.rt_dirty && (pass_detached & (1u << index))) {
-            det_note(pass_key, (uint8_t)(1u << index));
+        if (ps.open && !st.rt_dirty && (ps.detached & (1u << index))) {
+            det_note(ps.key, (uint8_t)(1u << index));
             st.rt_dirty = true;
         }
-        if (!in_pass || st.rt_dirty) det_no_next = true;
+        if (!ps.open || st.rt_dirty) det_no_next = true;
     }
     clear_fold.c = clear_fold.d = clear_fold.s = false;
     // (only a clear that begins a pass can fold: after a draw, the clear must keep its place among the commands)
-    clear_fold.want = clear_fold_on() && (!in_pass || st.rt_dirty) && (index < 0 || (mask & 0xF) == 0xF) &&
+    clear_fold.want = clear_fold_on() && (!ps.open || st.rt_dirty) && (index < 0 || (mask & 0xF) == 0xF) &&
                       (!stencil || (smask & 0xFF) == 0xFF) && index < 8;
     if (clear_fold.want) {
         clear_fold.idx = index; clear_fold.d = depth; clear_fold.s = stencil; clear_fold.dval = dval; clear_fold.sval = sval;
@@ -2883,18 +2857,18 @@ static void clear(int index, int kind, const void *color, uint32_t mask, bool de
     begin_pass();
     clear_fold.want = false;
     if (index >= 0 && index < 8) det_written |= (uint8_t)(1u << index);
-    if (pass_void) return;
+    if (ps.void_) return;
     VkCommandBuffer cb = vk_cmd();
-    vp_sx = pass_sx; vp_sy = pass_sy; vp_ox = 0; vp_oy = 0;
+    vp_sx = ps.sx; vp_sy = ps.sy; vp_ox = 0; vp_oy = 0;
     VkRect2D rect = scissor_rect();
     if (!rect.extent.width || !rect.extent.height) return;
-    if (index >= 0 && (index >= (int)pass_ncolor || pass_color[index] == VK_FORMAT_UNDEFINED)) return;
+    if (index >= 0 && (index >= (int)ps.ncolor || ps.color[index] == VK_FORMAT_UNDEFINED)) return;
     bool simple = (index < 0 || (mask & 0xF) == 0xF) && (!stencil || (smask & 0xFF) == 0xFF);
     if (simple) {
         VkClearAttachment a[2];
         uint32_t n = 0;
         if (index >= 0) {
-            pass_color_unsynced |= (uint8_t)(1u << index);
+            ps.color_unsynced |= (uint8_t)(1u << index);
             if (clear_fold.c) {
                 stat_clear_folds++;
             } else {
@@ -2903,7 +2877,7 @@ static void clear(int index, int kind, const void *color, uint32_t mask, bool de
                 n++;
             }
         }
-        VkImageAspectFlags dsa = (depth && pass_depth ? VK_IMAGE_ASPECT_DEPTH_BIT : 0) | (stencil && pass_stencil ? VK_IMAGE_ASPECT_STENCIL_BIT : 0);
+        VkImageAspectFlags dsa = (depth && ps.depth ? VK_IMAGE_ASPECT_DEPTH_BIT : 0) | (stencil && ps.stencil ? VK_IMAGE_ASPECT_STENCIL_BIT : 0);
         if (clear_fold.d) dsa &= ~(VkImageAspectFlags)VK_IMAGE_ASPECT_DEPTH_BIT, stat_clear_folds++;
         if (clear_fold.s) dsa &= ~(VkImageAspectFlags)VK_IMAGE_ASPECT_STENCIL_BIT, stat_clear_folds++;
         if (dsa) a[n++] = (VkClearAttachment){.aspectMask = dsa, .clearValue.depthStencil = {dval, sval}};
@@ -2913,7 +2887,7 @@ static void clear(int index, int kind, const void *color, uint32_t mask, bool de
     }
     VkPipeline p = clear_pipeline(index, kind, mask, depth, stencil);
     if (!p) return;
-    if (index >= 0) pass_color_unsynced |= (uint8_t)(1u << index);
+    if (index >= 0) ps.color_unsynced |= (uint8_t)(1u << index);
     rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, p);
     vk_dyn_forget();
     dyn_defaults(cb);
@@ -2927,7 +2901,7 @@ static void clear(int index, int kind, const void *color, uint32_t mask, bool de
     }
     int w, h;
     pass_size(&w, &h);
-    VkViewport vp = {0, 0, (float)(w ? w : (int)pass_w), (float)(h ? h : (int)pass_h), 0, 1};
+    VkViewport vp = {0, 0, (float)(w ? w : (int)ps.w), (float)(h ? h : (int)ps.h), 0, 1};
     rec_CmdSetViewport(cb, 0, 1, &vp);
     rec_CmdSetScissor(cb, 0, 1, &rect);
     float pc[8] = {0};
@@ -4481,7 +4455,7 @@ void snapshots_invalidate(NvnTexture *t) {
         if (snap_ok[i]) { snap_ok[i] = false; snap_why[i] = snap_reason; }
     }
 }
-static uint64_t snap_pass_now(void) { return in_pass && !st.rt_dirty ? pass_serial : pass_serial + 1; }  // (the pass a write now is in)
+static uint64_t snap_pass_now(void) { return ps.open && !st.rt_dirty ? ps.serial : ps.serial + 1; }  // (the pass a write now is in)
 static bool snap_cleared[8];  // (the slot's target itself was cleared since its snapshot: its contents are another thing's)
 static void snapshots_invalidate_clear(NvnTexture *t) {  // (clear(), defined before this)
     TexBackend *be = t ? (TexBackend *)t->backend : NULL;
@@ -4525,7 +4499,7 @@ static struct { uint64_t copy_addr; NvnTexture *src; uint64_t frame; } shadow_sr
 
 static void shadow_copy_note(ShaderInfo *fi) {
     NvnTexture *copy = st.rt.ncolor > 0 ? st.rt.color[0] : NULL;
-    if (vk_is_shadow_copy(copy) && copy->backend && depth_twin_format(copy->backend)) pass_twin = copy->backend;
+    if (vk_is_shadow_copy(copy) && copy->backend && depth_twin_format(copy->backend)) ps.twin = copy->backend;
     if (!vk_shadow_direct() || !vk_is_shadow_copy(copy) || !copy->addr) return;
     for (int i = 0; i < fi->ntex; i++) {
         NvnTexture *t = shader_texture_object(1, &fi->tex[i]);
@@ -4733,7 +4707,7 @@ static void resolve_feedback(Prog *pr) {
                 if (snap_depth || snap_gbuf) LOG("[vk] bound attachments read through snapshots: depth %d, G-buffer %d\n", snap_depth, snap_gbuf);
             }
             if (!nolive && !snap_depth && is_depth && depth_read_only()) {
-                if (pass_ds_written) { vk_end_pass(); st.rt_dirty = true; }
+                if (ps.ds_written) { vk_end_pass(); st.rt_dirty = true; }
                 stat_feedback_live++;
                 feedback_tex[nfeedback] = t;
                 feedback_any_type[nfeedback] = false;
@@ -4756,7 +4730,7 @@ static void resolve_feedback(Prog *pr) {
                 // channel masks off and sample it): read as it is, like a read-only depth attachment. Written earlier
                 // in this pass: the pass ends first (a barrier), still no copy.
                 if (ci >= 0 && !feedback_draw_writes_color(pr->fi->out_mask, st.channel_mask, ci) && !snap_gbuf) {
-                    if (pass_color_written & (1u << ci)) { vk_end_pass(); st.rt_dirty = true; }
+                    if (ps.color_written & (1u << ci)) { vk_end_pass(); st.rt_dirty = true; }
                     stat_feedback_live++;
                     continue;
                 }
@@ -4837,8 +4811,8 @@ static void resolve_feedback(Prog *pr) {
                     }
                     src->feedback_seen = true;
                     fbdump_note(t);
-                    if (in_pass && !st.rt_dirty && (pass_feedback & (1u << ci))) {
-                        if (pass_color_unsynced & (1u << ci)) {
+                    if (ps.open && !st.rt_dirty && (ps.feedback & (1u << ci))) {
+                        if (ps.color_unsynced & (1u << ci)) {
                             VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
                                                    .srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                                                    .srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
@@ -4848,7 +4822,7 @@ static void resolve_feedback(Prog *pr) {
                                                    .dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT | VK_DEPENDENCY_FEEDBACK_LOOP_BIT_EXT,
                                                    .memoryBarrierCount = 1, .pMemoryBarriers = &mb};
                             rec_CmdPipelineBarrier2(vk_cmd(), &di);
-                            pass_color_unsynced = 0;  // (one barrier covers every target)
+                            ps.color_unsynced = 0;  // (one barrier covers every target)
                             stat_feedback_barriers++;
                         }
                     } else {
@@ -5001,7 +4975,7 @@ static void resolve_feedback(Prog *pr) {
                 reuse = e ? (!strcmp(e, "pass") ? 2 : !strcmp(e, "frame") ? 1 : 0) : g_vk.is_mali ? 2 : 0;
                 LOG("[vk] feedback snapshots reused: %s\n", reuse == 2 ? "within one pass" : reuse == 1 ? "within one frame" : "until written");
             }
-            uint64_t this_pass = in_pass && !st.rt_dirty ? pass_serial : pass_serial + 1;
+            uint64_t this_pass = ps.open && !st.rt_dirty ? ps.serial : ps.serial + 1;
             if (!nosnap && si >= 0 && (snap_ok[si] || self_write) && existing &&
                 (reuse == 0 || (reuse == 1 && snap_frame[si] == renderer_present_count() + 1) ||
                  (reuse == 2 && snap_pass[si] == this_pass))) {
@@ -5055,7 +5029,7 @@ static void resolve_feedback(Prog *pr) {
             snap_wpass[si] = 0;
             snap_be[si] = src;
             snap_frame[si] = renderer_present_count() + 1;  // (+1: 0 is never a frame's)
-            snap_pass[si] = pass_serial + 1;  // (the pass that begins next, after this one ends)
+            snap_pass[si] = ps.serial + 1;  // (the pass that begins next, after this one ends)
             st.rt_dirty = true;
         }
     if (!nfeedback && !draw_feedback)
@@ -7442,7 +7416,7 @@ static void texture_info(int stage, ShaderInfo *si, int i, VkDescriptorImageInfo
         VkDescriptorImageInfo ii;
     } m[2048];
     uint8_t blend = st.color_state[0] & 1;
-    float bias = stage == 1 && pass_mvec >= 0 && rt_jitter_on() ? scene_mip_bias : 0;  // (the material bias, if it is one)
+    float bias = stage == 1 && ps.mvec >= 0 && rt_jitter_on() ? scene_mip_bias : 0;  // (the material bias, if it is one)
     uint64_t frame = vk_frame_counter();
     uint32_t k = (uint32_t)((h * 0x9E3779B97F4A7C15ull ^ (uint64_t)st_->type << 3 ^ (uint64_t)stage << 7 ^ blend) >> 53) & 2047;
     __typeof__(m[0]) *e = &m[k];
@@ -7531,7 +7505,7 @@ static void texture_info_(int stage, ShaderInfo *si, int i, VkDescriptorImageInf
             }
         }
     }
-    float bias = material && stage == 1 && pass_mvec >= 0 && rt_jitter_on() ? scene_mip_bias : 0;
+    float bias = material && stage == 1 && ps.mvec >= 0 && rt_jitter_on() ? scene_mip_bias : 0;
     if (h && st.spool && tsc < (uint32_t)st.spool->count)
         smp = vk_sampler(&((NvnSamplerDesc *)st.spool->entries)[tsc], aniso_ok, bias);
     if (menu_tex && h && st.spool && tsc < (uint32_t)st.spool->count) {
@@ -7726,7 +7700,7 @@ static bool gsnap_gpu_hit(Range r) {
 static bool gsnap_verts(void) {
     static int on = -1;
     if (on < 0) on = !getenv("SAVAGEWIND_VK_GSNAP_VERTS") || atoi(getenv("SAVAGEWIND_VK_GSNAP_VERTS"));
-    return on && gsnap_mode() && pass_out;
+    return on && gsnap_mode() && ps.out;
 }
 static uint64_t gsnap_verts_max(void) {
     static int64_t kb = -1;
@@ -7827,7 +7801,7 @@ static VkDescriptorBufferInfo gsnap_info(int stage) {
         dbg = getenv("SAVAGEWIND_DEBUG_GSNAP") != NULL;
     }
     int m = gsnap_mode();
-    bool here = m && (m == 2 || pass_out) && (stage == 0 || stage == 1) && gmem_size;
+    bool here = m && (m == 2 || ps.out) && (stage == 0 || stage == 1) && gmem_size;
     if (!here) {  // (no copies here: one empty table per submission, the shader looks at none of it)
         if (m && (stage == 0 || stage == 1)) n_other++;
         static uint64_t eseq = ~0ull;
@@ -9240,7 +9214,7 @@ static void draw_(CmdRec *r, bool indexed) {
         }
     }
     map_background_before_cursor();
-    if (g_debug_frame) { debug_draw(pr, r, indexed); pass_dbg_draws++; }
+    if (g_debug_frame) { debug_draw(pr, r, indexed); ps.dbg_draws++; }
     {   // (debugging) SAVAGEWIND_LOG_FS_CB=<fs hash>:<k>:<first float>:<count>: each frame, those floats of fragment cbuf k
         // (c[k], as the debug frame's fcb<k>) at the first draw of that shader: a parameter's course over a scripted walk
         static int on = -1;
@@ -9332,14 +9306,14 @@ static void draw_(CmdRec *r, bool indexed) {
         for (int i = 0; i < st.rt.ncolor && i < 8; i++) if (st.rt.color[i] && feedback_draw_writes_color(pr->fi->out_mask, st.channel_mask, i)) want |= (uint8_t)(1u << i);
         if (want & det) {
             det_note(det_current_key(), want);
-            if (in_pass && !st.rt_dirty) st.rt_dirty = true;
+            if (ps.open && !st.rt_dirty) st.rt_dirty = true;
             stat_det_miss++;
         }
         det_draw = det_current();
     }
     if (pr->vi->ntex > 0 || pr->vi->uses_gmem) {  // (its vertex stage reads what earlier GPU work may have written)
-        if (in_pass && !st.rt_dirty && pass_frag_only) { st.rt_dirty = true; stat_frag_restarts++; }
-        pass_vs_reads_next = true;  // (whichever pass begins next, also one resolve_feedback starts: a full barrier)
+        if (ps.open && !st.rt_dirty && ps.frag_only) { st.rt_dirty = true; stat_frag_restarts++; }
+        ps.vs_reads_next = true;  // (whichever pass begins next, also one resolve_feedback starts: a full barrier)
     }
     resolve_feedback(pr);
     det_draw = 0;
@@ -9374,7 +9348,7 @@ static void draw_(CmdRec *r, bool indexed) {
         prof_stage_start = now;
     }
     begin_pass();
-    if (pass_void) { stat_skipped++; return; }
+    if (ps.void_) { stat_skipped++; return; }
     // ---- motion vectors (mvec.c): an opaque draw of a pass with the motion target is recorded (its identity and the
     // vertex shader's inputs, for the next frame); matched with one of the previous frame, it is drawn with its motion
     // program: the vertex shader also run on the previous frame's inputs, the fragment shader also writing the distance
@@ -9383,8 +9357,8 @@ static void draw_(CmdRec *r, bool indexed) {
     // Full-screen triangles and quads that write depth (BOTW fills the scene's depth with several: sky, far plane)
     // keep no vector: drawn after the geometry, their camera-independent positions would cover it with zeros (they get
     // the camera's motion in the fallback).
-    bool fullscreen = r->x[2] <= 6 && st.viewport[0][2] >= pass_w * 0.9f / pass_sx && st.viewport[0][3] >= pass_h * 0.9f / pass_sy;
-    MvecDrawIn *mdp = pass_mvec >= 0 && st.ds[0] && st.ds[1] ? mvec_draw_begin(renderer_present_count()) : NULL;
+    bool fullscreen = r->x[2] <= 6 && st.viewport[0][2] >= ps.w * 0.9f / ps.sx && st.viewport[0][3] >= ps.h * 0.9f / ps.sy;
+    MvecDrawIn *mdp = ps.mvec >= 0 && st.ds[0] && st.ds[1] ? mvec_draw_begin(renderer_present_count()) : NULL;
     if (mdp) {
 #define md (*mdp)  // (mvec.c's place for the draw being described: only what the head counts is handed on)
         md.h.iaddr = 0, md.h.first = 0, md.h.base_vertex = 0;
@@ -9432,7 +9406,7 @@ static void draw_(CmdRec *r, bool indexed) {
         // still or got no match writes zero, the camera's motion (mvec_fill), over what a draw behind it wrote.
         // Until that program is built, or when it can't be (its varyings 30 / 31 taken): the still variant, zero.
         if (!fullscreen) {
-            Prog *mp = pr->mv[0][pass_mvec];
+            Prog *mp = pr->mv[0][ps.mvec];
             if (mp) {
                 pr = mp;
                 mvec_draw = true;
@@ -9444,15 +9418,15 @@ static void draw_(CmdRec *r, bool indexed) {
                 for (int i = 0; i < st.nattrib; i++) mvk.attr_kind[i] = (uint8_t)attr_kind(st.attrib[i] & 0xFF);
                 for (int i = 0; i < st.rt.ncolor; i++) if (st.rt.color[i]) mfk.rt_kind[i] = (uint8_t)rt_kind(rt_format(i));  // (the bound view's, as fkey's)
                 mvk.mvec = 1;
-                mfk.mvec_rt = (uint8_t)(pass_mvec + 1);
+                mfk.mvec_rt = (uint8_t)(ps.mvec + 1);
                 mp = get_program(st.program, &mvk, &mfk);
                 if (mp && atomic_load(&mp->state) == 1) {  // (else built later)
-                    pr->mv[0][pass_mvec] = mp;
+                    pr->mv[0][ps.mvec] = mp;
                     pr = mp;
                     mvec_draw = true;
                 } else {
                     mvk.mvec = 0;
-                    mfk.mvec_rt = (uint8_t)(0x40 | (pass_mvec + 1));
+                    mfk.mvec_rt = (uint8_t)(0x40 | (ps.mvec + 1));
                     mp = get_program(st.program, &mvk, &mfk);
                     if (mp && atomic_load(&mp->state) == 1) pr = mp;
                 }
@@ -9467,8 +9441,8 @@ static void draw_(CmdRec *r, bool indexed) {
     // SAVAGEWIND_MVEC_VIEW
     static int show_unmatched = -1;
     if (show_unmatched < 0) show_unmatched = getenv("SAVAGEWIND_MVEC_SHOW_UNMATCHED") != NULL;
-    if (pass_mvec >= 0 && ((!(st.ds[0] && st.ds[1]) && (st.color_state[0] & 1)) || (show_unmatched && st.ds[0] && st.ds[1] && !mvec_draw)) && !fullscreen) {
-        Prog *mp = pr->mv[1][pass_mvec];
+    if (ps.mvec >= 0 && ((!(st.ds[0] && st.ds[1]) && (st.color_state[0] & 1)) || (show_unmatched && st.ds[0] && st.ds[1] && !mvec_draw)) && !fullscreen) {
+        Prog *mp = pr->mv[1][ps.mvec];
         if (!mp) {
             ShaderKey mvk = {0}, mfk = {0};
             mvk.glsl = mfk.glsl = 1;
@@ -9476,19 +9450,19 @@ static void draw_(CmdRec *r, bool indexed) {
             mvk.depth_minus_one = dmode == 0;
             for (int i = 0; i < st.nattrib; i++) mvk.attr_kind[i] = (uint8_t)attr_kind(st.attrib[i] & 0xFF);
             for (int i = 0; i < st.rt.ncolor; i++) if (st.rt.color[i]) mfk.rt_kind[i] = (uint8_t)rt_kind(rt_format(i));  // (the bound view's, as fkey's)
-            mfk.mvec_rt = (uint8_t)(0x80 | (pass_mvec + 1));
+            mfk.mvec_rt = (uint8_t)(0x80 | (ps.mvec + 1));
             mp = get_program(st.program, &mvk, &mfk);
             if (mp && atomic_load(&mp->state) != 1) mp = NULL;  // (built for the next frames)
-            if (mp) pr->mv[1][pass_mvec] = mp;
+            if (mp) pr->mv[1][ps.mvec] = mp;
         }
         if (mp) pr = mp, mvec_masked();
     }
-    if (st.rt.depth && !depth_read_only()) pass_ds_written = true;
+    if (st.rt.depth && !depth_read_only()) ps.ds_written = true;
     for (int i = 0; i < st.rt.ncolor && i < 8; i++)
         if (st.rt.color[i] && feedback_draw_writes_color(pr->fi->out_mask, st.channel_mask, i)) {
-            pass_color_written |= (uint8_t)(1u << i);
+            ps.color_written |= (uint8_t)(1u << i);
             det_written |= (uint8_t)(1u << i);
-            pass_color_unsynced |= (uint8_t)(1u << i);
+            ps.color_unsynced |= (uint8_t)(1u << i);
         }
     VkCommandBuffer cb = vk_cmd();
 
@@ -9513,13 +9487,13 @@ static void draw_(CmdRec *r, bool indexed) {
     PipeKey k;
     memset(&k, 0, sizeof k);
     k.prog = pr;
-    k.s.ncolor = pass_ncolor;
+    k.s.ncolor = ps.ncolor;
     // only the pass's formats: the slots past them hold earlier passes' (not part of the pipeline, and different
     // leftovers made duplicate pipelines)
-    memcpy(k.s.color, pass_color, sizeof k.s.color[0] * (pass_ncolor < 8 ? pass_ncolor : 8));
-    k.s.depth = pass_depth;
-    k.s.stencil = pass_stencil;
-    k.s.samples = pass_samples;
+    memcpy(k.s.color, ps.color, sizeof k.s.color[0] * (ps.ncolor < 8 ? ps.ncolor : 8));
+    k.s.depth = ps.depth;
+    k.s.stencil = ps.stencil;
+    k.s.samples = ps.samples;
     k.s.feedback = draw_feedback;
     k.s.depth_clamp = st.depth_clamp && g_vk.depth_clamp;
     for (int i = 0; i < 32; i++) {
@@ -9554,12 +9528,12 @@ static void draw_(CmdRec *r, bool indexed) {
             memcpy(k.s.blend[i] + 1, st.blend[i] + 1, 6);  // (the factors and ops; 0 is the target index, 7 padding)
         }
     }
-    if (pass_mvec >= 0 && (pr->fi->mvec || pr->fi->mvec_still)) k.s.write_mask[pass_mvec] = 0xF;  // (mvec.c: only motion and still programs write it)
-    if (pass_mvec >= 0 && pr->fi->mvec_mask) {  // (the reactive mask: .z alone, the strongest effect kept)
+    if (ps.mvec >= 0 && (pr->fi->mvec || pr->fi->mvec_still)) k.s.write_mask[ps.mvec] = 0xF;  // (mvec.c: only motion and still programs write it)
+    if (ps.mvec >= 0 && pr->fi->mvec_mask) {  // (the reactive mask: .z alone, the strongest effect kept)
         static const uint8_t max_blend[8] = {0, 2, 2, 2, 2, 5, 5, 0};  // (ONE, ONE, MAX: blend_factor, blend_op)
-        k.s.write_mask[pass_mvec] = 0x4;
-        k.s.blend_on |= (uint8_t)(1u << pass_mvec);
-        memcpy(k.s.blend[pass_mvec], max_blend, 8);
+        k.s.write_mask[ps.mvec] = 0x4;
+        k.s.blend_on |= (uint8_t)(1u << ps.mvec);
+        memcpy(k.s.blend[ps.mvec], max_blend, 8);
     }
     k.s.a2c = st.ms[0xC] != 0;
     k.s.topo_class = cls;
@@ -9610,7 +9584,7 @@ have_pipe:
     // ---- depth / stencil (dynamic)
     static int nodt = -1;
     if (nodt < 0) nodt = getenv("SAVAGEWIND_NO_DEPTH_TEST") != NULL;
-    bool dt = st.ds[0] && !nodt && pass_depth;
+    bool dt = st.ds[0] && !nodt && ps.depth;
     if (!DYN_SAME(dt, (uint32_t)dt)) rec_CmdSetDepthTestEnable(cb, dt);
     if (!DYN_SAME(dw, (uint32_t)(dt && st.ds[1]))) rec_CmdSetDepthWriteEnable(cb, dt && st.ds[1]);
     VkCompareOp dop = dt ? compare_fn(st.ds[2]) : VK_COMPARE_OP_ALWAYS;
@@ -9624,7 +9598,7 @@ have_pipe:
     bool equal_tol = dop == VK_COMPARE_OP_EQUAL && tol;
     if (equal_tol) dop = VK_COMPARE_OP_LESS_OR_EQUAL;
     if (!DYN_SAME(dop, (uint32_t)dop)) rec_CmdSetDepthCompareOp(cb, dop);
-    bool sten = st.ds[3] && pass_stencil;
+    bool sten = st.ds[3] && ps.stencil;
     if (!DYN_SAME(sten, (uint32_t)sten)) rec_CmdSetStencilTestEnable(cb, sten);
     if (sten) {
         uint32_t ops = st.ds[5] | st.ds[6] << 8 | st.ds[7] << 16;
@@ -9666,7 +9640,7 @@ have_pipe:
         float lw = 1.0f;
         if (cls == 1 && g_vk.wide_lines) {
             const float *range = g_vk.props.limits.lineWidthRange;
-            lw = st.line_width * pass_sy;
+            lw = st.line_width * ps.sy;
             lw = lw < range[0] ? range[0] : lw > range[1] ? range[1] : lw;
         }
         if (dc.line_w != lw) {  // (NaN after dyn_check: always set)
@@ -9691,7 +9665,7 @@ have_pipe:
     // ---- textures first (their scales feed the widescreen decision and the rscale table), then the viewport
     float *vp = st.viewport[0];
     float zn = st.depth_range[0][0], zf = st.depth_range[0][1];
-    vp_sx = pass_sx; vp_sy = pass_sy; vp_ox = 0; vp_oy = 0;
+    vp_sx = ps.sx; vp_sy = ps.sy; vp_ox = 0; vp_oy = 0;
     float tint[8] = {0};  // per-draw tint (translate.c `ltint`): no game-specific highlight sets one yet
     // fragment textures are bound before deciding the viewport (tex_sc / tex_wh), rscale depends on the decision:
     // build the vertex set now and the fragment set after the decision (stage_set fills tex_sc for stage 1).
@@ -9736,15 +9710,15 @@ have_pipe:
     {   // a scaled scene's half-size buffers brought back by nearest depth: the texel grid and step scaled (up_fix)
         static int off = -1;
         if (off < 0) off = getenv("SAVAGEWIND_NO_UPSAMPLE_FIX") != NULL;
-        bool scaled = !off && st.rt.ncolor && st.rt.color[0] && (pass_sx > 1 || pass_sy > 1);
+        bool scaled = !off && st.rt.ncolor && st.rt.color[0] && (ps.sx > 1 || ps.sy > 1);
         if (scaled && !pr->fs_gather) {  // (the first gathered texture's slot, from the translated source: 2 + slot)
             const char *p = pr->fi->msl ? strstr(pr->fi->msl, "textureGather(t") : NULL;
             int slot = p ? atoi(p + 15) : -1;
             pr->fs_gather = slot >= 0 && slot < pr->fi->ntex && slot < 64 ? (uint8_t)(2 + slot) : 1;
         }
         int gs = scaled ? pr->fs_gather - 2 : -1;
-        NvnTexture *gt = gs >= 0 && fabsf(tex_sc[1][gs][0] - pass_sx) < 0.01f * pass_sx &&
-                         fabsf(tex_sc[1][gs][1] - pass_sy) < 0.01f * pass_sy ? shader_texture_object(1, &pr->fi->tex[gs]) : NULL;
+        NvnTexture *gt = gs >= 0 && fabsf(tex_sc[1][gs][0] - ps.sx) < 0.01f * ps.sx &&
+                         fabsf(tex_sc[1][gs][1] - ps.sy) < 0.01f * ps.sy ? shader_texture_object(1, &pr->fi->tex[gs]) : NULL;
         TexBackend *gb = gt ? gt->backend : NULL;
         if (gb && gt->width && gt->height) {
             up_fix.gw = st.rt.color[0]->width, up_fix.gh = st.rt.color[0]->height;
@@ -9757,7 +9731,7 @@ have_pipe:
     if (profd) prof_tex += SDL_GetTicksNS() - prof_tx_;
     ProfZone pz5 = PZ_NOW();
     PZ_SPAN("exec/draw/tex", pz4, pz5);
-    if (fabsf(pass_sx - pass_sy) > 0.01f * pass_sy && st.rt.ncolor && renderer_texture_presented(st.rt.color[0])) {
+    if (fabsf(ps.sx - ps.sy) > 0.01f * ps.sy && st.rt.ncolor && renderer_texture_presented(st.rt.color[0])) {
         // Draws into the swapchain image (see renderer.m): composites fill the window, UI goes in a centred 16:9 box.
         bool reads_scene = false;
         for (int i = 0; i < pr->fi->ntex && i < 64; i++)
@@ -9781,7 +9755,7 @@ have_pipe:
         if (!composite) {
             int pw, ph;
             pass_size(&pw, &ph);
-            float u = fminf(pass_sx, pass_sy);
+            float u = fminf(ps.sx, ps.sy);
             vp_sx = vp_sy = u;
             vp_ox = (pw - st.rt.color[0]->width * u) * 0.5f;
             vp_oy = (ph - st.rt.color[0]->height * u) * 0.5f;
@@ -9796,7 +9770,7 @@ have_pipe:
         vp[0] == 0 && vp[1] == 0 && vp[2] == st.rt.color[0]->width && vp[3] == st.rt.color[0]->height) {
         NvnTexture *dst = st.rt.color[0], *src = shader_texture_object(1, &pr->fi->tex[0]);
         TexBackend *d = dst->backend, *s = src ? src->backend : NULL;
-        if (d && !d->scalable && pass_w == d->width && pass_h == d->height &&
+        if (d && !d->scalable && ps.w == d->width && ps.h == d->height &&
             s && s->rs_group == RS_OUT && src->target == 1 && dst->target == 1 &&
             src->levels == 1 && s->samples == 1 && d->samples == 1 &&
             d->aspect == VK_IMAGE_ASPECT_COLOR_BIT && s->aspect == VK_IMAGE_ASPECT_COLOR_BIT &&
@@ -9808,7 +9782,7 @@ have_pipe:
             (int64_t)st.scissor[0][1] + st.scissor[0][3] >= dst->height) {
             float shape = (float)((double)s->width * src->height / ((double)s->height * src->width));
             float sx = vp_sx * fmaxf(shape, 1), sy = vp_sy / fminf(shape, 1);
-            float w = dst->width * sx, h = dst->height * sy, x = (pass_w - w) * 0.5f, y = (pass_h - h) * 0.5f;
+            float w = dst->width * sx, h = dst->height * sy, x = (ps.w - w) * 0.5f, y = (ps.h - h) * 0.5f;
             const VkPhysicalDeviceLimits *lim = &g_vk.props.limits;
             if (isfinite(w) && isfinite(h) && w > 0 && h > 0 &&
                 w <= lim->maxViewportDimensions[0] && h <= lim->maxViewportDimensions[1] &&
@@ -9829,7 +9803,7 @@ have_pipe:
             VkRect2D sr = scissor_rect();
             LOG("[draw]   vp %.2f %.2f %.2f %.2f (stretch %.3f, fs hash %016llx) scissor %d %d %u %u | guest sc %d %d %d %d | pass %ux%u s %.4f %.4f | depth range %.7f %.7f\n",
                 vx, vp[1] * vp_sy + vp_oy, vw, vp[3] * vp_sy, k, (unsigned long long)g_cur_fs_hash, sr.offset.x, sr.offset.y,
-                sr.extent.width, sr.extent.height, st.scissor[0][0], st.scissor[0][1], st.scissor[0][2], st.scissor[0][3], pass_w, pass_h,
+                sr.extent.width, sr.extent.height, st.scissor[0][0], st.scissor[0][1], st.scissor[0][2], st.scissor[0][3], ps.w, ps.h,
                 vp_sx, vp_sy, zn, zf);
         }
     }
