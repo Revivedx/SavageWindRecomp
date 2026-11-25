@@ -134,6 +134,7 @@ ExecDrawCache dc;
 ExecPass ps = {.sx = 1, .sy = 1, .samples = 1, .mvec = -1};
 ExecFeedback fbk;
 ExecBarrier barr = {.other = true, .vtx_hazard = true};
+ExecDraw drw = {.vp_sx = 1, .vp_sy = 1};
 void vk_dyn_forget(void) { dyn_epoch++; }
 // Bumped by every command that changes what goes into the program and pipeline keys (exec_list) and by passes
 // (begin_pass): while it stays, a draw takes the last draw's program and pipeline without building and comparing the
@@ -1502,8 +1503,6 @@ bool renderer_texture_frame_fresh(NvnTexture *t);
 void renderer_texture_mark_presented(NvnTexture *t);
 uint64_t renderer_present_count(void);
 void renderer_save_texture_tex(TexBackend *b, const char *path);
-static bool hud_clip;  // the draw in progress is a 16:9 layout's pane wholly off a 16:9 screen: not drawn (hud_patch)
-static bool hud_cut;   // a pause menu pane across a 16:9 screen's side: cut there, as the console's screen does (hud_patch)
 // Snapshot shared state once per presented frame. Ownership is recorded alongside the actual UI draw.
 extern bool framepace_quick_ui(void);
 static HudScope hud_scope;
@@ -1592,9 +1591,6 @@ static bool hud_shop_pane(float x, float y) {
             if (fabsf(xy[f][2 * i] - x) < 0.01f && fabsf(xy[f][2 * i + 1] - y) < 0.01f) return true;
     return false;
 }
-static float vp_sx = 1, vp_sy = 1, vp_ox = 0, vp_oy = 0;
-static float tex_sc[2][64][2];
-static uint32_t tex_wh[2][64][2];
 
 // ================================================================== render passes
 // (mvec.c) the motion target's slot in the current pass (-1: none), the frame it was last cleared in
@@ -2541,7 +2537,7 @@ static void begin_pass(void) {
     rec_CmdBeginRendering(cb, &ri);
     ps.open = true;
     key_gen++;  // (the pass's formats are in the pipeline key)
-    vp_sx = ps.sx; vp_sy = ps.sy; vp_ox = 0; vp_oy = 0;
+    drw.vp_sx = ps.sx; drw.vp_sy = ps.sy; drw.vp_ox = 0; drw.vp_oy = 0;
     stat_passes++;
 }
 
@@ -2631,17 +2627,17 @@ static VkRect2D scissor_rect(void) {
             sw = (int)ceil(px + pw) - x, sh = (int)ceil(py + ph) - y;
         }
     }
-    if (vp_sx != 1 || vp_sy != 1 || vp_ox != 0 || vp_oy != 0) {
-        double x0 = floor(x * (double)vp_sx + vp_ox), y0 = floor(y * (double)vp_sy + vp_oy);
-        double x1 = ceil(((double)x + sw) * vp_sx + vp_ox), y1 = ceil(((double)y + sh) * vp_sy + vp_oy);
+    if (drw.vp_sx != 1 || drw.vp_sy != 1 || drw.vp_ox != 0 || drw.vp_oy != 0) {
+        double x0 = floor(x * (double)drw.vp_sx + drw.vp_ox), y0 = floor(y * (double)drw.vp_sy + drw.vp_oy);
+        double x1 = ceil(((double)x + sw) * drw.vp_sx + drw.vp_ox), y1 = ceil(((double)y + sh) * drw.vp_sy + drw.vp_oy);
         if (sw >= 16384) x1 = 1e9;
         if (sh >= 16384) y1 = 1e9;
         if (x1 > 1e9) x1 = 1e9;
         if (y1 > 1e9) y1 = 1e9;
         x = (int)x0; y = (int)y0; sw = (int)(x1 - x0); sh = (int)(y1 - y0);
     }
-    if (hud_clip && ps.out) sw = sh = 0;  // (a pane wholly off a 16:9 screen: see hud_patch)
-    if (hud_cut && ps.out && shape > 1) {  // (a pause menu pane across a 16:9 screen's side: see hud_patch)
+    if (drw.hud_clip && ps.out) sw = sh = 0;  // (a pane wholly off a 16:9 screen: see hud_patch)
+    if (drw.hud_cut && ps.out && shape > 1) {  // (a pause menu pane across a 16:9 screen's side: see hud_patch)
         double c = w / 2.0, half = w / 2.0 / shape;
         int bx0 = (int)floor(c - half), bx1 = (int)ceil(c + half);
         int x1 = x + sw;
@@ -2666,7 +2662,7 @@ static void apply_scissor(void) {
     // draws; scissor_rect was ~2 % of the render thread)
     static struct { const void *c, *d; uint32_t w, h; float s[6]; int32_t sc[4]; VkRect2D r; bool ok; } m;
     VkRect2D r;
-    const float s6[6] = {ps.sx, ps.sy, vp_sx, vp_sy, vp_ox, vp_oy};
+    const float s6[6] = {ps.sx, ps.sy, drw.vp_sx, drw.vp_sy, drw.vp_ox, drw.vp_oy};
     if (!ps.out && m.ok && m.c == st.rt.color[0] && m.d == st.rt.depth && m.w == ps.w && m.h == ps.h &&
         !memcmp(m.s, s6, sizeof s6) && !memcmp(m.sc, st.scissor[0], sizeof m.sc)) {
         r = m.r;
@@ -2891,7 +2887,7 @@ static void clear(int index, int kind, const void *color, uint32_t mask, bool de
     if (index >= 0 && index < 8) fbk.det_written |= (uint8_t)(1u << index);
     if (ps.void_) return;
     VkCommandBuffer cb = vk_cmd();
-    vp_sx = ps.sx; vp_sy = ps.sy; vp_ox = 0; vp_oy = 0;
+    drw.vp_sx = ps.sx; drw.vp_sy = ps.sy; drw.vp_ox = 0; drw.vp_oy = 0;
     VkRect2D rect = scissor_rect();
     if (!rect.extent.width || !rect.extent.height) return;
     if (index >= 0 && (index >= (int)ps.ncolor || ps.color[index] == VK_FORMAT_UNDEFINED)) return;
@@ -2959,7 +2955,7 @@ typedef struct Prog {
     VkPipelineLayout layout;
     struct StageBuildRef { void *v, *f; } stages;  // (the ProgBuild's StageBuilds: graphics pipeline libraries)
     bool vs_uses_vid;
-    uint8_t fs_gather;  // (up_fix) the fragment stage's first gathered texture: 0 not looked yet, 1 none, 2 + its slot
+    uint8_t fs_gather;  // (drw.up_fix) the fragment stage's first gathered texture: 0 not looked yet, 1 none, 2 + its slot
     _Atomic int state;  // 0 building, 1 ready, 2 failed
     // Its motion vector variants once they are built (draw_, mvec.c), by the pass's motion target slot: [0] the motion
     // program, [1] the reactive mask's. (Looked up through get_program for every scene draw, their keys made anew
@@ -5079,24 +5075,23 @@ static bool ubo_direct(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out
 // c[4] words 212-213 = 1/896, four taps at +-0.5 texel). Left as is, the taps stay a console texel apart, several
 // texels of the bigger map: the penumbra breaks into steps. In draws that sample such a map, that pair in the
 // fragment stage's constant buffers becomes the map's own texel size (1/2048, 1/4096): the same filter, finer.
-static struct { uint32_t gw, gh; float s; } sdw_fix;  // (the draw in progress; s 0: it samples no bigger shadow map)
 
 static bool sdw_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out) {
     static struct { uint64_t addr, size, gen, serial, seq; uint32_t gw, gh; float s; bool found; VkDescriptorBufferInfo d; } memo[8];
     __typeof__(memo[0]) *m = &memo[(addr >> 8) & 7];
     uint64_t gen = __atomic_load_n(&gcopy_gen, __ATOMIC_RELAXED), seq = vk_pending_seq();
     if (m->addr == addr && m->size == size && m->gen == gen && m->serial == uub_serial && m->seq == seq &&
-        m->gw == sdw_fix.gw && m->gh == sdw_fix.gh && m->s == sdw_fix.s) {
+        m->gw == drw.sdw_fix.gw && m->gh == drw.sdw_fix.gh && m->s == drw.sdw_fix.s) {
         if (m->found) *out = m->d;
         return m->found;
     }
-    *m = (__typeof__(*m)){.addr = addr, .size = size, .gen = gen, .serial = uub_serial, .seq = seq, .gw = sdw_fix.gw,
-                          .gh = sdw_fix.gh, .s = sdw_fix.s};
+    *m = (__typeof__(*m)){.addr = addr, .size = size, .gen = gen, .serial = uub_serial, .seq = seq, .gw = drw.sdw_fix.gw,
+                          .gh = drw.sdw_fix.gh, .s = drw.sdw_fix.s};
     static long long off = -1;  // SAVAGEWIND_NO_SHADOW_TEXEL_FIX=<presented frame>: the game's value from then on (A/B)
     if (off < 0) off = getenv("SAVAGEWIND_NO_SHADOW_TEXEL_FIX") ? atoll(getenv("SAVAGEWIND_NO_SHADOW_TEXEL_FIX")) : 0;
     if (off && renderer_present_count() + 1 >= (uint64_t)off) return false;
     const float *g = (const float *)(uintptr_t)addr;
-    float tx = 1.0f / (float)sdw_fix.gw, ty = 1.0f / (float)sdw_fix.gh;
+    float tx = 1.0f / (float)drw.sdw_fix.gw, ty = 1.0f / (float)drw.sdw_fix.gh;
     static float buf[0x10000 / 4];
     static int nlog;
     uint64_t nw = size / 4;
@@ -5104,12 +5099,12 @@ static bool sdw_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
         if (fabsf(g[i] - tx) > tx * 1e-5f || fabsf(g[i + 1] - ty) > ty * 1e-5f) continue;
         if (!m->found) memcpy(buf, g, nw * 4);
         m->found = true;
-        buf[i] = tx / sdw_fix.s;
-        buf[i + 1] = ty / sdw_fix.s;
+        buf[i] = tx / drw.sdw_fix.s;
+        buf[i + 1] = ty / drw.sdw_fix.s;
         if (nlog < 4) {
             nlog++;
-            LOG("[shadow] %ux%u map at %ux%u: texel size %g -> %g (constant buffer %llx word %llu)\n", sdw_fix.gw, sdw_fix.gh,
-                (unsigned)lroundf(sdw_fix.gw * sdw_fix.s), (unsigned)lroundf(sdw_fix.gh * sdw_fix.s), tx, buf[i],
+            LOG("[shadow] %ux%u map at %ux%u: texel size %g -> %g (constant buffer %llx word %llu)\n", drw.sdw_fix.gw, drw.sdw_fix.gh,
+                (unsigned)lroundf(drw.sdw_fix.gw * drw.sdw_fix.s), (unsigned)lroundf(drw.sdw_fix.gh * drw.sdw_fix.s), tx, buf[i],
                 (unsigned long long)addr, (unsigned long long)i);
         }
     }
@@ -5130,19 +5125,18 @@ static bool sdw_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
 // gathered texture's own scale (its allocated size over the game's: each scaled size is rounded on its own), and a
 // fragment constant pair (1/w, 1/h) of the gathered texture's size becomes its allocated texel: the same choice in the
 // scaled image's texels. At the game's own size nothing changes. SAVAGEWIND_NO_UPSAMPLE_FIX=1: as before.
-static struct { uint32_t gw, gh; float sx, sy; uint32_t tw, th, aw, ah; } up_fix;  // (the draw in progress; sx 0: not such a draw)
 
 static bool up_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out) {
     static struct { uint64_t addr, size, gen, serial, seq; uint32_t gw, gh; float sx, sy; bool found; VkDescriptorBufferInfo d; } memo[8];
     __typeof__(memo[0]) *m = &memo[(addr >> 8) & 7];
     uint64_t gen = __atomic_load_n(&gcopy_gen, __ATOMIC_RELAXED), seq = vk_pending_seq();
     if (m->addr == addr && m->size == size && m->gen == gen && m->serial == uub_serial && m->seq == seq &&
-        m->gw == up_fix.gw && m->gh == up_fix.gh && m->sx == up_fix.sx && m->sy == up_fix.sy) {
+        m->gw == drw.up_fix.gw && m->gh == drw.up_fix.gh && m->sx == drw.up_fix.sx && m->sy == drw.up_fix.sy) {
         if (m->found) *out = m->d;
         return m->found;
     }
-    *m = (__typeof__(*m)){.addr = addr, .size = size, .gen = gen, .serial = uub_serial, .seq = seq, .gw = up_fix.gw,
-                          .gh = up_fix.gh, .sx = up_fix.sx, .sy = up_fix.sy};
+    *m = (__typeof__(*m)){.addr = addr, .size = size, .gen = gen, .serial = uub_serial, .seq = seq, .gw = drw.up_fix.gw,
+                          .gh = drw.up_fix.gh, .sx = drw.up_fix.sx, .sy = drw.up_fix.sy};
     const float *g = (const float *)(uintptr_t)addr;
     static float buf[0x10000 / 4];
     static int nlog;
@@ -5156,17 +5150,17 @@ static bool up_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out) 
         bool match = false;
         for (int k = -2; k <= 2 && !match; k++) {
             float f = k < 0 ? 1.0f / (float)(1 << -k) : (float)(1 << k), tol = f < 1 ? 0 : f - 1;
-            match = fabsf(w - (float)up_fix.gw * f) <= tol && fabsf(h - (float)up_fix.gh * f) <= tol;
+            match = fabsf(w - (float)drw.up_fix.gw * f) <= tol && fabsf(h - (float)drw.up_fix.gh * f) <= tol;
         }
         if (!match) continue;
         if (!m->found) memcpy(buf, g, nw * 4);
         m->found = true;
-        buf[i] = w * up_fix.sx, buf[i + 1] = h * up_fix.sy;
-        buf[i + 2] = g[i + 2] / up_fix.sx, buf[i + 3] = g[i + 3] / up_fix.sy;
+        buf[i] = w * drw.up_fix.sx, buf[i + 1] = h * drw.up_fix.sy;
+        buf[i + 2] = g[i + 2] / drw.up_fix.sx, buf[i + 3] = g[i + 3] / drw.up_fix.sy;
         if (nlog < 4) {
             nlog++;
             LOG("[upsample] %ux%u target at %.2fx%.2f: texel grid %gx%g -> %gx%g (vertex constant buffer %llx row %llu)\n",
-                up_fix.gw, up_fix.gh, up_fix.sx, up_fix.sy, w, h, buf[i], buf[i + 1], (unsigned long long)addr,
+                drw.up_fix.gw, drw.up_fix.gh, drw.up_fix.sx, drw.up_fix.sy, w, h, buf[i], buf[i + 1], (unsigned long long)addr,
                 (unsigned long long)(i / 4));
         }
     }
@@ -5179,15 +5173,15 @@ static bool up_patch_frag(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *
     __typeof__(memo[0]) *m = &memo[(addr >> 8) & 7];
     uint64_t gen = __atomic_load_n(&gcopy_gen, __ATOMIC_RELAXED), seq = vk_pending_seq();
     if (m->addr == addr && m->size == size && m->gen == gen && m->serial == uub_serial && m->seq == seq &&
-        m->tw == up_fix.tw && m->th == up_fix.th && m->aw == up_fix.aw && m->ah == up_fix.ah) {
+        m->tw == drw.up_fix.tw && m->th == drw.up_fix.th && m->aw == drw.up_fix.aw && m->ah == drw.up_fix.ah) {
         if (m->found) *out = m->d;
         return m->found;
     }
-    *m = (__typeof__(*m)){.addr = addr, .size = size, .gen = gen, .serial = uub_serial, .seq = seq, .tw = up_fix.tw,
-                          .th = up_fix.th, .aw = up_fix.aw, .ah = up_fix.ah};
-    if (!up_fix.tw || !up_fix.th || (up_fix.tw == up_fix.aw && up_fix.th == up_fix.ah)) return false;
+    *m = (__typeof__(*m)){.addr = addr, .size = size, .gen = gen, .serial = uub_serial, .seq = seq, .tw = drw.up_fix.tw,
+                          .th = drw.up_fix.th, .aw = drw.up_fix.aw, .ah = drw.up_fix.ah};
+    if (!drw.up_fix.tw || !drw.up_fix.th || (drw.up_fix.tw == drw.up_fix.aw && drw.up_fix.th == drw.up_fix.ah)) return false;
     const float *g = (const float *)(uintptr_t)addr;
-    float tx = 1.0f / (float)up_fix.tw, ty = 1.0f / (float)up_fix.th;
+    float tx = 1.0f / (float)drw.up_fix.tw, ty = 1.0f / (float)drw.up_fix.th;
     static float buf[0x10000 / 4];
     static int nlog;
     uint64_t nw = (size < sizeof buf ? size : sizeof buf) / 4;
@@ -5195,11 +5189,11 @@ static bool up_patch_frag(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *
         if (fabsf(g[i] - tx) > tx * 1e-5f || fabsf(g[i + 1] - ty) > ty * 1e-5f) continue;
         if (!m->found) memcpy(buf, g, nw * 4);
         m->found = true;
-        buf[i] = 1.0f / (float)up_fix.aw, buf[i + 1] = 1.0f / (float)up_fix.ah;
+        buf[i] = 1.0f / (float)drw.up_fix.aw, buf[i + 1] = 1.0f / (float)drw.up_fix.ah;
         if (nlog < 4) {
             nlog++;
             LOG("[upsample] %ux%u texture at %ux%u: fragment texel size %g %g -> %g %g (constant buffer %llx word %llu)\n",
-                up_fix.tw, up_fix.th, up_fix.aw, up_fix.ah, tx, ty, buf[i], buf[i + 1], (unsigned long long)addr,
+                drw.up_fix.tw, drw.up_fix.th, drw.up_fix.aw, drw.up_fix.ah, tx, ty, buf[i], buf[i + 1], (unsigned long long)addr,
                 (unsigned long long)i);
         }
     }
@@ -5222,7 +5216,7 @@ static bool up_patch_frag(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *
 //   line, inset, and shadow all meet the corners when the frame spans a wider window.
 // In a copy of the buffer, as rt_persp makes them: m00 / shape on a wider window, m11 x shape on a narrower one.
 // - a pane wholly past the edges (a layout's parts kept off screen: a pane with a texture nothing draws into, at the
-//   inventory's description box) is not drawn (hud_clip, scissor_rect), as it is never seen on the console.
+//   inventory's description box) is not drawn (drw.hud_clip, scissor_rect), as it is never seen on the console.
 // SAVAGEWIND_NO_HUD_FIX=1: off (Gameplay > HUD size, hud_scale.h, stays).
 static bool hud_frame_end(const float *g, const float *mv, const float *rc, float m00, float shape) {
     if (!framepace_menu_ui() || mv[8] || mv[9] || mv[11] >= 0) return false;
@@ -5309,7 +5303,7 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
     // A pause menu's panes are laid out to be cut by the console's 16:9 screen: a frame running on past its side, the
     // next page's panels and labels waiting there, a frame's ends while the menu opens (the game then takes the
     // picture it blurs for the menu's background, and they stayed in it). On a wider window they are cut at the 16:9
-    // screen's sides too (hud_cut, scissor_rect), but not the panes stretched over the whole window (the blurred
+    // screen's sides too (drw.hud_cut, scissor_rect), but not the panes stretched over the whole window (the blurred
     // picture of the game, a fade).
     bool menu_cut = shape > 1 && !off && framepace_menu_ui() && !framepace_map_ui();
     // The loading screen on a wider window shows at 16:9 (output_scale, #98), but the status icons it draws over its
@@ -5346,7 +5340,7 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
         float text_matrix[32];
         memcpy(text_matrix, g, sizeof text_matrix);
         for (int k = 0; k < 4; k++) text_matrix[k] /= shape;
-        hud_cut = menu_cut;
+        drw.hud_cut = menu_cut;
         float tx = text_matrix[3] / text_matrix[15], ty = text_matrix[7] / text_matrix[15];
         if (hud_s != 1 && !hud_context_native(shape, tx, ty, edge_x, edge_y) &&
             !(hud_quick && hud_quick_keeps(tx, ty, edge_x, edge_y)))
@@ -5363,7 +5357,7 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
     // Keep their projection and apply the same HUD placement as their captured shadow or button plate.
     float combined_scale[2];
     if (hud_combined_shape_at(g, size, shape, combined_scale, hud_kind() == UI_LAYOUT_TALK)) {
-        hud_cut = menu_cut;
+        drw.hud_cut = menu_cut;
         static float buf[0x10000 / 4];
         uint64_t n = size > sizeof buf ? sizeof buf : size;
         memcpy(buf, g, n);
@@ -5408,11 +5402,11 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
     if (!(g[0] > 0 && g[5] > 0 && g[14] == -1 && !g[1] && !g[2] && !g[3] && !g[4] && !g[6] && !g[7] && !g[8] && !g[9] &&
           !g[12] && !g[13] && !g[15])) {
         // (ui2d text whose projection and position are combined and already wide: the next page's labels)
-        if (size == 128 && g[0] > 0 && g[5] < 0 && g[14] == -1 && g[15] > 0) hud_cut = menu_cut;
+        if (size == 128 && g[0] > 0 && g[5] < 0 && g[14] == -1 && g[15] > 0) drw.hud_cut = menu_cut;
         return false;
     }
     bool tall = shape < 1;  // (a taller window: the view widened vertically, m11 x shape)
-    hud_cut = menu_cut;
+    drw.hud_cut = menu_cut;
     float ratio = g[5] / g[0], flat = 16.0f / 9.0f, wide = flat * shape;
     bool is_flat = fabsf(ratio - flat) < 0.002f, is_wide = fabsf(ratio - wide) < 0.002f * fmaxf(shape, 1.0f);
     if (!is_flat && !is_wide) return false;
@@ -5467,9 +5461,9 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
                 else m00 *= shape;
                 stretched = true;
             }
-            if (stretched && !frame_end) hud_cut = false;  // (a frame's ends: cut, see above)
+            if (stretched && !frame_end) drw.hud_cut = false;  // (a frame's ends: cut, see above)
             float clip_edge = tall_map ? 1 : edge;
-            if (lo < 1e8f && (hi <= -clip_edge || lo >= clip_edge)) hud_clip = true;  // (wholly off the view)
+            if (lo < 1e8f && (hi <= -clip_edge || lo >= clip_edge)) drw.hud_clip = true;  // (wholly off the view)
         }
     }
     // Pause chrome moves to the taller view's edges. Its window ends grow between the relocated strips.
@@ -5550,7 +5544,6 @@ static bool fxaa_shader(uint64_t fs_hash) {
     return fs_hash == 0x058188a1db3e22e9ull  // in play: console FXAA
         || fs_hash == 0x0a849327680eee9full; // the pause menu: quality FXAA
 }
-static bool fxaa_off;  // (the draw in progress)
 static bool fxaa_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out) {
     if (size < 0x40) return false;
     static float buf[0x10000 / 4];
@@ -5641,11 +5634,11 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
         return ubo_span(vk_transient_copy(zeros, size, 256), size);
     }
     VkDescriptorBufferInfo direct;
-    if (stage == 1 && k == 3 && fxaa_off && fxaa_patch(r.addr, size, &direct)) return direct;  // (see fxaa_patch)
+    if (stage == 1 && k == 3 && drw.fxaa_off && fxaa_patch(r.addr, size, &direct)) return direct;  // (see fxaa_patch)
     if (gw_ubo_direct(r.addr, size, &direct)) return direct;  // (written by a storing shader: read in place, see gw_note)
-    if (stage == 1 && sdw_fix.s > 1 && sdw_patch(r.addr, size, &direct)) return direct;  // (texel size: see sdw_fix)
-    if (stage == 0 && up_fix.sx > 0 && up_patch(r.addr, size, &direct)) return direct;  // (up_fix: texel grid)
-    if (stage == 1 && up_fix.sx > 0 && up_patch_frag(r.addr, size, &direct)) return direct;  // (up_fix: texel step)
+    if (stage == 1 && drw.sdw_fix.s > 1 && sdw_patch(r.addr, size, &direct)) return direct;  // (texel size: see drw.sdw_fix)
+    if (stage == 0 && drw.up_fix.sx > 0 && up_patch(r.addr, size, &direct)) return direct;  // (drw.up_fix: texel grid)
+    if (stage == 1 && drw.up_fix.sx > 0 && up_patch_frag(r.addr, size, &direct)) return direct;  // (drw.up_fix: texel step)
     if (stage == 0 && k == 3 && hud_patch(r.addr, size, &direct)) return direct;  // (a 16:9 HUD layer: see hud_patch)
     if (ubo_direct(r.addr, size, &direct)) return direct;  // (an integrated GPU reads the game's memory itself)
     // snapshot: later CPU writes must not leak in. Shared by the draws of one submission binding the same range:
@@ -7978,12 +7971,12 @@ static inline __attribute__((always_inline)) VkDescriptorSet stage_set_prepare_i
         if (b->type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER && b->binding >= 32) {
             int ti = (int)b->binding - 32;
             float sc[2]; uint32_t wh[2];
-            if (ti < si->ntex && pre_ii && ti < 64) { ii[n] = pre_ii[ti]; sc[0] = tex_sc[sg][ti][0]; sc[1] = tex_sc[sg][ti][1]; wh[0] = tex_wh[sg][ti][0]; wh[1] = tex_wh[sg][ti][1]; }
+            if (ti < si->ntex && pre_ii && ti < 64) { ii[n] = pre_ii[ti]; sc[0] = drw.tex_sc[sg][ti][0]; sc[1] = drw.tex_sc[sg][ti][1]; wh[0] = drw.tex_wh[sg][ti][0]; wh[1] = drw.tex_wh[sg][ti][1]; }
             else if (ti < si->ntex) texture_info(stage, si, ti, &ii[n], sc, wh);
             else { ii[n] = (VkDescriptorImageInfo){vk_default_sampler(true), vk_dummy_view(TEXTYPE_2D), VK_IMAGE_LAYOUT_GENERAL}; sc[0] = sc[1] = 1; wh[0] = wh[1] = 0; }
             if (ti < 64) {
-                tex_sc[sg][ti][0] = sc[0]; tex_sc[sg][ti][1] = sc[1];
-                tex_wh[sg][ti][0] = wh[0]; tex_wh[sg][ti][1] = wh[1];
+                drw.tex_sc[sg][ti][0] = sc[0]; drw.tex_sc[sg][ti][1] = sc[1];
+                drw.tex_wh[sg][ti][0] = wh[0]; drw.tex_wh[sg][ti][1] = wh[1];
             }
             w[n].pImageInfo = &ii[n];
         } else if (b->type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER && b->binding == GMEM_BUFFER_INDEX && maxwell_gmem_bda) {
@@ -8034,7 +8027,7 @@ static inline __attribute__((always_inline)) VkDescriptorSet stage_set_prepare_i
             if (rscale_row0) memcpy(rs[0], rscale_row0, 16);
             else rs[0][0] = rs[0][1] = 1, rs[0][2] = rs[0][3] = 0;
             for (int t = 0; t < si->ntex && t < 64; t++)
-                rs[1 + t][0] = tex_sc[sg][t][0], rs[1 + t][1] = tex_sc[sg][t][1], rs[1 + t][2] = rs[1 + t][3] = 0;
+                rs[1 + t][0] = drw.tex_sc[sg][t][0], rs[1 + t][1] = drw.tex_sc[sg][t][1], rs[1 + t][2] = rs[1 + t][3] = 0;
             bi[n] = ubo_span(copy_dedupe_in(sg ? DEDUPE_RSCALE_F : DEDUPE_RSCALE_V, rs, (uint64_t)rows * 16, sizeof rs, 256), sizeof rs);
         }
         w[n].pBufferInfo = &bi[n];
@@ -8096,7 +8089,7 @@ static __attribute__((noinline)) VkDescriptorSet stage_set_reuse_on(Prog *p, VkD
     atomic_fetch_add_explicit(&stage_reuse_calls, 1, memory_order_relaxed);
     if (!opts || off || stage != 1 || set != 1 || !p->reuse_stage[1] || si->uses_gmem || si->writes_gmem ||
         si->ntex < 0 || si->ntex > 64 || !pre_ii || !rscale_row0 || !tint || !st.program ||
-        sdw_fix.s > 1 || up_fix.sx > 0 || fxaa_off)
+        drw.sdw_fix.s > 1 || drw.up_fix.sx > 0 || drw.fxaa_off)
         return stage_set(p, layout, set, stage, si, rscale_row0, tint, gx, gy, gz, pre_ii, dyn, ndyn);
     atomic_fetch_add_explicit(&stage_reuse_eligible, 1, memory_order_relaxed);
     static struct {
@@ -8124,7 +8117,7 @@ static __attribute__((noinline)) VkDescriptorSet stage_set_reuse_on(Prog *p, VkD
         last->mask == mask && last->ntex == si->ntex &&
         !memcmp(last->row, rscale_row0, sizeof last->row) && !memcmp(last->tint, tint, sizeof last->tint) &&
         !memcmp(last->images, pre_ii, sizeof *pre_ii * si->ntex) &&
-        !memcmp(last->scales, tex_sc[1], sizeof last->scales[0] * si->ntex);
+        !memcmp(last->scales, drw.tex_sc[1], sizeof last->scales[0] * si->ntex);
     if (same && opts == 1)
         same = last->p == p && last->program == st.program &&
             !memcmp(last->ubuf, st.ubuf[1], sizeof last->ubuf) && !memcmp(last->sbuf, st.sbuf[1], sizeof last->sbuf);
@@ -8153,7 +8146,7 @@ static __attribute__((noinline)) VkDescriptorSet stage_set_reuse_on(Prog *p, VkD
     memcpy(last->ubuf, st.ubuf[1], sizeof last->ubuf); memcpy(last->sbuf, st.sbuf[1], sizeof last->sbuf);
     memcpy(last->row, rscale_row0, sizeof last->row); memcpy(last->tint, tint, sizeof last->tint);
     memcpy(last->images, pre_ii, sizeof *pre_ii * si->ntex);
-    memcpy(last->scales, tex_sc[1], sizeof last->scales[0] * si->ntex);
+    memcpy(last->scales, drw.tex_sc[1], sizeof last->scales[0] * si->ntex);
     last->descriptor = descriptor; last->n = n; memcpy(last->offsets, offsets, sizeof offsets[0] * n);
     if (dyn && ndyn) { memcpy(dyn + *ndyn, offsets, sizeof offsets[0] * n); *ndyn += n; }
     return descriptor;
@@ -9696,17 +9689,17 @@ have_pipe:
     // ---- textures first (their scales feed the widescreen decision and the rscale table), then the viewport
     float *vp = st.viewport[0];
     float zn = st.depth_range[0][0], zf = st.depth_range[0][1];
-    vp_sx = ps.sx; vp_sy = ps.sy; vp_ox = 0; vp_oy = 0;
+    drw.vp_sx = ps.sx; drw.vp_sy = ps.sy; drw.vp_ox = 0; drw.vp_oy = 0;
     float tint[8] = {0};  // per-draw tint (translate.c `ltint`): no game-specific highlight sets one yet
-    // fragment textures are bound before deciding the viewport (tex_sc / tex_wh), rscale depends on the decision:
-    // build the vertex set now and the fragment set after the decision (stage_set fills tex_sc for stage 1).
+    // fragment textures are bound before deciding the viewport (drw.tex_sc / drw.tex_wh), rscale depends on the decision:
+    // build the vertex set now and the fragment set after the decision (stage_set fills drw.tex_sc for stage 1).
     if (profd) prof_dyn += SDL_GetTicksNS() - prof_td_;
     PROFD_T0();
     ProfZone pz3 = PZ_NOW();
     PZ_SPAN("exec/draw/dyn", pz2, pz3);
     uint32_t dyn[64];
     int ndyn = 0;
-    hud_clip = hud_cut = false;  // (hud_patch, while the vertex stage's constant buffers are bound)
+    drw.hud_clip = drw.hud_cut = false;  // (hud_patch, while the vertex stage's constant buffers are bound)
     VkDescriptorSet vset = stage_set(pr, pr->set_layout[0], 0, 0, pr->vi, NULL, NULL, 0, 0, 0, NULL, dyn, &ndyn);
     PROFD_ADD(prof_sets);
     ProfZone pz4 = PZ_NOW();
@@ -9715,7 +9708,7 @@ have_pipe:
     // path runs on one thread, and draw_ does not call itself)
     static VkDescriptorImageInfo fii[64] __attribute__((aligned(64)));
     uint64_t prof_tx_ = profd ? SDL_GetTicksNS() : 0;
-    sdw_fix.s = 0;
+    drw.sdw_fix.s = 0;
     shadow_copy_note(pr->fi);
     if (stage_cpu_opts() & 64) tex_prefetch(1, pr->fi, 1);
     for (int i = 0; i < pr->fi->ntex && i < 64; i++) {
@@ -9731,14 +9724,14 @@ have_pipe:
             sc[0] = sc[1] = 1;
         }
 
-        tex_sc[1][i][0] = sc[0]; tex_sc[1][i][1] = sc[1]; tex_wh[1][i][0] = wh[0]; tex_wh[1][i][1] = wh[1];
-        if (sc[0] > 1 && wh[0] == wh[1] && !sdw_fix.s) {  // a shadow map made bigger (its texel size: cbuf_info)
+        drw.tex_sc[1][i][0] = sc[0]; drw.tex_sc[1][i][1] = sc[1]; drw.tex_wh[1][i][0] = wh[0]; drw.tex_wh[1][i][1] = wh[1];
+        if (sc[0] > 1 && wh[0] == wh[1] && !drw.sdw_fix.s) {  // a shadow map made bigger (its texel size: cbuf_info)
             NvnTexture *t = shader_texture_object(1, &pr->fi->tex[i]);
-            if (t && vk_texture_scale_group(t) == RS_SHADOW) { sdw_fix.gw = wh[0]; sdw_fix.gh = wh[1]; sdw_fix.s = sc[0]; }
+            if (t && vk_texture_scale_group(t) == RS_SHADOW) { drw.sdw_fix.gw = wh[0]; drw.sdw_fix.gh = wh[1]; drw.sdw_fix.s = sc[0]; }
         }
     }
-    up_fix.sx = 0;
-    {   // a scaled scene's half-size buffers brought back by nearest depth: the texel grid and step scaled (up_fix)
+    drw.up_fix.sx = 0;
+    {   // a scaled scene's half-size buffers brought back by nearest depth: the texel grid and step scaled (drw.up_fix)
         static int off = -1;
         if (off < 0) off = getenv("SAVAGEWIND_NO_UPSAMPLE_FIX") != NULL;
         bool scaled = !off && st.rt.ncolor && st.rt.color[0] && (ps.sx > 1 || ps.sy > 1);
@@ -9748,13 +9741,13 @@ have_pipe:
             pr->fs_gather = slot >= 0 && slot < pr->fi->ntex && slot < 64 ? (uint8_t)(2 + slot) : 1;
         }
         int gs = scaled ? pr->fs_gather - 2 : -1;
-        NvnTexture *gt = gs >= 0 && fabsf(tex_sc[1][gs][0] - ps.sx) < 0.01f * ps.sx &&
-                         fabsf(tex_sc[1][gs][1] - ps.sy) < 0.01f * ps.sy ? shader_texture_object(1, &pr->fi->tex[gs]) : NULL;
+        NvnTexture *gt = gs >= 0 && fabsf(drw.tex_sc[1][gs][0] - ps.sx) < 0.01f * ps.sx &&
+                         fabsf(drw.tex_sc[1][gs][1] - ps.sy) < 0.01f * ps.sy ? shader_texture_object(1, &pr->fi->tex[gs]) : NULL;
         TexBackend *gb = gt ? gt->backend : NULL;
         if (gb && gt->width && gt->height) {
-            up_fix.gw = st.rt.color[0]->width, up_fix.gh = st.rt.color[0]->height;
-            up_fix.sx = (float)gb->width / (float)gt->width, up_fix.sy = (float)gb->height / (float)gt->height;
-            up_fix.tw = gt->width, up_fix.th = gt->height, up_fix.aw = gb->width, up_fix.ah = gb->height;
+            drw.up_fix.gw = st.rt.color[0]->width, drw.up_fix.gh = st.rt.color[0]->height;
+            drw.up_fix.sx = (float)gb->width / (float)gt->width, drw.up_fix.sy = (float)gb->height / (float)gt->height;
+            drw.up_fix.tw = gt->width, drw.up_fix.th = gt->height, drw.up_fix.aw = gb->width, drw.up_fix.ah = gb->height;
             ndyn = 0;  // (the vertex set again, with its constants: the first of the draw's dynamic offsets)
             vset = stage_set(pr, pr->set_layout[0], 0, 0, pr->vi, NULL, NULL, 0, 0, 0, NULL, dyn, &ndyn);
         }
@@ -9766,13 +9759,13 @@ have_pipe:
         // Draws into the swapchain image (see renderer.m): composites fill the window, UI goes in a centred 16:9 box.
         bool reads_scene = false;
         for (int i = 0; i < pr->fi->ntex && i < 64; i++)
-            if ((tex_sc[1][i][0] != 1 || tex_sc[1][i][1] != 1) && tex_wh[1][i][0] == st.rt.color[0]->width &&
-                tex_wh[1][i][1] == st.rt.color[0]->height)
+            if ((drw.tex_sc[1][i][0] != 1 || drw.tex_sc[1][i][1] != 1) && drw.tex_wh[1][i][0] == st.rt.color[0]->width &&
+                drw.tex_wh[1][i][1] == st.rt.color[0]->height)
                 reads_scene = true;
         bool fullscreen_quad = r->x[2] <= 6 && st.viewport[0][0] == 0 && st.viewport[0][1] == 0 &&
                                st.viewport[0][2] >= st.rt.color[0]->width && st.viewport[0][3] >= st.rt.color[0]->height;
         bool fullscreen_fill = pr->fi->ntex == 0 && fullscreen_quad;
-        if (fullscreen_quad && !reads_scene && pr->fi->ntex == 1 && (tex_sc[1][0][0] != 1 || tex_sc[1][0][1] != 1)) reads_scene = true;
+        if (fullscreen_quad && !reads_scene && pr->fi->ntex == 1 && (drw.tex_sc[1][0][0] != 1 || drw.tex_sc[1][0][1] != 1)) reads_scene = true;
         static uint64_t wide_frame = ~0ull;
         if (reads_scene) wide_frame = renderer_present_count();
         bool fade_fill = false;
@@ -9787,9 +9780,9 @@ have_pipe:
             int pw, ph;
             pass_size(&pw, &ph);
             float u = fminf(ps.sx, ps.sy);
-            vp_sx = vp_sy = u;
-            vp_ox = (pw - st.rt.color[0]->width * u) * 0.5f;
-            vp_oy = (ph - st.rt.color[0]->height * u) * 0.5f;
+            drw.vp_sx = drw.vp_sy = u;
+            drw.vp_ox = (pw - st.rt.color[0]->width * u) * 0.5f;
+            drw.vp_oy = (ph - st.rt.color[0]->height * u) * 0.5f;
         }
     }
     // A full-screen draw into a smaller, fixed-size capture samples the reshaped final image.
@@ -9812,14 +9805,14 @@ have_pipe:
             (int64_t)st.scissor[0][0] + st.scissor[0][2] >= dst->width &&
             (int64_t)st.scissor[0][1] + st.scissor[0][3] >= dst->height) {
             float shape = (float)((double)s->width * src->height / ((double)s->height * src->width));
-            float sx = vp_sx * fmaxf(shape, 1), sy = vp_sy / fminf(shape, 1);
+            float sx = drw.vp_sx * fmaxf(shape, 1), sy = drw.vp_sy / fminf(shape, 1);
             float w = dst->width * sx, h = dst->height * sy, x = (ps.w - w) * 0.5f, y = (ps.h - h) * 0.5f;
             const VkPhysicalDeviceLimits *lim = &g_vk.props.limits;
             if (isfinite(w) && isfinite(h) && w > 0 && h > 0 &&
                 w <= lim->maxViewportDimensions[0] && h <= lim->maxViewportDimensions[1] &&
                 x >= lim->viewportBoundsRange[0] && y >= lim->viewportBoundsRange[0] &&
                 x + w <= lim->viewportBoundsRange[1] && y + h <= lim->viewportBoundsRange[1]) {
-                vp_sx = sx; vp_sy = sy; vp_ox = x; vp_oy = y;
+                drw.vp_sx = sx; drw.vp_sy = sy; drw.vp_ox = x; drw.vp_oy = y;
                 if (ENV_ONCE("SAVAGEWIND_LOG_COPIES"))
                     LOG("[copy] fixed-aspect capture %ux%u backing %ux%u -> %ux%u: viewport %.3fx%.3f at %.3f,%.3f\n",
                         src->width, src->height, s->width, s->height, dst->width, dst->height, w, h, x, y);
@@ -9828,29 +9821,29 @@ have_pipe:
     }
     {
         float k = 1.0f;  // (horizontal stretch of a camera-attached effect: none, the view keeps its 16:9 shape)
-        float vx = vp[0] * vp_sx + vp_ox, vw = vp[2] * vp_sx;
-        set_viewport(vx, vp[1] * vp_sy + vp_oy, vw, vp[3] * vp_sy, zn, zf);
+        float vx = vp[0] * drw.vp_sx + drw.vp_ox, vw = vp[2] * drw.vp_sx;
+        set_viewport(vx, vp[1] * drw.vp_sy + drw.vp_oy, vw, vp[3] * drw.vp_sy, zn, zf);
         if (g_debug_frame) {
             VkRect2D sr = scissor_rect();
             LOG("[draw]   vp %.2f %.2f %.2f %.2f (stretch %.3f, fs hash %016llx) scissor %d %d %u %u | guest sc %d %d %d %d | pass %ux%u s %.4f %.4f | depth range %.7f %.7f\n",
-                vx, vp[1] * vp_sy + vp_oy, vw, vp[3] * vp_sy, k, (unsigned long long)g_cur_fs_hash, sr.offset.x, sr.offset.y,
+                vx, vp[1] * drw.vp_sy + drw.vp_oy, vw, vp[3] * drw.vp_sy, k, (unsigned long long)g_cur_fs_hash, sr.offset.x, sr.offset.y,
                 sr.extent.width, sr.extent.height, st.scissor[0][0], st.scissor[0][1], st.scissor[0][2], st.scissor[0][3], ps.w, ps.h,
-                vp_sx, vp_sy, zn, zf);
+                drw.vp_sx, drw.vp_sy, zn, zf);
         }
     }
     apply_scissor();
-    float rs0[4] = {vp_sx, vp_sy, vp_ox, vp_oy};
+    float rs0[4] = {drw.vp_sx, drw.vp_sy, drw.vp_ox, drw.vp_oy};
     uint64_t prof_t1_ = profd ? SDL_GetTicksNS() : 0;
     ProfZone pz6 = PZ_NOW();
     // (Video > Game's FXAA: fxaa_patch; off under an upscaler that anti-aliases, rt_temporal_upscaler)
-    fxaa_off = fxaa_shader(g_cur_fs_hash) && (!g_settings.game_fxaa || rt_temporal_upscaler());
-    if (fxaa_off) {
+    drw.fxaa_off = fxaa_shader(g_cur_fs_hash) && (!g_settings.game_fxaa || rt_temporal_upscaler());
+    if (drw.fxaa_off) {
         static uint64_t logged[2];
         int i = g_cur_fs_hash == logged[0] ? -1 : !logged[0] ? 0 : g_cur_fs_hash == logged[1] ? -1 : !logged[1] ? 1 : -1;
         if (i >= 0) LOG("[fxaa] the game's FXAA off (fs hash %016llx)\n", (unsigned long long)(logged[i] = g_cur_fs_hash));
     }
     VkDescriptorSet fset = stage_set_reuse(pr, pr->set_layout[1], 1, 1, pr->fi, rs0, tint, 0, 0, 0, fii, dyn, &ndyn);
-    sdw_fix.s = 0, up_fix.sx = 0, fxaa_off = false;
+    drw.sdw_fix.s = 0, drw.up_fix.sx = 0, drw.fxaa_off = false;
     if (profd) prof_sets += SDL_GetTicksNS() - prof_t1_;
     PZ_SPAN("exec/draw/sets", pz6, PZ_NOW());
     VkDescriptorSet sets[2] = {vset, fset};
@@ -10008,7 +10001,7 @@ have_pipe:
         if (oq_seq[i] != vk_pending_seq()) {  // (not reused within one submission)
             if (oq_seq[i] > vk_completed_seq()) vk_wait_seq(oq_seq[i]);
             oq_seq[i] = vk_pending_seq();
-            oq_scale[i] = vp_sx * vp_sy > 0 ? vp_sx * vp_sy : 1;
+            oq_scale[i] = drw.vp_sx * drw.vp_sy > 0 ? drw.vp_sx * drw.vp_sy : 1;
             rec_CmdResetQueryPool(vk_upload_cmd(), oq_pool, i, 1);
             rec_CmdBeginQuery(cb, oq_pool, i, g_vk.occlusion_precise ? VK_QUERY_CONTROL_PRECISE_BIT : 0);
             oq_run[oq_nrun++] = i;

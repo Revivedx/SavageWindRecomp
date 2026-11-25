@@ -1309,7 +1309,7 @@ Pendiente:
        del panel c3[33]): una capa cuya matriz el juego hizo sin sead (el cursor de selección) recibe la ensanchada;
        un panel de una capa de 40° que cubre todo el ancho 16:9 (fundidos, el negro de la carga, el fondo borroso de
        los menús) recibe la 16:9, que lo estira a la ventana; un panel entero fuera del 16:9 (partes del layout que en
-       la consola no se ven) no se dibuja (`hud_clip`). Los scissors parciales del target final se comprimen igual
+       la consola no se ven) no se dibuja (`drw.hud_clip`). Los scissors parciales del target final se comprimen igual
        (`scissor_rect`: la máscara del minimapa).
      - Menús: con el estado de pausa 2 (páginas del menú de pausa y mapa, `framepace_menu_ui`) se presenta el centro
        16:9 de la imagen con bandas (`OutScale.crop`), igual que en una pantalla 16:9; el menú rápido (estado 4) llena

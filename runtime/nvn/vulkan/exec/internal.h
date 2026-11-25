@@ -122,6 +122,18 @@ typedef struct {
     bool chunk_hold;            // a shader that stores to guest memory was recorded since the last submission
 } ExecBarrier;
 
+// The draw in progress: what draw_ works out for it and its callees (texture_info, cbuf_info, hud_patch) read or fill.
+typedef struct {
+    float vp_sx, vp_sy, vp_ox, vp_oy;  // its viewport's scale and offset
+    float tex_sc[2][64][2];            // per stage and texture: the scale of the image bound
+    uint32_t tex_wh[2][64][2];
+    struct { uint32_t gw, gh; float s; } sdw_fix;  // (s 0: it samples no bigger shadow map)
+    struct { uint32_t gw, gh; float sx, sy; uint32_t tw, th, aw, ah; } up_fix;  // (sx 0: not such a draw)
+    bool fxaa_off;
+    bool hud_clip;  // it is a 16:9 layout's pane wholly off a 16:9 screen: not drawn (hud_patch)
+    bool hud_cut;   // a pause menu pane across a 16:9 screen's side: cut there, as the console's screen does (hud_patch)
+} ExecDraw;
+
 // Command buffer state a draw recorded last, so a draw records only what differs (see dyn_check).
 typedef struct {
     uint64_t epoch;
@@ -146,6 +158,7 @@ extern ExecDrawCache dc;
 extern ExecPass ps;
 extern ExecFeedback fbk;
 extern ExecBarrier barr;
+extern ExecDraw drw;
 
 // Generations that invalidate cached command-buffer state.
 extern uint64_t dyn_epoch;
