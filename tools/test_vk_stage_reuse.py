@@ -8,7 +8,7 @@ import tempfile
 
 def function(source, name):
     pos=source.index(name+'(')
-    start=source.rfind('static ',0,pos)
+    start=source.rfind('\n',0,pos)+1
     brace=source.index('{',pos)
     end,depth=brace+1,1
     while depth:
