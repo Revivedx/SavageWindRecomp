@@ -383,10 +383,11 @@ SITES = [
     Site('battle_info_b', 'code', 'a9402428 a91da408 d3609d28 34000008/ff00001f 52800048 b901e808 d65f03c0 '
          'b941dc08', 0),
     Site('battle_info_c', 'code', 'b9400028 b901d008 d65f03c0', 0),
-    # the horse's crash check loading its gear, and the entry of its stop check's look-ahead (tools/patches.py
-    # _horse_crash, _horse_look_ahead; Cheats > Improved horse controls)
+    # the horse's crash check loading its gear, and the entry of its stop check (tools/patches.py _horse_crash,
+    # _horse_stop_check; Cheats > Improved horse controls)
     Site('horse_crash', 'code', 'b9403428 7100111f 54000001/ff00001f d10303ff 6d072beb f90053f5 6d0823e9 a9097bfd', 0),
-    Site('horse_look_ahead', 'code', 'd105c3ff fd00a3e8 f900affc a914fbfd a9164ff4 910523fd aa0103f4 aa0003f3', 0),
+    Site('horse_stop_check', 'code', 'b940382a 3400000a/ff00001f f9400029 b9400928 37100008/fff8001f 3947102b '
+         '2a1f03e8 3500000b/ff00001f', 0),
     # Gameplay > Keep crouch after camera (tools/patches.py _camera_*; runtime/camera_stealth.c): crouch idle
     # target in the Player AI selector, Camera entry, the two Camera -> Wait exit branches, and Camera::leave().
     Site('camera_squat_idle', 'code',
@@ -650,7 +651,7 @@ OPTIONAL_GROUPS = [
     ('stamina_store',),
     ('sprint_cost', 'sprint_press_cost', 'battle_info_field', 'battle_info_b', 'battle_info_c'),  # (Cheats > Free sprint: without them it does nothing)
     ('camera_squat_idle', 'camera_enter_start', 'camera_exit_finished', 'camera_exit_active', 'camera_leave'),
-    ('horse_crash', 'horse_look_ahead'),  # (Cheats > Improved horse controls' stops: without them it does nothing)
+    ('horse_crash', 'horse_stop_check'),  # (Cheats > Improved horse controls' stops: without them it does nothing)
     ('horse_ride', 'horse_stick_scale', 'horse_play_rate'),  # (Cheats > Improved horse controls' steering: without them it does nothing)
     ('tp_gate',),  # (a far teleport of the control endpoint: without it a long jump freezes the world)
     ('title_version_text_a', 'title_version_text_b'),  # (the title's version line in full: without them it stops at 15 letters)
@@ -907,7 +908,7 @@ KNOWN = {
         'battle_info_b': 0x700133dcac,
         'battle_info_c': 0x7001349648,
         'horse_crash': 0x70006b16c4,
-        'horse_look_ahead': 0x70006b4218,
+        'horse_stop_check': 0x70006b19c8,
         'camera_squat_idle': 0x7000ca9ef0,
         'camera_enter_start': 0x7000caa6f4,
         'camera_exit_finished': 0x7000cabfb4,

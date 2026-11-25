@@ -1249,14 +1249,18 @@ def _battle_info(which):
                 f'  /* {a:#x}: the battle info\'s count (enemies in battle: Cheats) */')
     return patch
 # Cheats > Improved horse controls, its stops (runtime/sure_footed.c): every frame the horse's update (1.9.0
-# 0x70006afe4c; x1 of its checks is its state: the gear at +0x34) asks two checks whether to stop the horse (new gear
-# 0). The crash check (0x70006b16c4), only at the top gear (4), looks at what the horse's Body touches: a steep face
-# ahead, higher than the horse can step, is a crash, flagged (+0x3ac bit 15) for the animation picker (0x70006b26bc) to
-# play Crash. Without a crash, the stop check (0x70006b19c8) stops a horse at the top gear when its look-ahead
-# (0x70006b4218, as far as the gear and speed carry it) finds the way blocked: a tree, a rock, a cliff edge; at lower
-# gears it stops only a horse nothing drives. The picker plays Courbette for a stop from gear 3 or 4. Both rears are
-# the long stop at an obstacle; with the option on, the crash check reads gear 0 and the look-ahead finds the way
-# clear, so no obstacle stops a horse, and the stop check's other stop stays the game's.
+# 0x70006afe4c; x1 of its checks is its state: the gear at +0x34, the gear it just picked at +0x38) asks two checks
+# whether to stop the horse (new gear 0). The crash check (0x70006b16c4), only at the top gear (4), looks at what the
+# horse's Body touches: a steep face ahead, higher than the horse can step, is a crash, flagged (+0x3ac bit 15) for
+# the animation picker (0x70006b26bc) to play Crash. Without a crash, the stop check (0x70006b19c8) overrules a picked
+# gear above 0 for what lies ahead, stopping a horse or keeping a standing one still. The horse's probe rays
+# (0x70006b0eac) end in the state's hit flags, and when the one at +0x1c4 finds nothing (the step ahead too high for
+# it, as at a big root, or no ground: a cliff edge) the check stops (or holds) the horse at any gear but the top one;
+# at the top gear it stops it only when its look-ahead (0x70006b4218, as far as the gear and speed carry it) also
+# finds the way blocked. The picker plays Courbette for a stop from gear 3 or 4, and Dislike (a short rear) for a stop
+# within half a second of a spur. A stop the rider asks for (pulling back) comes from the gear the update picks, not
+# from these checks. With the option on, the crash check reads gear 0 and the stop check answers "keep going", so no
+# obstacle stops a horse at any gear.
 
 def _horse_crash(gen, a):
     assert _word(gen, a) == 0xb9403428, hex(_word(gen, a))  # ldr w8, [x1, #0x34]
@@ -1264,10 +1268,11 @@ def _horse_crash(gen, a):
             f'  /* {a:#x}: ldr w8, [x1, #0x34] (the horse\'s gear at its crash check: Cheats) */')
 
 
-def _horse_look_ahead(gen, a):
-    assert _word(gen, a) == _sub_sp(0x170), hex(_word(gen, a))
-    return ('{ extern int rt_sure_footed(void); if (rt_sure_footed()) { c->x[0] = 1; return; } c->sp -= 0x170; }'
-            f'  /* {a:#x}: sub sp, sp, #0x170 (the horse\'s look-ahead: the way clear with Cheats) */')
+def _horse_stop_check(gen, a):
+    assert _word(gen, a) == 0xb940382a, hex(_word(gen, a))  # ldr w10, [x1, #0x38]
+    return ('{ extern int rt_sure_footed(void); if (rt_sure_footed()) { c->x[0] = 0; return; }'
+            ' c->x[10] = LD32(c->x[1] + 0x38); }'
+            f'  /* {a:#x}: ldr w10, [x1, #0x38] (the horse\'s stop check: no stop with Cheats) */')
 
 
 # Cheats > Improved horse controls, its steering (runtime/improved_horse.c). The ridden horse's update (1.9.0
@@ -1648,7 +1653,7 @@ PATCHES = {
     'battle_info_b': _battle_info(1),
     'battle_info_c': _battle_info(2),
     'horse_crash': _horse_crash,
-    'horse_look_ahead': _horse_look_ahead,
+    'horse_stop_check': _horse_stop_check,
     'camera_enter_start': _camera_enter_start,
     'camera_exit_finished': _camera_exit_finished,
     'camera_exit_active': _camera_exit_active,
