@@ -274,6 +274,7 @@ const LfInfo LF_TABLE[] = {
     {"SAVAGEWIND_NO_AUDIO", LF_KIND_TEXT, LF_GROUP_PLAY, "1", "Turns the sound off."},
     {"SAVAGEWIND_NO_BLUR_EDGE_FIX", LF_KIND_SWITCH, LF_GROUP_OTHER, "", ""},
     {"SAVAGEWIND_NO_BOOT_SPLASH", LF_KIND_SWITCH, LF_GROUP_OTHER, "", ""},
+    {"SAVAGEWIND_NO_CASCADE_BLEND", LF_KIND_SWITCH, LF_GROUP_PLAY, "1", "Uses the game's own shadow cascade cuts instead of blending the two cascades."},
     {"SAVAGEWIND_NO_CONTROLLER_STEP", LF_KIND_NUMBER, LF_GROUP_OTHER, "", ""},
     {"SAVAGEWIND_NO_DEPTH_BIAS", LF_KIND_SWITCH, LF_GROUP_OTHER, "", ""},
     {"SAVAGEWIND_NO_DEPTH_CLAMP", LF_KIND_SWITCH, LF_GROUP_OTHER, "", ""},
@@ -551,4 +552,4 @@ const LfInfo LF_TABLE[] = {
     {"SAVAGEWIND_XLATE_VERIFY", LF_KIND_TEXT, LF_GROUP_DEV, "", ""},
     {"SAVAGEWIND_YAZ0", LF_KIND_NUMBER, LF_GROUP_OTHER, "", ""},
 };
-const int LF_TABLE_N = 547;
+const int LF_TABLE_N = 548;
