@@ -75,6 +75,7 @@ typedef struct {
 typedef struct NvnDescPool {
     uint64_t addr;
     int count;
+    uint32_t sampler_gen;  // generation of the registered sampler descriptions
     void *entries;  // NvnTexEntry[] or NvnSamplerDesc[]
 } NvnDescPool;
 

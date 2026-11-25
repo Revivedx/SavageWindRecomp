@@ -1,5 +1,6 @@
 // NVN objects, builders, and state objects (everything except command recording).
 #include <stdlib.h>
+#include <stddef.h>
 #include <string.h>
 
 #include "../framepace.h"
@@ -1048,19 +1049,27 @@ NVN(nvnSamplerPoolSetDebugLabel) { (void)c; }
 NVN(nvnSamplerPoolGetMemoryPool) { RET(G(uint64_t, A(0), 8)); }
 NVN(nvnSamplerPoolGetMemoryOffset) { RET(G(uint64_t, A(0), 16)); }
 NVN(nvnSamplerPoolGetSize) { RET(G(uint32_t, A(0), 24)); }
+static void register_sampler(NvnDescPool *pool, int id, const NvnSamplerDesc *desc) {
+    NvnSamplerDesc *slot = &((NvnSamplerDesc *)pool->entries)[id];
+    // All guest sampling parameters precede the backend's cached sampler handles.
+    if (!memcmp(slot, desc, offsetof(NvnSamplerDesc, backend))) return;
+    *slot = *desc;
+    slot->backend = slot->backend_plain = NULL;
+    __atomic_add_fetch(&pool->sampler_gen, 1, __ATOMIC_RELEASE);
+}
 NVN(nvnSamplerPoolRegisterSampler) {
     NvnDescPool *d = HOST(NvnDescPool, A(0));
     int id = (int)A(1);
-    if (id >= 0 && id < d->count && HOST(NvnSamplerDesc, A(2))) {
-        NvnSamplerDesc s = *HOST(NvnSamplerDesc, A(2));
-        s.backend = s.backend_plain = NULL;  // (the pool entry gets its own VkSamplers)
-        ((NvnSamplerDesc *)d->entries)[id] = s;
-    }
+    if (id >= 0 && id < d->count && HOST(NvnSamplerDesc, A(2)))
+        register_sampler(d, id, HOST(NvnSamplerDesc, A(2)));
 }
 NVN(nvnSamplerPoolRegisterSamplerBuilder) {
     NvnDescPool *d = HOST(NvnDescPool, A(0));
     int id = (int)A(1);
-    if (id >= 0 && id < d->count) ((NvnSamplerDesc *)d->entries)[id] = sampler_desc_from_builder(AP(2));
+    if (id >= 0 && id < d->count) {
+        NvnSamplerDesc s = sampler_desc_from_builder(AP(2));
+        register_sampler(d, id, &s);
+    }
 }
 
 NvnDescPool *nvn_find_pool(NvnDescPool **reg, uint64_t guest_pool) {

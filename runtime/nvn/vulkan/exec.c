@@ -7043,7 +7043,7 @@ static void texture_info(int stage, ShaderInfo *si, int i, VkDescriptorImageInfo
         const void *tpool, *spool, *tex;
         NvnTextureView view;
         uint8_t has_view;
-        uint32_t gen;
+        uint32_t gen, sampler_gen;
         uint8_t type, stage, blend, valid;
         float bias, sc[2];
         uint32_t wh[2];
@@ -7052,9 +7052,11 @@ static void texture_info(int stage, ShaderInfo *si, int i, VkDescriptorImageInfo
     uint8_t blend = st.color_state[0] & 1;
     float bias = stage == 1 && pass_mvec >= 0 && rt_jitter_on() ? scene_mip_bias : 0;  // (the material bias, if it is one)
     uint64_t frame = vk_frame_counter();
-    uint32_t k = (uint32_t)((h * 0x9E3779B97F4A7C15ull ^ (uint64_t)st_->type << 3 ^ (uint64_t)stage << 7 ^ blend) >> 53) & 2047;
+    uint32_t sampler_gen = st.spool ? __atomic_load_n(&st.spool->sampler_gen, __ATOMIC_ACQUIRE) : 0;
+    uint32_t k = (uint32_t)(h * 0x9E3779B97F4A7C15ull >> 53) ^ ((uint32_t)st_->type << 3) ^ ((uint32_t)stage << 7) ^ blend;
+    k &= 2047;
     __typeof__(m[0]) *e = &m[k];
-    if (e->valid && e->h == h && e->frame == frame && e->gen == vk_view_gen && e->tpool == st.tpool && e->spool == st.spool &&
+    if (e->valid && e->h == h && e->frame == frame && e->gen == vk_view_gen && e->tpool == st.tpool && e->spool == st.spool && e->sampler_gen == sampler_gen &&
         e->type == st_->type && e->stage == stage && e->blend == blend && e->bias == bias && e->tex == te->tex &&
         e->has_view == te->has_view && (!te->has_view || !memcmp(&e->view, &te->view, sizeof te->view))) {
         *out = e->ii;
@@ -7063,7 +7065,7 @@ static void texture_info(int stage, ShaderInfo *si, int i, VkDescriptorImageInfo
     }
     texture_info_(stage, si, i, out, sc, wh);
     *e = (__typeof__(*e)){.h = h, .frame = frame, .tpool = st.tpool, .spool = st.spool, .tex = te->tex, .view = te->view,
-                          .has_view = te->has_view, .gen = vk_view_gen, .type = (uint8_t)st_->type,
+                          .has_view = te->has_view, .gen = vk_view_gen, .sampler_gen = sampler_gen, .type = (uint8_t)st_->type,
                           .stage = (uint8_t)stage, .blend = blend, .valid = 1, .bias = bias, .sc = {sc[0], sc[1]},
                           .wh = {wh[0], wh[1]}, .ii = *out};
 }
