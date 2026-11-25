@@ -3944,7 +3944,13 @@ static void pipe_tab_grow(void) {
     pipe_tab = nt;
     pipe_cap = cap;
 }
-static struct { PipeKey k; Pipe *pp; } pipe_memo;  // (see prog_memo)
+// What draw_ found for the previous draw (see prog_memo): its program (prog), valid while key_gen and the window's
+// conventions are the same; its pipeline key's inputs (key) and the pipeline itself (pipe).
+static struct {
+    struct { uint64_t gen; uint32_t origin, dmode; NvnProgram *np; Prog *pr; bool points; } prog;
+    struct { uint64_t gen; Prog *pr; uint8_t cls, fb; } key;
+    struct { PipeKey k; Pipe *pp; } pipe;
+} dmemo;
 
 // 8 bytes a step (PipeKey is ~700 bytes, hashed per draw); in-memory tables only - hmix values are compared with
 // stored constants (fragment-shader hashes) and must not change.
@@ -7339,7 +7345,7 @@ void vk_exec_reset(void) {
     if (pipe_tab) memset(pipe_tab, 0, pipe_cap * sizeof *pipe_tab);
     prog_n = pipe_n = 0;
     memset(prog_memo, 0, sizeof prog_memo);
-    memset(&pipe_memo, 0, sizeof pipe_memo);
+    memset(&dmemo.pipe, 0, sizeof dmemo.pipe);
     key_gen++;
     if (g_cs_tab) memset(g_cs_tab, 0, g_cs_cap * sizeof *g_cs_tab);
     g_cs_n = 0;
@@ -9138,14 +9144,13 @@ static void draw_(CmdRec *r, bool indexed) {
     if ((stage_cpu_opts() & 512) && shadow_budget_skip(true)) return;  // (a cascade layer left out of this frame, see there)
     static int no_key_gen = -1;
     if (no_key_gen < 0) no_key_gen = getenv("SAVAGEWIND_VK_NO_KEY_GEN") != NULL;
-    static struct { uint64_t gen; uint32_t origin, dmode; NvnProgram *np; Prog *pr; bool points; } pm;
     uint32_t origin = nvn_window_origin(), dmode = nvn_depth_mode();
     Prog *pr;
     bool vkey_flip = origin == 0;
     bool points = r->x[0] == 0;  // (a point list: its vertex shader writes a point size, ShaderKey.point_size)
-    if (!no_key_gen && pm.pr && pm.gen == key_gen && pm.np == st.program && pm.origin == origin && pm.dmode == dmode &&
-        pm.points == points) {
-        pr = pm.pr;
+    if (!no_key_gen && dmemo.prog.pr && dmemo.prog.gen == key_gen && dmemo.prog.np == st.program && dmemo.prog.origin == origin && dmemo.prog.dmode == dmode &&
+        dmemo.prog.points == points) {
+        pr = dmemo.prog.pr;
     } else {
         ShaderKey vkey = {0}, fkey = {0};
         vkey.glsl = fkey.glsl = 1;
@@ -9155,7 +9160,7 @@ static void draw_(CmdRec *r, bool indexed) {
         for (int i = 0; i < st.nattrib; i++) vkey.attr_kind[i] = (uint8_t)attr_kind(st.attrib[i] & 0xFF);
         for (int i = 0; i < st.rt.ncolor; i++) if (st.rt.color[i]) fkey.rt_kind[i] = (uint8_t)rt_kind(rt_format(i));
         pr = get_program(st.program, &vkey, &fkey);
-        pm.gen = key_gen; pm.np = st.program; pm.origin = origin; pm.dmode = dmode; pm.pr = pr; pm.points = points;
+        dmemo.prog.gen = key_gen; dmemo.prog.np = st.program; dmemo.prog.origin = origin; dmemo.prog.dmode = dmode; dmemo.prog.pr = pr; dmemo.prog.points = points;
     }
     if (pr && atomic_load(&pr->state) == 0 && (one_shot_target() || draw_must_happen())) wait_built(&pr->state);
     if (!pr || atomic_load(&pr->state) != 1) {
@@ -9500,13 +9505,12 @@ static void draw_(CmdRec *r, bool indexed) {
     ProfZone pz1 = PZ_NOW();
     PZ_SPAN("exec/draw/pre", pz0, pz1);
     // ---- pipeline
-    static struct { uint64_t gen; Prog *pr; uint8_t cls, fb; } km;
     Pipe *pp;
-    if (!no_key_gen && pipe_memo.pp && km.gen == key_gen && km.pr == pr && km.cls == cls && km.fb == fbk.draw) {
-        pp = pipe_memo.pp;
+    if (!no_key_gen && dmemo.pipe.pp && dmemo.key.gen == key_gen && dmemo.key.pr == pr && dmemo.key.cls == cls && dmemo.key.fb == fbk.draw) {
+        pp = dmemo.pipe.pp;
         goto have_pipe;
     }
-    km.gen = key_gen; km.pr = pr; km.cls = cls; km.fb = fbk.draw;
+    dmemo.key.gen = key_gen; dmemo.key.pr = pr; dmemo.key.cls = cls; dmemo.key.fb = fbk.draw;
     PipeKey k;
     memset(&k, 0, sizeof k);
     k.prog = pr;
@@ -9561,8 +9565,8 @@ static void draw_(CmdRec *r, bool indexed) {
     k.s.a2c = st.ms[0xC] != 0;
     k.s.topo_class = cls;
     k.s.poly_fill = st.poly[2] != 1;
-    pp = pipe_memo.pp;
-    if (!pp || memcmp(&pipe_memo.k, &k, sizeof k)) {
+    pp = dmemo.pipe.pp;
+    if (!pp || memcmp(&dmemo.pipe.k, &k, sizeof k)) {
         uint64_t ph = hash_words(0xcbf29ce484222325ull, &k, sizeof k);
         if (!ph) ph = 1;
         if (!pipe_tab) pipe_tab_grow();
@@ -9585,8 +9589,8 @@ static void draw_(CmdRec *r, bool indexed) {
             if (ready) { pp->pipe = ready; atomic_store(&pp->state, 1); atomic_fetch_add(&stat_warm, 1); }
             else if (sync_shaders() || !link_now(pp, must)) run_job(build_pipeline, pp);  // (asynchronous: a link alone is done here)
         }
-        pipe_memo.k = k;
-        pipe_memo.pp = pp;
+        dmemo.pipe.k = k;
+        dmemo.pipe.pp = pp;
     }
 have_pipe:
     if (atomic_load(&pp->state) == 0 && (one_shot_target() || draw_must_happen())) wait_built(&pp->state);
@@ -9937,7 +9941,7 @@ have_pipe:
     VkBuffer vbufs[17];
     VkDeviceSize voffs[17];
     uint32_t vdirty = 0;
-    for (uint32_t sm = pipe_memo.k.s.used_streams & ((1u << 17) - 1); sm; sm &= sm - 1) {
+    for (uint32_t sm = dmemo.pipe.k.s.used_streams & ((1u << 17) - 1); sm; sm &= sm - 1) {
         int s = __builtin_ctz(sm);
         VkSpan sp;
         if (s == ZERO_BINDING) {
@@ -9964,9 +9968,9 @@ have_pipe:
                 if (base_vertex > 0) max_index += (uint32_t)base_vertex;
                 scan_src = NULL;
             }
-            uint64_t stride = pipe_memo.k.s.stride[s], need;
+            uint64_t stride = dmemo.pipe.k.s.stride[s], need;
             if (!stride) need = 256;
-            else if (pipe_memo.k.s.divisor[s]) need = ((uint64_t)base_inst + inst + pipe_memo.k.s.divisor[s] - 1) / pipe_memo.k.s.divisor[s] * stride + 256;
+            else if (dmemo.pipe.k.s.divisor[s]) need = ((uint64_t)base_inst + inst + dmemo.pipe.k.s.divisor[s] - 1) / dmemo.pipe.k.s.divisor[s] * stride + 256;
             else need = (uint64_t)max_index * stride + 256;
             if (v.size && need > v.size) need = v.size;
             if (!v.addr) { static const uint8_t zero[256]; sp = vk_transient_copy(zero, 256, 16); }
