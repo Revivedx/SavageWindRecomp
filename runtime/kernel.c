@@ -440,6 +440,7 @@ static void thread_free(KThread *t, bool join) {
     if (ntls_free < 1024) tls_free[ntls_free++] = t->tlr;
     kunlock();
     kcond_destroy(&t->cond);
+    free(t->dcache);
     free(t);
 }
 

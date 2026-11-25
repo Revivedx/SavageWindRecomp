@@ -52,6 +52,13 @@ static uint64_t class_of(uint64_t lo, uint64_t hi, uint32_t hash, uint64_t hash_
     return 0;
 }
 
+// Hash order; two objects with one hash (none known) in heap order, so the first is the one a scan of the heap finds
+static int by_hash(const void *a, const void *b) {
+    const LiveFlag *x = a, *y = b;
+    if (x->hash != y->hash) return x->hash < y->hash ? -1 : 1;
+    return (x->obj > y->obj) - (x->obj < y->obj);
+}
+
 // Every bool and s32 flag object on the heap
 static bool find_flags(void) {
     uint64_t lo = HEAP_BASE, hi = HEAP_BASE + kernel_heap_size();
@@ -75,6 +82,7 @@ static bool find_flags(void) {
             f[n++] = (LiveFlag){p, rd32(p + (v == vt_s32 ? 0x1c : 0xc)), v == vt_s32};
         }
     if (!f || n < 1000) { free(f); return false; }
+    qsort(f, (size_t)n, sizeof *f, by_hash);  // (the image in hash order: ach_save_get bisects it, 47k flags)
     free(flags);
     flags = f, n_flags = n;
     LOG("[achievements] %d game data flags in memory, read every %d ms\n", n, LIVE_POLL_MS);
@@ -118,7 +126,7 @@ static void *live_thread(void *arg) {
                     memcpy(img + 0xC + 8 * i + 4, &v, 4);
                 }
                 img_n = n_flags;
-                AchSave s = {img, n};
+                AchSave s = {img, n, true};  // (flags[] is in hash order: find_flags)
                 int fresh = ach_live_update(&s, time(NULL));
                 if (fresh) LOG("[achievements] %d new from the game's flags\n", fresh);
             }

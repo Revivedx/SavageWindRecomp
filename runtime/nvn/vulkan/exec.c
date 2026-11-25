@@ -85,6 +85,11 @@ static TexBackend *pass_block[8];    // its targets drawn through a view of a co
 static int pass_nblock;
 static bool draw_feedback;           // the current draw samples a target it writes (its pipeline allows the loop)
 static uint64_t stat_upload_bytes;
+// PC_UPLOAD_BYTES not added to perfcount yet: added once a frame (vk_prof_frame), not for each span. A locked add on x86
+// waits for the stores before it to drain, the write-combined copy into the ring just made among them, so the add in
+// vk_transient made each constant-buffer copy wait for the one before to leave for the GPU: 331 of vk_transient's 365
+// samples sat on it, ~4.5% of the render thread at the Castle (plain build, 1080p).
+static uint64_t upload_unflushed;
 static uint64_t stat_sets, stat_sets_reused;  // descriptor sets asked for / shared with an identical one
 static struct { NvnTexture *t; TexBackend *img; float sx, sy; } scene_up;
 static NvnTexture *scene_depth;
@@ -984,7 +989,7 @@ VkSpan vk_transient(uint64_t size, uint64_t align) {
             c->used = off + size;
             c->seq = pending;
             stat_upload_bytes += size;
-            perfcount_add(PC_UPLOAD_BYTES, size);
+            upload_unflushed += size;
             return (VkSpan){c->buf, off, c->ptr + off};
         }
     }
@@ -997,7 +1002,7 @@ VkSpan vk_transient(uint64_t size, uint64_t align) {
     chunks[pick].used = size;
     chunks[pick].seq = pending;
     stat_upload_bytes += size;
-    perfcount_add(PC_UPLOAD_BYTES, size);
+    upload_unflushed += size;
     return (VkSpan){chunks[pick].buf, 0, chunks[pick].ptr};
 }
 
@@ -1097,7 +1102,66 @@ static void uub_note(uint64_t lo, uint64_t hi) {
     guest_copy_flush();  // (a range copies made before don't know; and a copy's mask names places, whose range changed)
 }
 
+static int stage_cpu_opts(void);
+// (counters of the render thread, read by the control thread: a plain load and store, not a locked add)
+static inline void stat_bump(_Atomic uint64_t *c) {
+    atomic_store_explicit(c, atomic_load_explicit(c, memory_order_relaxed) + 1, memory_order_relaxed);
+}
+
+// The same table in one cache line an entry (cpuopts bit 64): an entry above is 72 bytes, so most straddle two lines
+// and the four ways of a set span five. Here each way is one aligned 64-byte line, a set four lines, with the same
+// ways, slot function and replacement as above, so both tables answer every call alike. (On the direct-mapped table
+// this was first written for, the first read of the slot was 0.36 ms a frame of the queue thread in a profile capture:
+// 482 of guest_copy's 757 samples, 8,900 sets a frame.) A size over 4 GB takes the table above.
+typedef struct { uint64_t addr, gen, serial, mask; uint32_t size, chunk; VkSpan span; } GCopyLine;
+_Static_assert(sizeof(GCopyLine) == 64, "a guest copy entry is one cache line");
+static GCopyLine gcopy_line[GCOPY_SETS][GCOPY_WAYS] __attribute__((aligned(64)));
+static uint8_t gcopy_line_rr[GCOPY_SETS];
+static inline uint32_t gcopy_slot(uint64_t addr, uint64_t size) {
+    uint64_t h = (addr * 0x9E3779B97F4A7C15ull) ^ (size * 0xC2B2AE3D27D4EB4Full);
+    return (uint32_t)(h ^ (h >> 32)) & (GCOPY_SETS - 1);
+}
+static VkSpan guest_copy_line(uint64_t addr, uint64_t size) {
+    uint32_t set = gcopy_slot(addr, size);
+    GCopyLine *ways = gcopy_line[set];
+    uint64_t gen = __atomic_load_n(&gcopy_gen, __ATOMIC_RELAXED);
+    int victim = -1;
+    for (int w = 0; w < GCOPY_WAYS; w++) {
+        GCopyLine *e = &ways[w];
+        if (e->gen != gen) {
+            if (victim < 0) victim = w;
+            continue;
+        }
+        if (e->addr == addr && e->size == (uint32_t)size) {
+            bool stale = false;
+            for (uint64_t m = e->mask; m && !stale; m &= m - 1) stale = uubt[__builtin_ctzll(m)].serial > e->serial;
+            if (!stale) {
+                uint64_t pending = vk_pending_seq();
+                if (chunks[e->chunk].seq < pending) chunks[e->chunk].seq = pending;
+                stat_gcopy_hit++;
+                return e->span;
+            }
+            victim = w;  // reuse the stale entry directly
+            break;
+        }
+    }
+    if (victim < 0) {
+        victim = gcopy_line_rr[set];
+        gcopy_line_rr[set] = (uint8_t)((victim + 1) & (GCOPY_WAYS - 1));
+    }
+    stat_gcopy_miss++;
+    stat_gcopy_bytes += size;
+    VkSpan s = vk_transient_copy((const void *)(uintptr_t)addr, size, 256);
+    uint64_t mask = 0;
+    for (int i = 0; i < nuub; i++)
+        if (addr < uubt[i].hi && uubt[i].lo < addr + size) mask |= 1ull << i;
+    GCopyLine *e = &ways[victim];
+    e->addr = addr; e->size = (uint32_t)size; e->gen = gen; e->serial = uub_serial; e->mask = mask; e->chunk = (uint32_t)active; e->span = s;
+    return s;
+}
+
 static VkSpan guest_copy(uint64_t addr, uint64_t size) {
+    if (size <= UINT32_MAX && (stage_cpu_opts() & 64)) return guest_copy_line(addr, size);
     uint64_t h = (addr * 0x9E3779B97F4A7C15ull) ^ (size * 0xC2B2AE3D27D4EB4Full);
     uint32_t set = (uint32_t)(h ^ (h >> 32)) & (GCOPY_SETS - 1);
     GcopyEntry *ways = gcopy[set];
@@ -1254,6 +1318,8 @@ bool renderer_origin_lower_left(void) { return nvn_window_origin() == 0; }
 extern uint64_t g_pace_sleep_ns;  // (objects.c present_pace)
 void vk_prof_frame(uint64_t frame, uint64_t present_ns) {
     perfcount_add(PC_PRESENT_NS, present_ns);
+    perfcount_add(PC_UPLOAD_BYTES, upload_unflushed);  // (the frame's ring spans: see upload_unflushed)
+    upload_unflushed = 0;
     if (!prof) return;
     static uint64_t last_t, l_exec, l_wait, l_xwait, l_draws, l_subs, l_comp, l_valloc, hitch_ns;
     if (!hitch_ns) hitch_ns = getenv("SAVAGEWIND_HITCH_MS") ? (uint64_t)atoi(getenv("SAVAGEWIND_HITCH_MS")) * 1000000ull : 50000000ull;
@@ -2717,9 +2783,77 @@ static VkPipeline clear_pipeline(int index, int kind, uint32_t mask, bool depth,
     return p;
 }
 
+// ---- cpuopts bit 512: the shadow cascades' draw budget
+// BOTW draws the sun's shadow cascades (a depth 2D array of 3 layers, a pass of depth-only draws for each layer) in every
+// frame: ~810 of the ~4,400 draws a frame in the open world, ~0.2 ms of GPU but a share of the render thread (a draw
+// costs it about the same wherever it goes). With the bit set, the layers named by SAVAGEWIND_SHADOW_BUDGET_LAYERS (a
+// mask of layer numbers, default 4: layer 2) are drawn only every SAVAGEWIND_SHADOW_BUDGET_PERIOD-th frame (default 2);
+// in the frames between, the pass's draws and its clear are left out and the layer keeps the last frame's picture,
+// which the frame's shadow lookups read with this frame's matrices. The cost: a far cascade lags the camera by a
+// frame. Which layer is the farthest is not known without a run: the counts the control command reports (cpuopts: sb_*)
+// show the draws a layer takes. A layer is left alone while the image it is in is not the one it was last seen in.
+#define SB_LAYERS 8
+static struct {
+    uint64_t serial;              // the image the rest is about (TexBackend.serial)
+    uint64_t last[SB_LAYERS];     // 1 + the last frame the layer was drawn (0: none)
+    uint64_t decided[SB_LAYERS];  // 1 + the frame the layer's choice below was made in
+    bool skip[SB_LAYERS];
+} sb;
+static _Atomic uint64_t sb_skip_draws, sb_skip_clears, sb_skip_passes, sb_drawn[SB_LAYERS], sb_cleared[SB_LAYERS];
+
+// Is a layer left out of this frame: only when it is in the set and was drawn less than period frames ago.
+// last: 1 + the frame it was last drawn in (0: never); set to this frame when it is drawn.
+static bool shadow_budget_choose(uint64_t *last, uint64_t frame, bool in_set, uint32_t period) {
+    if (in_set && *last && frame + 1 - *last < period) return true;
+    *last = frame + 1;
+    return false;
+}
+
+// Does the pass in progress draw a cascade layer that is left out of this frame? (a draw or a clear of its depth)
+static bool shadow_budget_skip(bool is_draw) {
+    NvnTexture *d = st.rt.depth;
+    // (the shadow maps' rule, textures.c tex_scale_group: a square depth render target of 512 or more; a depth 2D array of 3)
+    if (st.rt.ncolor || !d || d->target != 4 || d->depth != 3 || !(d->flags & 8) || d->width != d->height || d->width < 512 ||
+        !renderer_format_is_depth(d->format))
+        return false;
+    TexBackend *b = d->backend;
+    uint32_t layer = st.rt.has_dview && (st.rt.dview.setmask & 2) ? st.rt.dview.min_layer : 0;
+    if (!b || layer >= SB_LAYERS) return false;
+    static uint32_t layers = ~0u, period = 2;
+    if (layers == ~0u) {
+        const char *e = getenv("SAVAGEWIND_SHADOW_BUDGET_LAYERS");
+        layers = e ? (uint32_t)strtoul(e, NULL, 0) & 0xff : 4;
+        e = getenv("SAVAGEWIND_SHADOW_BUDGET_PERIOD");
+        period = e ? (uint32_t)strtoul(e, NULL, 0) : 2;
+        if (period < 1) period = 1;
+        if (period > 8) period = 8;
+        LOG("[vk] shadow cascade budget: layers %#x every %u frames\n", layers, period);
+    }
+    uint64_t frame = renderer_present_count();
+    if (sb.serial != b->serial) {
+        memset(&sb, 0, sizeof sb);
+        sb.serial = b->serial;
+    }
+    if (sb.decided[layer] != frame + 1) {
+        sb.decided[layer] = frame + 1;
+        sb.skip[layer] = shadow_budget_choose(&sb.last[layer], frame, (layers >> layer & 1) != 0, period);
+        if (sb.skip[layer]) stat_bump(&sb_skip_passes);
+    }
+    if (!sb.skip[layer]) {
+        stat_bump(is_draw ? &sb_drawn[layer] : &sb_cleared[layer]);
+        return false;
+    }
+    // (begin_pass notes the frames a target was drawn in; draws into a target no pass drew in the previous frame wait for
+    // their shaders instead of being skipped while they build, one_shot_target: a layer drawn every second frame is not one)
+    if (b->drawn_frame != frame) { b->prev_drawn = b->drawn_frame; b->drawn_frame = frame; }
+    stat_bump(is_draw ? &sb_skip_draws : &sb_skip_clears);
+    return true;
+}
+
 static void snapshots_invalidate_clear(NvnTexture *t);
 static void clear(int index, int kind, const void *color, uint32_t mask, bool depth, float dval, bool stencil, uint32_t sval,
                   uint32_t smask) {
+    if (index < 0 && (stage_cpu_opts() & 512) && shadow_budget_skip(false)) return;  // (a cascade layer left out of this frame)
     // (a snapshot of a target taken before this clear is stale after it: Mali's G-buffer snapshots, reused within the
     // pass that follows, were - when the clear began that very pass - the water's sky reflection lost for a frame)
     if (g_vk.is_mali) {  // (other GPUs: as before)
@@ -2848,13 +2982,50 @@ static void prog_index_sets(Prog *p) {
     }
 }
 
+// CPU preparation switches. One mask, set by SAVAGEWIND_VK_CPU_OPTS (any base) or live by the cpuopts command
+// (SAVAGEWIND_CONTROL + SAVAGEWIND_VK_CPU_BENCH=1). Its two low bits are the material cache mode (0 off, 1 the
+// conservative reuse, 2 reuse across vertex programs), which SAVAGEWIND_VK_STAGE_REUSE=0..2 also sets (it wins over
+// the low bits of the mask). The other bits:
+// 16 throughput-bound descriptor-set hash, 32 texture change detection from the write watch (textures.c),
+// 64 cache-line guest copy table and prefetches ahead of a draw's constant buffers and textures,
+// 128 block bitmap in front of the storing-shader range search (gw_overlaps, gw_check) and a static scratch for the
+// descriptor writes of a set (stage_set), so that neither the draw path's frame needs a stack probe,
+// 512 far shadow cascades drawn every second frame (shadow_budget_skip). KNOWN BAD: the ground and rocks flicker while
+// the camera pans (the stale cascade is read with this frame's matrices; seen and confirmed gone without it, 2026-11-18). Off.
+// Two switches for the guest's threads, mirrored to plain variables (stage_cpu_publish) because they are read there:
+// 1024 the dispatch of an indirect call from a per-thread table that also holds the host (HLE) targets, without the
+// thread-local lookup and with the slow path out of line (runtime/dispatch.c dispatch_fast),
+// 2048 a command buffer leaves the registry with two pointer writes instead of a walk of the list (nvn/cmdbuf.c).
+#define CPU_OPTS_REUSE 3
+#define CPU_OPTS_VALID (CPU_OPTS_REUSE | 3824)  // (3824 = 16 + 32 + 64 + 128 + 512 + 1024 + 2048)
+#define CPU_OPTS_USAGE "cpuopts [mask]"
+// The default with no SAVAGEWIND_VK_CPU_OPTS: every bit but 512, the material cache off (Beta 1, 5600X + RTX 3060,
+// 1080p, the same build either way: Plateau +6.0%, Castle +4.7%, Hateno +2.1%, Rito +1.9% over 0). =0 runs the code as
+// it was before the mask.
+#define CPU_OPTS_DEFAULT 3312
 static _Atomic int stage_cpu_options = -1;
 static _Atomic uint64_t stage_reuse_calls, stage_reuse_eligible, stage_reuse_hits;
+// The bits the guest's threads read (runtime/dispatch.c, nvn/cmdbuf.c), as plain variables there.
+static void stage_cpu_publish(int mask) {
+    g_opt_dispatch_fast = (mask & 1024) != 0;
+    g_opt_cb_unlink = (mask & 2048) != 0;
+}
+
 static __attribute__((noinline)) int stage_cpu_opts_init(void) {
-    const char *e = getenv("SAVAGEWIND_VK_STAGE_REUSE");
-    int opts = e ? atoi(e) : 0;
-    if (opts < 0 || opts > 2) opts = 0;
-    atomic_store_explicit(&stage_cpu_options, opts, memory_order_relaxed);
+    const char *e = getenv("SAVAGEWIND_VK_CPU_OPTS");
+    int opts = e ? (int)(strtoul(e, NULL, 0) & CPU_OPTS_VALID) : CPU_OPTS_DEFAULT;
+    const char *r = getenv("SAVAGEWIND_VK_STAGE_REUSE");
+    if (r) {
+        int m = atoi(r);
+        opts = (opts & ~CPU_OPTS_REUSE) | (m < 0 || m > 2 ? 0 : m);
+    }
+    if ((opts & CPU_OPTS_REUSE) == CPU_OPTS_REUSE) opts &= ~CPU_OPTS_REUSE;
+    int unset = -1;
+    if (atomic_compare_exchange_strong_explicit(&stage_cpu_options, &unset, opts,
+            memory_order_relaxed, memory_order_relaxed)) {
+        stage_cpu_publish(opts);
+        LOG("[vk] CPU preparation experiments: mask %d (material cache mode %d)\n", opts, opts & CPU_OPTS_REUSE);
+    } else opts = unset;
     return opts;
 }
 static inline int stage_cpu_opts(void) {
@@ -2862,18 +3033,45 @@ static inline int stage_cpu_opts(void) {
     return opts >= 0 ? opts : stage_cpu_opts_init();
 }
 
+// The material cache mode of the mask (0, 1 or 2)
+static inline int stage_reuse_mode(void) { return stage_cpu_opts() & CPU_OPTS_REUSE; }
+int vk_cpu_opts(void) { return stage_cpu_opts(); }
+
 static void stage_cpu_command(int argc, char **argv, ControlReply *r) {
-    if (argc > 2) { control_fail(r, "cpuopts [0-2]"); return; }
+    if (argc > 2) { control_fail(r, CPU_OPTS_USAGE); return; }
     if (argc == 2) {
         char *end;
-        long opts = strtol(argv[1], &end, 10);
-        if (!*argv[1] || *end || opts < 0 || opts > 2) { control_fail(r, "cpuopts [0-2]"); return; }
-        atomic_store_explicit(&stage_cpu_options, (int)opts, memory_order_relaxed);
+        unsigned long mask = strtoul(argv[1], &end, 10);
+        if (!*argv[1] || *end || (mask & ~(unsigned long)CPU_OPTS_VALID) || (mask & CPU_OPTS_REUSE) == CPU_OPTS_REUSE) {
+            control_fail(r, CPU_OPTS_USAGE);
+            return;
+        }
+        atomic_store_explicit(&stage_cpu_options, (int)mask, memory_order_relaxed);
+        stage_cpu_publish((int)mask);
     }
     control_field_int(r, "mask", stage_cpu_opts());
-    control_field_int(r, "reuse_calls", atomic_load_explicit(&stage_reuse_calls, memory_order_relaxed));
-    control_field_int(r, "reuse_eligible", atomic_load_explicit(&stage_reuse_eligible, memory_order_relaxed));
-    control_field_int(r, "reuse_hits", atomic_load_explicit(&stage_reuse_hits, memory_order_relaxed));
+    control_field_int(r, "draws", (int64_t)draws_total);  // (cumulative: ms per draw in tools/swr_ab.py)
+    control_field_int(r, "reuse_calls", (int)atomic_load_explicit(&stage_reuse_calls, memory_order_relaxed));
+    control_field_int(r, "reuse_eligible", (int)atomic_load_explicit(&stage_reuse_eligible, memory_order_relaxed));
+    control_field_int(r, "reuse_hits", (int)atomic_load_explicit(&stage_reuse_hits, memory_order_relaxed));
+    uint64_t ww[5];
+    vk_tex_ww_stats(ww);
+    control_field_int(r, "tex_ww_skipped", (int)ww[0]);
+    control_field_int(r, "tex_ww_written", (int)ww[1]);
+    control_field_int(r, "tex_ww_missed", (int)ww[2]);
+    control_field_int(r, "tex_ww_armed", (int)ww[3]);
+    control_field_int(r, "tex_ww_refused", (int)ww[4]);
+    // bit 512: draws and clears left out, passes left out, and the draws and clears that were let through, by layer
+    control_field_int(r, "sb_skip_draws", (int64_t)atomic_load_explicit(&sb_skip_draws, memory_order_relaxed));
+    control_field_int(r, "sb_skip_clears", (int64_t)atomic_load_explicit(&sb_skip_clears, memory_order_relaxed));
+    control_field_int(r, "sb_skip_passes", (int64_t)atomic_load_explicit(&sb_skip_passes, memory_order_relaxed));
+    for (int i = 0; i < 3; i++) {
+        char key[32];
+        snprintf(key, sizeof key, "sb_drawn_layer%d", i);
+        control_field_int(r, key, (int64_t)atomic_load_explicit(&sb_drawn[i], memory_order_relaxed));
+        snprintf(key, sizeof key, "sb_cleared_layer%d", i);
+        control_field_int(r, key, (int64_t)atomic_load_explicit(&sb_cleared[i], memory_order_relaxed));
+    }
 }
 
 static void stage_cpu_control_init(void) {
@@ -2881,7 +3079,7 @@ static void stage_cpu_control_init(void) {
     if (looked || !control_enabled()) return;
     looked = true;
     if (!getenv("SAVAGEWIND_VK_CPU_BENCH")) return;
-    static const ControlCmd cmd[] = {{"cpuopts", "[0-2]", "Fragment preparation experiment", stage_cpu_command, 0}};
+    static const ControlCmd cmd[] = {{"cpuopts", "[mask]", "CPU preparation experiment mask", stage_cpu_command, 0}};
     control_register(cmd, 1);
 }
 
@@ -5367,6 +5565,32 @@ static bool fxaa_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out
 static struct { uint64_t addr[16]; VkDescriptorBufferInfo bi; } gsnap_cs;
 
 // Constant buffer k of a stage (renderer.m bind_cbufs), copied into transient memory.
+// The bytes cbuf_info copies of constant buffer k (k >= 3) bound to the range r (r.addr set).
+static inline uint64_t cbuf_copy_size(const ShaderInfo *si, int k, Range r) {
+    uint64_t size = si->cbuf_size[k] ? si->cbuf_size[k] : 256;
+    if ((si->cbuf_dynamic & (1u << k)) && r.size) size = r.size > 0x10000 ? 0x10000 : r.size;
+    if (size > r.size && r.size) size = r.size;
+    if (size < 16) size = 16;
+    return size;
+}
+
+// Ahead of a draw's preparation (cpuopts bit 64): the copy-table slot of every constant buffer the stage reads, asked for
+// at once. Each was read cold, one after the other, when its buffer's turn came (guest_copy: 0.36 ms a frame of the
+// queue thread, almost all of it on that first read), and the ranges are known as soon as the draw is: the stage's
+// binds came before it. A hint only: a wrong guess (a buffer read in place, a patched one) costs a line, never a result.
+static inline void cbuf_prefetch(int stage, const ShaderInfo *si) {
+    for (uint32_t m = si->cbuf_mask >> 3; m; m &= m - 1) {  // (cbuf k is bound slot k - 3)
+        int i = __builtin_ctz(m);
+        if (i >= 18) break;
+        Range r = st.ubuf[stage][i];
+        if (!r.addr) continue;
+        uint64_t size = cbuf_copy_size(si, i + 3, r);
+        if (size > UINT32_MAX) continue;
+        GCopyLine *set = gcopy_line[gcopy_slot(r.addr, size)];
+        for (int w = 0; w < GCOPY_WAYS; w++) __builtin_prefetch(&set[w], 1);
+    }
+}
+
 static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32_t gx, uint32_t gy, uint32_t gz) {
     static const uint8_t zeros[0x10000];
     if (k == 0) {
@@ -5405,9 +5629,7 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
     Range r = (idx >= 0 && idx < 18) ? st.ubuf[stage][idx] : (Range){0, 0};
     uint64_t size = si->cbuf_size[k] ? si->cbuf_size[k] : 256;
     if (!r.addr) return ubo_span(vk_transient_copy(zeros, size, 256), size);
-    if ((si->cbuf_dynamic & (1u << k)) && r.size) size = r.size > 0x10000 ? 0x10000 : r.size;
-    if (size > r.size && r.size) size = r.size;
-    if (size < 16) size = 16;
+    size = cbuf_copy_size(si, k, r);
     // An address outside the game's memory ended the game in the copy below after two hours of play (#640: 0x5000000000
     // on the render thread). Read as an unbound buffer, and logged: where the address comes from is still unknown.
     if (r.addr < GUEST_LO || r.addr >= GUEST_HI || size > GUEST_HI - r.addr) {
@@ -6147,7 +6369,36 @@ static int gw_find(uint64_t addr) {  // the first range ending after addr
 // range, until the set changes (gw_gen). The search was 3% of the render thread's time (4 cores, Rito).
 // SAVAGEWIND_VK_NO_GW_MEMO=1: search every time.
 static uint32_t gw_gen = 1;
-static bool gw_overlaps(uint64_t lo, uint64_t hi) {
+static bool gw_overlaps_exact(uint64_t lo, uint64_t hi);
+
+// A bit a 1 MB block of the set (cpuopts bit 128), so that the many lookups nowhere near it end on one load. The
+// bounds above take the reads outside [gw_lo, gw_hi), but the set's ranges lie all over the heap (the storage buffers
+// of the compute passes) and so did the bounds: in a profile capture gw_overlaps, gw_ubo_copied and the memo
+// of gw_check were 0.32 ms a frame of the queue thread, most of it on reads that answered "no". The bitmap is hashed
+// by block number (4096 bits: the 4 GB the heap holds, one bit each), so a block that shares a bit with one in the set
+// is asked of the exact search; no bit ever clears before the set does. A range wider than 8 blocks is always asked.
+#define GW_BLOCK_SHIFT 20
+#define GW_BLOCK_BITS 4096
+static uint64_t gw_blocks[GW_BLOCK_BITS / 64];
+static inline bool gw_maybe(uint64_t lo, uint64_t hi) {  // false: no range of the set overlaps [lo, hi)
+    if (!ngw || hi <= gw_lo || lo >= gw_hi) return false;
+    if (hi <= lo) return true;  // (empty or wrapped: the exact search answers)
+    uint64_t b0 = lo >> GW_BLOCK_SHIFT, b1 = (hi - 1) >> GW_BLOCK_SHIFT;
+    if (b1 - b0 >= 8) return true;
+    for (uint64_t b = b0; b <= b1; b++)
+        if (gw_blocks[(b & (GW_BLOCK_BITS - 1)) >> 6] >> (b & 63) & 1) return true;
+    return false;
+}
+static void gw_blocks_add(uint64_t lo, uint64_t hi) {  // the blocks of a range just put in the set
+    uint64_t b0 = lo >> GW_BLOCK_SHIFT, b1 = hi > lo ? (hi - 1) >> GW_BLOCK_SHIFT : b0;
+    if (b1 - b0 >= GW_BLOCK_BITS) { memset(gw_blocks, 0xff, sizeof gw_blocks); return; }
+    for (uint64_t b = b0; b <= b1; b++) gw_blocks[(b & (GW_BLOCK_BITS - 1)) >> 6] |= 1ull << (b & 63);
+}
+static inline bool gw_overlaps(uint64_t lo, uint64_t hi) {
+    if ((stage_cpu_opts() & 128) && !gw_maybe(lo, hi)) return false;
+    return gw_overlaps_exact(lo, hi);
+}
+static bool gw_overlaps_exact(uint64_t lo, uint64_t hi) {
     if (!ngw || hi <= gw_lo || lo >= gw_hi) return false;
     static struct { uint64_t lo, hi; uint32_t gen; bool r; } memo[1024];
     static int on = -1;
@@ -6181,6 +6432,7 @@ static bool gw_add(uint64_t lo, uint64_t hi) {  // false: no room
     gw[i].hi = hi;
     if (lo < gw_lo) gw_lo = lo;
     if (hi > gw_hi) gw_hi = hi;
+    gw_blocks_add(lo, hi);
     return true;
 }
 
@@ -6294,6 +6546,19 @@ static bool gw_ubo_copied(int stage, uint32_t cbuf_mask) {  // a constant buffer
     return false;
 }
 
+// Whether any constant buffer a stage reads is in or near the set (cpuopts bit 128): the cheap form of gw_ubo_copied's
+// loop, bitmap only. False: none overlaps, so none is copied from the set (the answer needs no memo).
+static inline bool gw_ubo_near(int stage, uint32_t cbuf_mask) {
+    for (uint32_t m = cbuf_mask >> 3; m; m &= m - 1) {
+        int i = __builtin_ctz(m);
+        if (i >= 18) break;
+        Range r = st.ubuf[stage][i];
+        uint64_t size = r.size ? (r.size > 0x10000 ? 0x10000 : r.size) : 0x10000;
+        if (r.addr && gw_maybe(r.addr, r.addr + size)) return true;
+    }
+    return false;
+}
+
 // Before a draw's or dispatch's copies (and before its pass begins): copies of memory in the set wait for the GPU.
 // cbufs[stage]: the constant buffers each stage reads (ShaderInfo.cbuf_mask; 0: none).
 static void gw_check(const uint32_t cbufs[6], bool vertices, uint64_t iaddr, uint64_t isize) {
@@ -6301,10 +6566,12 @@ static void gw_check(const uint32_t cbufs[6], bool vertices, uint64_t iaddr, uin
     static uint64_t chk_vbuf_gen, chk_vbuf_gw, chk_ubuf_gen[6], chk_ubuf_gw[6], chk_ubuf_gc[6];
     static uint32_t chk_cbuf_mask[6];
     uint64_t gc = __atomic_load_n(&gcopy_gen, __ATOMIC_RELAXED);
+    int opts = stage_cpu_opts();
     bool wait = false;
     for (int s = 0; s < 6 && !wait; s++) {
         uint32_t m = cbufs[s];
         if (!m) continue;
+        if ((opts & 128) && !gw_ubo_near(s, m)) continue;
         if (chk_ubuf_gen[s] == ubuf_gen[s] && chk_ubuf_gw[s] == gw_gen && chk_ubuf_gc[s] == gc && (chk_cbuf_mask[s] & m) == m)
             continue;
         wait = gw_ubo_copied(s, m);
@@ -6417,6 +6684,22 @@ static uint64_t hc_base(int c) { return (uint64_t)c << hc_shift; }
 static uint64_t hc_chunk_size(int c) { uint64_t b = hc_base(c); return hc_nch == 1 ? hc_size : (hc_size - b < (1ull << hc_shift) ? hc_size - b : 1ull << hc_shift); }
 static bool hc_live(int c) { return atomic_load_explicit(&hc_ch[c].state, memory_order_relaxed) == HC_LIVE; }
 
+// Whether any page of [lo, hi) holds geometry the copy mirrors: its write-watch flags are the copy's to reset, not a
+// texture's (textures.c)
+bool vk_heap_geometry_any(uint64_t lo, uint64_t hi) {
+    if (hc_state <= 0 || !hc_geo || hi <= HEAP_BASE || lo >= hi) return false;
+    uint64_t p0 = lo > HEAP_BASE ? (lo - HEAP_BASE) / HC_PAGE : 0, p1 = (hi - HEAP_BASE + HC_PAGE - 1) / HC_PAGE;
+    if (p1 > (uint64_t)hc_words * 64) p1 = (uint64_t)hc_words * 64;
+    for (uint64_t p = p0; p < p1;) {
+        uint64_t w = p >> 6, take = 64 - (p & 63);
+        if (take > p1 - p) take = p1 - p;
+        uint64_t m = (take == 64 ? ~0ull : (1ull << take) - 1) << (p & 63);
+        if (hc_geo[w] & m) return true;
+        p += take;
+    }
+    return false;
+}
+
 // What the plan lets video memory in use come to (chunks), and what is in use now
 static uint64_t hc_limit(uint64_t *usage) {
     uint64_t budget;
@@ -6434,6 +6717,7 @@ static bool hc_on(void) {
     int force = e ? atoi(e) : -1;
     uint64_t probe;
     bool ww = plat_written_pages(HEAP_BASE, HC_PAGE, &probe, 2) >= 0;
+    vk_tex_range_written(HEAP_BASE, HC_PAGE);  // (a texture there lost its flag to the probe)
     uint64_t vram;
     vram_device_local(NULL, NULL, &vram);
     const char *bm = getenv("SAVAGEWIND_VK_HEAP_COPY_BUDGET_MB");
@@ -6716,8 +7000,10 @@ static void hc_list_begin(void) {
         if (peek && plat_any_written(HEAP_BASE + hc_span[i].lo, hc_span[i].hi - hc_span[i].lo) == 0) continue;
         hc_stat_resets++;
         long n = plat_written_pages(HEAP_BASE + hc_span[i].lo, hc_span[i].hi - hc_span[i].lo, hc_pages, hc_pages_max);
-        if (n < 0) { hc_stale(hc_span[i].lo, hc_span[i].hi); full++; continue; }
+        // (the flags it reset are textures' too: they read them from vk_tex_pages_written, textures.c)
+        if (n < 0) { hc_stale(hc_span[i].lo, hc_span[i].hi); full++; vk_tex_range_written(HEAP_BASE + hc_span[i].lo, hc_span[i].hi - hc_span[i].lo); continue; }
         hc_stat_written += (uint64_t)n;
+        vk_tex_pages_written(hc_pages, n);
         for (long k = 0; k < n; k++) {
             uint64_t p = (hc_pages[k] - HEAP_BASE) / HC_PAGE;
             hc_ok[p >> 6] &= ~(1ull << (p & 63));
@@ -7053,6 +7339,7 @@ void vk_exec_reset(void) {
     guest_copy_flush();
     gw_lo = ~0ull;
     gw_hi = 0;
+    memset(gw_blocks, 0, sizeof gw_blocks);
     if (prog_tab) memset(prog_tab, 0, prog_cap * sizeof *prog_tab);  // (the grown capacity is kept for the next boot)
     if (pipe_tab) memset(pipe_tab, 0, pipe_cap * sizeof *pipe_tab);
     prog_n = pipe_n = 0;
@@ -7111,6 +7398,23 @@ static void texture_info_(int stage, ShaderInfo *si, int i, VkDescriptorImageInf
 // render thread at Rito). Not for depth-compare textures (their shadow copies and depth twins come and go within a
 // frame), nor while this draw has feedback copies or a scene composite in play; a view that may have been destroyed
 // bumps vk_view_gen, which drops them all. SAVAGEWIND_VK_NO_TEX_MEMO=1: off, with the view memo.
+// Ahead of texture_info (cpuopts bit 64), which meets a texture's pool entry, the texture and its backend as three loads
+// that each wait for the one before, for every texture of every draw (the line of its guard was 0.25 ms a frame of the
+// queue thread in a profile capture). level 0: the pool entries of the stage's textures, all asked for at once; level 1,
+// once they are there: the textures they point to. Hints only.
+static inline void tex_prefetch(int stage, const ShaderInfo *si, int level) {
+    int n = si->ntex < 64 ? si->ntex : 64;
+    for (int i = 0; i < n; i++) {
+        int slot = ((int)si->tex[i].handle_offset - 0x20) / 8;
+        uint64_t h = (slot >= 0 && slot < 32) ? st.tex[stage][slot] : 0;
+        uint32_t tic = h & 0xFFFFF;
+        if (!st.tpool || tic >= (uint32_t)st.tpool->count) continue;
+        NvnTexEntry *te = &((NvnTexEntry *)st.tpool->entries)[tic];
+        if (level == 0) __builtin_prefetch(te);
+        else if (te->tex) __builtin_prefetch(te->tex);
+    }
+}
+
 static void texture_info(int stage, ShaderInfo *si, int i, VkDescriptorImageInfo *out, float sc[2], uint32_t wh[2]) {
     ShaderTexture *st_ = &si->tex[i];
     int slot = ((int)st_->handle_offset - 0x20) / 8;
@@ -7251,12 +7555,19 @@ static void texture_info_(int stage, ShaderInfo *si, int i, VkDescriptorImageInf
 typedef struct { uint64_t seq, hash, hash2; VkDescriptorSetLayout layout; VkDescriptorSet set; uint32_t n; } SetEnt;
 static SetEnt *setc;
 
+// A 64x64 multiply folded to 64 bits (both halves of the product mixed in one mulq).
+static inline uint64_t mum64(uint64_t a, uint64_t b) {
+    unsigned __int128 r = (unsigned __int128)a * b;
+    return (uint64_t)r ^ (uint64_t)(r >> 64);
+}
+
 static VkDescriptorSet set_finish(VkDescriptorSetLayout layout, VkWriteDescriptorSet *w, int n) {
     static int off = -1;
     if (off < 0) off = getenv("SAVAGEWIND_VK_NO_SET_CACHE") != NULL;
     stat_sets++;
     SetEnt *e = NULL;
     uint64_t seq = vk_pending_seq() + (setc_gen << 40), h = 0, h2 = 0;
+    bool fast = (stage_cpu_opts() & 16) != 0;
     if (!off) {
         h = (uint64_t)(uintptr_t)layout;
         h2 = h ^ 0x6A09E667F3BCC909ull;
@@ -7272,6 +7583,17 @@ static VkDescriptorSet set_finish(VkDescriptorSetLayout layout, VkWriteDescripto
                 v[2] = w[i].pBufferInfo->offset;
                 v[3] = w[i].pBufferInfo->range;
             }
+            if (fast) {
+                // (mask 16) the four words of a write are folded by two independent 64x64->128 multiplies (they run
+                // side by side), so a write adds one multiply to the chain through the hash instead of four multiply-shift
+                // steps for each of two hashes (llvm-mca, Zen 3: ~21 cycles a write before, ~6 now; a 10-write set was
+                // ~210 cycles, 0.5-0.64 ms a frame in the open world). The second hash is the same fold mixed another way,
+                // so the key is effectively 64 bits: a wrong hit needs a 2^-64 collision (~1e6 lookups a second).
+                uint64_t t = mum64(v[1] ^ 0xA0761D6478BD642Full, v[2] ^ 0xE7037ED1A0B428DBull) ^
+                             mum64(v[3] ^ 0x8EBC6AF09C88C6E3ull, v[0] ^ 0x589965CC75374CC3ull);
+                h = mum64(h ^ t, 0x9E3779B97F4A7C15ull);
+                h2 = (h2 ^ t) * 0xC2B2AE3D27D4EB4Full;
+            } else
             for (int k = 0; k < 4; k++) {
                 h = (h ^ v[k]) * 0x9E3779B97F4A7C15ull; h ^= h >> 29;
                 h2 = (h2 ^ v[k]) * 0xC2B2AE3D27D4EB4Full; h2 ^= h2 >> 31;
@@ -7593,7 +7915,18 @@ static VkDescriptorBufferInfo gsnap_info(int stage) {
 // pre_ii: texture descriptors already resolved by the caller (draw: fragment textures, needed earlier for the
 // viewport decision), or NULL.
 // dyn / ndyn: the offsets of its dynamic uniform buffers, by binding (ubo_dynamic_mark), appended.
-static VkDescriptorSet stage_set(Prog *p, VkDescriptorSetLayout layout, uint32_t set, int stage, ShaderInfo *si, const float *rscale_row0,
+// The descriptor writes of one set: 11 KB, which made the frame of stage_set 15 KB, and a frame over one page is entered
+// through ___chkstk_ms on Windows, a call that probes every page, for each of the 8,900 sets a frame (0.09 ms of the
+// queue thread in a profile capture, with draw_'s own). With cpuopts bit 128 they live in static memory instead (the draw
+// path runs on one thread, like the other statics here); a call made while one is in use (not known to happen) takes
+// the stack copy.
+typedef struct {
+    VkWriteDescriptorSet w[MAX_BIND];
+    VkDescriptorBufferInfo bi[MAX_BIND];
+    VkDescriptorImageInfo ii[MAX_BIND];
+} PrepScratch;
+
+static inline __attribute__((always_inline)) VkDescriptorSet stage_set_prepare_in(PrepScratch *scratch, Prog *p, VkDescriptorSetLayout layout, uint32_t set, int stage, ShaderInfo *si, const float *rscale_row0,
                                  const float tint[8], uint32_t gx, uint32_t gy, uint32_t gz, const VkDescriptorImageInfo *pre_ii,
                                  uint32_t *dyn, int *ndyn) {
 #ifdef _WIN32
@@ -7624,9 +7957,9 @@ static VkDescriptorSet stage_set(Prog *p, VkDescriptorSetLayout layout, uint32_t
 #endif
     struct { uint32_t binding, off; } dv[32];
     int nd = 0;
-    VkWriteDescriptorSet w[MAX_BIND];
-    VkDescriptorBufferInfo bi[MAX_BIND];
-    VkDescriptorImageInfo ii[MAX_BIND];
+    VkWriteDescriptorSet *w = scratch->w;
+    VkDescriptorBufferInfo *bi = scratch->bi;
+    VkDescriptorImageInfo *ii = scratch->ii;
     int n = 0;
     int sg = stage == 1 ? 1 : 0;
     const uint8_t *idxs = p->set_idx[set];
@@ -7723,13 +8056,34 @@ static VkDescriptorSet stage_set(Prog *p, VkDescriptorSetLayout layout, uint32_t
     return set_finish(layout, w, n);
 }
 
+static __attribute__((noinline)) VkDescriptorSet stage_set_prepare_stack(Prog *p, VkDescriptorSetLayout layout, uint32_t set, int stage, ShaderInfo *si, const float *rscale_row0,
+                                 const float tint[8], uint32_t gx, uint32_t gy, uint32_t gz, const VkDescriptorImageInfo *pre_ii,
+                                 uint32_t *dyn, int *ndyn) {
+    PrepScratch scratch;
+    return stage_set_prepare_in(&scratch, p, layout, set, stage, si, rscale_row0, tint, gx, gy, gz, pre_ii, dyn, ndyn);
+}
+
+static VkDescriptorSet stage_set(Prog *p, VkDescriptorSetLayout layout, uint32_t set, int stage, ShaderInfo *si, const float *rscale_row0,
+                                 const float tint[8], uint32_t gx, uint32_t gy, uint32_t gz, const VkDescriptorImageInfo *pre_ii,
+                                 uint32_t *dyn, int *ndyn) {
+    static PrepScratch shared __attribute__((aligned(64)));
+    static bool busy;
+    if ((stage_cpu_opts() & 128) && !busy) {
+        busy = true;
+        VkDescriptorSet d = stage_set_prepare_in(&shared, p, layout, set, stage, si, rscale_row0, tint, gx, gy, gz, pre_ii, dyn, ndyn);
+        busy = false;
+        return d;
+    }
+    return stage_set_prepare_stack(p, layout, set, stage, si, rscale_row0, tint, gx, gy, gz, pre_ii, dyn, ndyn);
+}
+
 // STAGE_REUSE_TEST_BEGIN
 // A fragment material can outlive the vertex program paired with it. Keep only
 // snapshots in the current submission, with the same write and pool generations.
 static __attribute__((noinline)) VkDescriptorSet stage_set_reuse_on(Prog *p, VkDescriptorSetLayout layout, uint32_t set, int stage,
                                  ShaderInfo *si, const float *rscale_row0, const float tint[8], uint32_t gx, uint32_t gy,
                                  uint32_t gz, const VkDescriptorImageInfo *pre_ii, uint32_t *dyn, int *ndyn) {
-    int opts = stage_cpu_opts();
+    int opts = stage_reuse_mode();
     static int off = -1;
     if (off < 0) off = getenv("SAVAGEWIND_VK_NO_SET_CACHE") != NULL;
     atomic_fetch_add_explicit(&stage_reuse_calls, 1, memory_order_relaxed);
@@ -7802,7 +8156,7 @@ static __attribute__((noinline)) VkDescriptorSet stage_set_reuse_on(Prog *p, VkD
 static inline VkDescriptorSet stage_set_reuse(Prog *p, VkDescriptorSetLayout layout, uint32_t set, int stage, ShaderInfo *si,
                                               const float *rscale_row0, const float tint[8], uint32_t gx, uint32_t gy, uint32_t gz,
                                               const VkDescriptorImageInfo *pre_ii, uint32_t *dyn, int *ndyn) {
-    if (!stage_cpu_opts()) return stage_set(p, layout, set, stage, si, rscale_row0, tint, gx, gy, gz, pre_ii, dyn, ndyn);
+    if (!stage_reuse_mode()) return stage_set(p, layout, set, stage, si, rscale_row0, tint, gx, gy, gz, pre_ii, dyn, ndyn);
     return stage_set_reuse_on(p, layout, set, stage, si, rscale_row0, tint, gx, gy, gz, pre_ii, dyn, ndyn);
 }
 // STAGE_REUSE_TEST_END
@@ -8784,6 +9138,7 @@ static void draw_(CmdRec *r, bool indexed) {
     ProfZone pz0 = PZ_NOW();
     fg_before_draw();
     if (!st.program) { stat_skipped++; return; }
+    if ((stage_cpu_opts() & 512) && shadow_budget_skip(true)) return;  // (a cascade layer left out of this frame, see there)
     static int no_key_gen = -1;
     if (no_key_gen < 0) no_key_gen = getenv("SAVAGEWIND_VK_NO_KEY_GEN") != NULL;
     static struct { uint64_t gen; uint32_t origin, dmode; NvnProgram *np; Prog *pr; bool points; } pm;
@@ -8811,6 +9166,13 @@ static void draw_(CmdRec *r, bool indexed) {
             vk_trace_event(st.rt.color[0], 2, NULL, 0, "draw skipped: program %s", pr ? "not compiled yet" : "missing");
         stat_skipped++;
         return;
+    }
+    if (stage_cpu_opts() & 64) {  // (the two shaders' info, then each stage's copy slots: see cbuf_prefetch)
+        __builtin_prefetch(&pr->fi->ntex);
+        __builtin_prefetch(&pr->vi->ntex);
+        cbuf_prefetch(0, pr->vi);
+        cbuf_prefetch(1, pr->fi);
+        tex_prefetch(1, pr->fi, 0);
     }
     //if (profd) prof_program += SDL_GetTicksNS() - prof_program_start;
     {   // fragment-shader hash: skip lists (SAVAGEWIND_SKIP_FSHASH), debug logs, GPU profile labels
@@ -9344,10 +9706,13 @@ have_pipe:
     PROFD_ADD(prof_sets);
     ProfZone pz4 = PZ_NOW();
     PZ_SPAN("exec/draw/sets", pz3, pz4);
-    VkDescriptorImageInfo fii[64];
+    // (not on the stack: 1.5 KB of the 4.5 KB frame, and a frame over one page is entered through ___chkstk_ms; the draw
+    // path runs on one thread, and draw_ does not call itself)
+    static VkDescriptorImageInfo fii[64] __attribute__((aligned(64)));
     uint64_t prof_tx_ = profd ? SDL_GetTicksNS() : 0;
     sdw_fix.s = 0;
     shadow_copy_note(pr->fi);
+    if (stage_cpu_opts() & 64) tex_prefetch(1, pr->fi, 1);
     for (int i = 0; i < pr->fi->ntex && i < 64; i++) {
         float sc[2]; uint32_t wh[2];
         texture_info(1, pr->fi, i, &fii[i], sc, wh);

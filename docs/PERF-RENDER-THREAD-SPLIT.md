@@ -116,3 +116,23 @@ python3 tools/audit_globals.py --summary runtime/nvn/vulkan/exec.c draw_ stage_s
 ```
 
 Drop `--summary` to list the globals themselves (stored, loaded only, address passed, outside callees).
+
+## Experiments on Beta 1 (2026-11-25)
+
+5600X + RTX 3060, 1920x1080, Original preset, `tools/perf_routes.py`, the same exe with the switch off and on,
+interleaved over two rounds.
+
+**A set worker** (branch `perf-c`, `SAVAGEWIND_VK_SETW=1`): the render thread still decided every descriptor, and a
+thread of its own made the constant-buffer copies (the 98% that `UpdateUniformBuffer` does not write during the list:
+only 1.5-2% of the copies cover such a range), the sets' hash and cache, their allocation and update; the recorder bound
+them in their turn. It gave the same image and never fell back, but it was slower: Plateau 162.7 -> 148.5 fps, Rito
+Village 118.1 -> 109.3, Hateno 167.9 -> 154.3, Castle 160.8 -> 156.6. Both the render thread (5.9 -> 6.5 ms at the
+Plateau) and the game's main thread (4.7 -> 5.3 ms) took longer. A worker that yields instead of spinning made no
+difference. The hand-over is the cost: a draw's two sets are ~1.2 KB written by one core and read by another (~4 MB a
+frame), more than the copies the worker took over (~1.4 MB a frame), and at Rito 96% of the sets were cache hits the
+render thread made in a few hashes anyway.
+
+As with the parallel recording of October (branch `heap-vram`, see `docs/parallel-draws.md` there): on a 6-core CPU,
+moving per-draw work to another thread did not pay. What paid on the same day was making the render thread's own work
+cheaper: a retrained PGO profile (+9 to +13%), the CPU option mask of #989 (+2 to +5%), and no locked add per
+transient span (`vk_transient`, +1 to +7%).

@@ -4,22 +4,32 @@
 runtime (`runtime/`), never the generated game library, and holds execution counters keyed by function names
 (`file.c:function`): no game data, no paths.
 
-Made with clang 23.1.3 (MSYS2 UCRT64; the `compiler-rt` and `llvm-tools` packages give `PGO=gen` and `llvm-profdata`),
-after Alpha 6, from the Alpha 7 work (`main` at b948239f: all the PR blocks of November 18 merged). One training run of
-the instrumented build (`make PGO=gen`): `tools/perf_routes.py run --sample 0 --no-trace` over the kakariko, field,
-hateno, korok and rito routes at 1920x1080 with TAA and high shadows, so the profile is of the TAA path the game is
-played in. The file is about 870 KB; its size follows the number of counters in the code, not the play time.
+Made with clang 23.1.3 (MSYS2 UCRT64; the `compiler-rt` and `llvm-tools` packages give `PGO=gen` and `llvm-profdata`)
+on Beta 1's `main` with the CPU option mask of PR #989 at its default 3312 (2026-11-25), with `train.py`'s full run: 11 boots, the `play` config (the Original
+preset, anti-aliasing off, console shadows, 2560x1440) at all seven `perf_routes.py` places and `taa1080` at four, each
+boot through day, a pan, a fly-around, the pause menu and the map, dusk, night, rain, a thunderstorm, snow and dawn.
+The file is about 1 MB; its size follows the number of counters in the code, not the play time.
 
-Refreshed because the Alpha 6 profile had gone stale, which Fayberr found and measured in PR #889: a profile trained on
-Alpha 6 gave +10.9% at the plateau over the one shipped then (FXAA, 5700X3D + 3080 Ti). Against that stale profile, the
-compiler flagged out-of-date data in 47 files; against this one, in 1 function. It was trained first on the performance block alone (0e638cdc plus those PRs) and again the same night once every block was merged, on the same routes; the numbers below are from the first one. Measured on a 5600X + RTX 3060
-(`make dist`'s `PGO=use LTO=thin` both, 3 rotated rounds, TAA, high shadows, 1920x1080, routes NOT in the training):
-plateau 127.5 -> 136.3 fps (+6.9%, 1% low 98.5 -> 107.1), castle 126.4 -> 135.6 fps (+7.3%, 1% low 96.5 -> 104.1).
+Refreshed because the profile of November 18 had gone stale: 116 runtime commits since, and 19 files (the achievements
+among them) had no profile data at all. Measured on a 5600X + RTX 3060 (`PGO=use LTO=thin` both, the same code,
+1920x1080, Original preset, the two profiles interleaved over two rounds):
 
-The profile before that (from `test` at 04aa642, the same routes) measured on a 5700X3D + 3080 Ti against the plain
-build: with `PGO=use LTO=thin` plateau 1080p +33%, castle 1080p +23%, plateau 1440p +27%, castle 1440p +19%; PGO alone
-+28 / +18 / +21 / +17%. The one before it (AA off, older code) gave +1..+10% on the same routes and a merge of the two
-was worse than the new one alone: regenerate instead of merging.
+| Route | Old profile | New profile | Change |
+| --- | ---: | ---: | ---: |
+| Plateau | 150.3 fps | 164.7 fps | +9.6% |
+| Castle | 141.5 fps | 154.1 fps | +8.9% |
+| Rito Village | 113.5 fps | 126.2 fps | +11.2% |
+| Hateno | 154.8 fps | 175.6 fps | +13.4% |
+
+Then retrained the same way once PR #989 was in (its edits had taken the data of `draw_`, `stage_set` and others away):
+against `main` before it with the profile above, each build with its own profile, interleaved, Plateau 166.6 -> 175.2
+fps (+5.2%), Castle 151.8 -> 159.4 (+5.0%), Hateno 171.6 -> 180.4 (+5.1%), Rito Village 125.4 -> 127.7 (+1.8%).
+
+Earlier profiles, for comparison: the November 18 one (trained on `main` at b948239f with `perf_routes.py` over five
+routes, TAA) gave plateau +6.9% and castle +7.3% over the Alpha 6 one it replaced (PR #889, Fayberr's finding). The one
+before it (from `test` at 04aa642) measured on a 5700X3D + 3080 Ti against the plain build: with `PGO=use LTO=thin`
+plateau 1080p +33%, castle 1080p +23%, plateau 1440p +27%, castle 1440p +19%; PGO alone +28 / +18 / +21 / +17%. A merge
+of an old and a new profile was worse than the new one alone: regenerate instead of merging.
 
 ## Limits
 

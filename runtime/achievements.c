@@ -2,6 +2,7 @@
 #include "achievements.h"
 
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -27,12 +28,50 @@ bool ach_save_ok(const AchSave *s) { return s && s->data && s->size >= 0xC + 8; 
 
 bool ach_save_get(const AchSave *s, uint32_t hash, uint32_t *value) {
     if (!ach_save_ok(s)) return false;
+    if (s->sorted) {  // (the first entry with that hash, as the scan below finds it: the live image has ~47k)
+        size_t lo = 0, hi = (s->size - 0xC) / 8;
+        while (lo < hi) {
+            size_t mid = lo + (hi - lo) / 2;
+            if (rd32(s->data + 0xC + 8 * mid) < hash) lo = mid + 1;
+            else hi = mid;
+        }
+        size_t o = 0xC + 8 * lo;
+        if (o + 8 > s->size || rd32(s->data + o) != hash) return false;
+        if (value) *value = rd32(s->data + o + 4);
+        return true;
+    }
     for (size_t o = 0xC; o + 8 <= s->size; o += 8)
         if (rd32(s->data + o) == hash) {
             if (value) *value = rd32(s->data + o + 4);
             return true;
         }
     return false;
+}
+
+typedef struct { uint32_t hash, value, at; } SortEntry;
+static int by_hash_at(const void *a, const void *b) {
+    const SortEntry *x = a, *y = b;
+    if (x->hash != y->hash) return x->hash < y->hash ? -1 : 1;
+    return (x->at > y->at) - (x->at < y->at);
+}
+
+// A save has ~130k entries and the table looks up thousands of flags (each Korok seed is one): a scan for each took tens
+// of milliseconds, on the thread of the game that saved (services/fs.c save_written). In hash order they are bisected.
+// The entries of one hash stay in file order: ach_save_strings reads a name's characters in it.
+uint8_t *ach_save_sort(const AchSave *s, AchSave *out) {
+    *out = *s;
+    if (!ach_save_ok(s) || s->sorted) return NULL;
+    size_t n = (s->size - 0xC) / 8;
+    SortEntry *e = malloc(sizeof *e * n);
+    uint8_t *d = malloc(0xC + 8 * n);
+    if (!e || !d) { free(e); free(d); return NULL; }
+    for (size_t i = 0; i < n; i++) e[i] = (SortEntry){rd32(s->data + 0xC + 8 * i), rd32(s->data + 0xC + 8 * i + 4), (uint32_t)i};
+    qsort(e, n, sizeof *e, by_hash_at);
+    memcpy(d, s->data, 0xC);
+    for (size_t i = 0; i < n; i++) memcpy(d + 0xC + 8 * i, &e[i].hash, 4), memcpy(d + 0xC + 8 * i + 4, &e[i].value, 4);
+    free(e);
+    *out = (AchSave){d, 0xC + 8 * n, true};
+    return d;
 }
 
 // A flag is its name, or "#<hex>" for its crc32 itself (a flag found with tools/ach_tool diff whose name isn't known).
@@ -243,10 +282,12 @@ static bool blocked;
 static Slot slots[MAX_SLOTS];
 static int active_slot = -1;  // the save being played
 static int toasts[MAX_TOAST], toast_head, toast_n;
+static _Atomic int toast_count;  // toast_n for ach_toast_pending without the lock (the presenting thread asks each frame)
 static bool g_announced[MAX_ACH];  // its notice was queued since the game last loaded a save (ach_announced)
 
 static void toast_add(int code) {  // (lock held) a notice: an achievement's index, or an ACH_TOAST_* one
     if (toast_n < MAX_TOAST) toasts[(toast_head + toast_n++) % MAX_TOAST] = code;
+    atomic_store_explicit(&toast_count, toast_n, memory_order_relaxed);
     if (code >= 0 && code < MAX_ACH) g_announced[code] = true;
 }
 static bool g_live[MAX_ACH];    // what the game's flags in memory met at the latest ach_live_update
@@ -356,6 +397,7 @@ void ach_state_load(const char *path) {
     g_load_until = 0, g_back_pending = false;
     active_slot = -1;
     toast_head = toast_n = 0;
+    atomic_store_explicit(&toast_count, 0, memory_order_relaxed);
     FILE *f = fopen(path, "r");
     char line[600];
     int cur = -1;
@@ -626,16 +668,25 @@ int ach_live_update(const AchSave *s, time_t now) {
     if (!ach_save_ok(s)) return 0;
     static bool met[MAX_ACH];
     static uint32_t cur[MAX_ACH], target[MAX_ACH];
+    static uint32_t raw_now[MAX_ACH], master_t[MAX_ACH];
+    static bool master_met[MAX_ACH];
     int fresh = 0;
     bool dirty = false, back = false;
-    pthread_mutex_lock(&lock);
+    // Everything read from the image first, without the lock: the presenting thread takes it every frame
+    // (ach_toast_pending, ach_info) and the evaluation reads thousands of flags
     for (int i = 0; i < g_ach_count && i < MAX_ACH; i++) {
         cur[i] = target[i] = 0;
         met[i] = live_kind(g_ach_defs[i].kind) && ach_eval(&g_ach_defs[i], s, &cur[i], &target[i]);
-        back |= g_live[i] && !met[i];
+        if (g_ach_defs[i].kind != ACH_MASTER) continue;
+        uint32_t c;
+        raw_now[i] = 0, ach_save_get_named(s, g_ach_defs[i].flag, &raw_now[i]);
+        master_met[i] = ach_eval(&g_ach_defs[i], s, &c, &master_t[i]);
     }
     uint32_t hard = 0;
-    g_live_hard_known = ach_save_get_named(s, "AoC_HardMode_Enabled", &hard);
+    bool hard_known = ach_save_get_named(s, "AoC_HardMode_Enabled", &hard);
+    pthread_mutex_lock(&lock);
+    for (int i = 0; i < g_ach_count && i < MAX_ACH; i++) back |= g_live[i] && !met[i];
+    g_live_hard_known = hard_known;
     g_live_hard = g_live_hard_known && hard;
     bool master = g_live_hard_known ? g_live_hard : g_master_play;  // (the game's own flag when it has one)
     if (back && !g_back_pending && !g_live_first && now >= g_load_until) {  // (what was met before: back_flush)
@@ -657,12 +708,11 @@ int ach_live_update(const AchSave *s, time_t now) {
     // opened last is one, or the game's flags say so). Not while quiet: a load brings the value of the save it loads.
     for (int i = 0; i < g_ach_count && i < MAX_ACH; i++) {
         if (g_ach_defs[i].kind != ACH_MASTER) continue;
-        uint32_t raw = 0, c, t;
-        ach_save_get_named(s, g_ach_defs[i].flag, &raw);
+        uint32_t raw = raw_now[i];
         bool up = raw > g_live_raw[i];
         g_live_raw[i] = raw;
-        if (!up || quiet || blocked || !master || g_global[i] || !ach_eval(&g_ach_defs[i], s, &c, &t)) continue;
-        master_unlock(i, -1, now, t), dirty = true, fresh++;
+        if (!up || quiet || blocked || !master || g_global[i] || !master_met[i]) continue;
+        master_unlock(i, -1, now, master_t[i]), dirty = true, fresh++;
         fprintf(stderr, "[achievements] %s: met while playing in Master Mode\n", g_ach_defs[i].id);
     }
     Slot *sl = active_slot >= 0 ? &slots[active_slot] : NULL;
@@ -763,12 +813,7 @@ void ach_toast_push(int code) {
     pthread_mutex_unlock(&lock);
 }
 
-int ach_toast_pending(void) {
-    pthread_mutex_lock(&lock);
-    int n = toast_n;
-    pthread_mutex_unlock(&lock);
-    return n;
-}
+int ach_toast_pending(void) { return atomic_load_explicit(&toast_count, memory_order_relaxed); }
 
 bool ach_toast_take(int *index) {
     bool ok = false;
@@ -776,6 +821,7 @@ bool ach_toast_take(int *index) {
     if (toast_n) {
         *index = toasts[toast_head];
         toast_head = (toast_head + 1) % MAX_TOAST, toast_n--;
+        atomic_store_explicit(&toast_count, toast_n, memory_order_relaxed);
         ok = true;
     }
     pthread_mutex_unlock(&lock);

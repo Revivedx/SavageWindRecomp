@@ -16,11 +16,11 @@
 
 // From the Makefile: the flags the game code is compiled and linked with (as `make` builds it in a source checkout)
 #ifndef GAMELIB_CFLAGS
-#define GAMELIB_CFLAGS "-O1 -fno-strict-aliasing -fvisibility=hidden"
+#define GAMELIB_CFLAGS "-O2 -fno-strict-aliasing -fvisibility=hidden"
 #endif
 // GAMELIB_CFLAGS_COMPAT: the same for the compatible target (gamelib.h gamelib_compat), where there is one
 #ifndef GAMELIB_ZIGFLAGS  // (zig cc only: what makes it build what clang does with GAMELIB_CFLAGS)
-#define GAMELIB_ZIGFLAGS "-Xclang -O1 -fno-vectorize -fno-slp-vectorize -g0 -fomit-frame-pointer"
+#define GAMELIB_ZIGFLAGS "-Xclang -O2 -fno-vectorize -fno-slp-vectorize -g0 -fomit-frame-pointer"
 #endif
 #ifndef GAMELIB_SHARED
 #define GAMELIB_SHARED "-shared"

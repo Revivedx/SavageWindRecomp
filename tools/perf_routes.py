@@ -394,11 +394,14 @@ OTHER_WAITS = tuple(profile_samples.WAITS) + ('core_acquire', 'kernel_preempt')
 _maps = {}
 
 
-def sample_shares(tree, path):
+def sample_shares(exe, path):
+    """Main and render thread time shares from build/samples.txt, named with the symbols of the exe that ran (a
+    release exe keeps them); swgame.dll only when it sits next to the exe (older builds)."""
     if not _maps:
-        b = lambda f: os.path.join(tree, 'build', f)
-        _maps['exe'] = (profile_samples.symbols(b('savagewind.exe')), 0x140000000, profile_samples.image_size(b('savagewind.exe')))
-        _maps['swgame'] = (profile_samples.symbols(b('swgame.dll')), 0x180000000, profile_samples.image_size(b('swgame.dll')))
+        b = lambda f: os.path.join(os.path.dirname(exe), f)
+        _maps['exe'] = (profile_samples.symbols(exe), 0x140000000, profile_samples.image_size(exe))
+        if os.path.exists(b('swgame.dll')):
+            _maps['swgame'] = (profile_samples.symbols(b('swgame.dll')), 0x180000000, profile_samples.image_size(b('swgame.dll')))
     bases, maps = {}, {}
     kinds = {MAIN_HANDLE: collections.Counter(), RENDER_HANDLE: collections.Counter()}
     with open(path) as f:
@@ -587,7 +590,8 @@ def measure(game, args, log_path, route, run_dir, tag):
         game.cmd('sample', 'start', args.sample, args.sample_us)
         time.sleep(args.sample)
         if game.poll(['sample', 'status'], ('done',), 120) == 'done':
-            shares = sample_shares(args.tree, os.path.join(args.tree, 'build', 'samples.txt'))
+            exe = args.exe or os.path.join(args.tree, 'build', 'savagewind.exe')
+            shares = sample_shares(exe, os.path.join(game_cwd(args), 'build', 'samples.txt'))
 
     presents = th_b['presents'] - th_a['presents']
     cpu = {k: (th_b[k] - th_a[k]) / presents for k in th_b

@@ -87,3 +87,22 @@ The production compile retains the pre-existing unused `gmem_sparse_binds`
 warning. The current-base branch has not had a new full native link or gameplay
 run. Long sessions, broad driver coverage and full Vulkan validation remain
 pending. No new benchmark was run when preparing this draft.
+
+## Measured on Beta 1 (2026-11-25)
+
+`main` at a0064e84, release build (`PGO=use LTO=thin`, the profile of 2026-11-18), Ryzen 5 5600X, RTX 3060,
+1920x1080, Original preset (anti-aliasing off, console shadows), hidden window, `tools/perf_routes.py` with mode 0 and
+mode 2 interleaved, two rounds of 20-second windows:
+
+| Route | Mode 0 FPS | Mode 2 FPS | Change | Mode 0 render busy | Mode 2 render busy |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Plateau | 145.2 | 144.1 | -0.8% | 6.67 ms | 6.71 ms |
+| Castle | 137.9 | 147.0 | +6.6% | 7.00 ms | 6.57 ms |
+| Rito Village | 111.4 | 104.4 | -6.3% | 8.75 ms | 9.38 ms |
+| Hateno | 155.0 | 150.5 | -2.9% | 6.21 ms | 6.41 ms |
+
+The spread between the two rounds was under 1.5% on every route, so the Rito loss is not noise. The cache stays off by
+default: it helps the Castle and costs the render thread elsewhere. On the same build a sampling profile of the Castle's
+render thread put `stage_set` at 31% (inclusive) and the constant-buffer copies under it (`guest_copy`) at 19%: the
+descriptor work this cache skips is one part of a larger cost, which the render-thread work after Beta 1's baseline
+takes on as a whole.

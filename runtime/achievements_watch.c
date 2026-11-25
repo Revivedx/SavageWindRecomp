@@ -98,25 +98,27 @@ static void on_file(const char *path, const struct stat *st) {
     size_t n;
     w->proc_mtime = st->st_mtime, w->proc_size = st->st_size, w->seen = true;  // (tried: a bad file isn't retried until it changes)
     if (!read_all(path, &data, &n)) return;
-    AchSave s = {data, n};
+    AchSave raw = {data, n}, s;
+    uint8_t *sorted = ach_save_sort(&raw, &s);
     if (ach_save_ok(&s)) {
         int fresh = ach_update_at(path, &s, time(NULL), st->st_mtime);
         if (fresh) LOG("[achievements] %d new from %s\n", fresh, path);
     }
-    free(data);
+    free(sorted), free(data);
 }
 
 void ach_game_wrote(const char *path) {
     uint8_t *data;
     size_t n;
     if (!read_all(path, &data, &n)) return;
-    AchSave s = {data, n};
+    AchSave raw = {data, n}, s;
+    uint8_t *sorted = ach_save_sort(&raw, &s);
     struct stat st;
     if (ach_save_ok(&s)) {
         int fresh = ach_update_played(path, &s, time(NULL), stat(path, &st) ? 0 : st.st_mtime);
         if (fresh) LOG("[achievements] %d new from %s (written by the game)\n", fresh, path);
     }
-    free(data);
+    free(sorted), free(data);
 }
 
 // A save file that has vanished was deleted: its achievements go with it.

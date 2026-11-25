@@ -45,7 +45,11 @@ MINFLAG  := $(if $(MACOS_MIN),-mmacosx-version-min=$(MACOS_MIN))
 CC       := clang $(MINFLAG) $(CROSS)
 CXX      := clang++ $(MINFLAG) $(CROSS)
 IMGUI    := third_party/imgui
-GENFLAGS := -O1 -fno-strict-aliasing -Wno-return-type -Wno-unused-label -fvisibility=hidden -Iruntime
+# The game code's optimization: -O2 since Beta 1 (on a 5600X the game's thread did 6-8% less work a frame than with
+# -O1, the whole CPU ~5% less; the setup's build took 31% longer, 395 -> 519 s on 12 threads; tools/test_simd.py
+# --locals passes at -O2). GENOPT=-O1 builds it as before. Part of GAMELIB_ID, as every flag here.
+GENOPT   ?= -O2
+GENFLAGS := $(GENOPT) -fno-strict-aliasing -Wno-return-type -Wno-unused-label -fvisibility=hidden -Iruntime
 # RECOMP_LOCALS=1 (the default since Alpha 5): the generator keeps each function's most used registers and its flags in
 # C locals (gen.py --locals, docs/RECOMP-LOCALS.md); RECOMP_LOCALS=0 builds the plain game code. It is part of
 # GAMELIB_ID, so a library built one way is never loaded for the other.

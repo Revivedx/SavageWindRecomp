@@ -101,6 +101,11 @@ int rt_reboot_requested(void);
 extern volatile int g_rt_unwind;   // set while guest threads are being stopped (kernel.c)
 void rt_unwind_point(void);        // guest threads: unwind to thread_main if a reboot is stopping them
 
+// Live experiment switches of the guest's threads (cpuopts bits 1024 and 2048, nvn/vulkan/exec.c stage_cpu_publish):
+// plain variables, so that the paths they steer read no more than a load. Default off.
+extern volatile int g_opt_dispatch_fast;  // dispatch.c: the indirect-call dispatch with the per-thread table (dispatch_fast)
+extern volatile int g_opt_cb_unlink;      // nvn/cmdbuf.c: a command buffer leaves the registry in constant time
+
 // ---- ui (runtime/nvn/metal.m)
 int ui_run(void);  // window loop; returns the reboot kind requested (the window stays open)
 

@@ -669,6 +669,48 @@ int main(void) {
         CHECK(!ach_bars_sound(bk, 0x10, "Yaha", &rate, &count));
     }
 
+    // a save in hash order (ach_save_sort, the live image): every lookup as on the save in file order
+    {
+        Buf m = new_save();
+        static const char *const names[] = {"Zeta", "Alpha", "Mid", "Alpha", "Beta", "Zeta", "Omega"};
+        for (int i = 0; i < 7; i++) add(&m, names[i], 100 + i);  // (Alpha and Zeta twice: the first one counts)
+        static const char *const horse[] = {"Epona", "Storm"};
+        static const int hlen[] = {5, 5};
+        add_slots(&m, ach_crc32("HorseName"), 2, horse, hlen);
+        for (int i = 0; i < 300; i++) { char n[32]; snprintf(n, sizeof n, "Flag_%d", (i * 7919) % 300); add(&m, n, i); }
+        add(&m, "AfterHorse", 7);
+        AchSave raw = as(&m), srt;
+        uint8_t *own = ach_save_sort(&raw, &srt);
+        CHECK(own && srt.sorted && srt.size == raw.size);
+        for (size_t o = 0xC; o + 8 <= raw.size; o += 8) {  // (each hash present, and one hash past each)
+            uint32_t h = (uint32_t)raw.data[o] | (uint32_t)raw.data[o + 1] << 8 | (uint32_t)raw.data[o + 2] << 16 |
+                         (uint32_t)raw.data[o + 3] << 24;
+            for (uint32_t k = h; k <= h + 1 && k >= h; k++) {
+                uint32_t v1 = 0xdead, v2 = 0xbeef;
+                bool g1 = ach_save_get(&raw, k, &v1), g2 = ach_save_get(&srt, k, &v2);
+                CHECK(g1 == g2 && (!g1 || v1 == v2));
+            }
+        }
+        uint32_t v;
+        CHECK(ach_save_get_named(&srt, "Alpha", &v) && v == 101 && ach_save_get_named(&srt, "Zeta", &v) && v == 100);
+        CHECK(!ach_save_get_named(&srt, "Missing", &v));
+        char s1[16][ACH_STR_MAX], s2[16][ACH_STR_MAX];
+        int n1 = ach_save_strings(&raw, ach_crc32("HorseName"), 16, s1, 16);
+        int n2 = ach_save_strings(&srt, ach_crc32("HorseName"), 16, s2, 16);
+        CHECK(n1 == 2 && n2 == 2 && !strcmp(s2[0], "Epona") && !strcmp(s2[1], "Storm"));
+        free(own), free(m.d);
+        // the table on the test's save: the same progress either way
+        AchSave braw = as(&b), bs;
+        uint8_t *bown = ach_save_sort(&braw, &bs);
+        CHECK(bown != NULL);
+        for (int i = 0; i < g_ach_count; i++) {
+            uint32_t c1, t1, c2, t2;
+            bool m1 = ach_eval(&g_ach_defs[i], &braw, &c1, &t1), m2 = ach_eval(&g_ach_defs[i], &bs, &c2, &t2);
+            CHECK(m1 == m2 && c1 == c2 && t1 == t2);
+        }
+        free(bown);
+    }
+
     // too small / not a save
     AchSave tiny = {(const uint8_t *)"abc", 3};
     CHECK(!ach_save_ok(&tiny) && ach_update(SLOT_A, &tiny, 1) == 0);

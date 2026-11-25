@@ -58,10 +58,14 @@ extern const int g_ach_game_icon_count;
 typedef struct {
     const uint8_t *data;
     size_t size;
+    bool sorted;  // the entries in ascending hash order (the live image: achievements_live.c), looked up by bisection
 } AchSave;
 
 uint32_t ach_crc32(const char *s);
 bool ach_save_ok(const AchSave *s);                                         // looks like a game_data.sav
+// A copy of the image in hash order (the entries of one hash in file order), for ach_save_get to bisect; *out is it, or
+// *s with no memory. Free the result.
+uint8_t *ach_save_sort(const AchSave *s, AchSave *out);
 bool ach_save_get(const AchSave *s, uint32_t hash, uint32_t *value);        // first entry with that hash
 bool ach_save_get_named(const AchSave *s, const char *name, uint32_t *value);  // name, or "#<hex crc32>"
 // A string array (the horse names): a run of entries with the same hash, 4 characters each; `per` entries make one slot
