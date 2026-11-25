@@ -159,6 +159,17 @@ static bool format_supports(VkFormat f, VkFormatFeatureFlags want) {
     return (p.optimalTilingFeatures & want) == want;
 }
 
+// SAVAGEWIND_VK_ASTC_CPU=1: ASTC textures decoded on the CPU even where the driver samples them itself, to tell a
+// driver's ASTC decoding apart from ours when a surface has wrong colours on one graphics card (#1066, Intel Iris Xe)
+static bool astc_cpu_forced(void) {
+    static int on = -1;
+    if (on < 0) {
+        on = getenv("SAVAGEWIND_VK_ASTC_CPU") != NULL;
+        if (on) LOG("[vk] ASTC textures decoded on the CPU (SAVAGEWIND_VK_ASTC_CPU)\n");
+    }
+    return on;
+}
+
 static bool format_is_float(VkFormat f) {  // (uncompressed: these can hold NaN and Inf)
     switch (f) {
     case VK_FORMAT_R16_SFLOAT: case VK_FORMAT_R16G16_SFLOAT: case VK_FORMAT_R16G16B16_SFLOAT:
@@ -593,8 +604,9 @@ static void create_image(NvnTexture *t, TexBackend *b) {
         LOG("[vk] half heart: %ux wider, cut sharply at the centre\n", HEART_SCALE);
         tw = 48 * HEART_SCALE;
     }
-    if (!b->bc4_cpu && !format_supports(vf, need)) {
-        bool astc = vf >= VK_FORMAT_ASTC_4x4_UNORM_BLOCK && vf <= VK_FORMAT_ASTC_12x12_SRGB_BLOCK;
+    bool astc_vf = vf >= VK_FORMAT_ASTC_4x4_UNORM_BLOCK && vf <= VK_FORMAT_ASTC_12x12_SRGB_BLOCK;
+    if (!b->bc4_cpu && (!format_supports(vf, need) || (astc_vf && astc_cpu_forced()))) {
+        bool astc = astc_vf;
         const FormatInfo *fi = t->layout.fmt;
         if (astc && fi && fi->bpb == 16) {  // desktop GPUs: decoded on the CPU into an RGBA8 image of the same colour space
             b->astc_bw = fi->bw;
@@ -965,11 +977,22 @@ static void idle_expire(void) {  // (gpu lock held)
         g_kept_bytes += bytes;
     }
     while (g_kept_bytes > KEEP_BUDGET) {
-        TexBackend *old = NULL;
-        for (int i = 0; i < g_nidle; i++)
-            if (g_idle[i]->kept && (!old || g_idle[i]->idle_frame < old->idle_frame)) old = g_idle[i];
-        if (!old) break;
-        free_backend(old);
+        // Evict up to 32 oldest kept entries per scan of g_idle to avoid O(N^2) scans during area transitions.
+        TexBackend *batch[32];
+        int nb = 0;
+        for (int i = 0; i < g_nidle; i++) {
+            TexBackend *t = g_idle[i];
+            if (!t->kept) continue;
+            if (nb == 32 && t->idle_frame >= batch[31]->idle_frame) continue;
+            int pos = nb < 32 ? nb++ : 31;
+            while (pos > 0 && batch[pos - 1]->idle_frame > t->idle_frame) {
+                batch[pos] = batch[pos - 1];
+                pos--;
+            }
+            batch[pos] = t;
+        }
+        if (!nb) break;
+        for (int i = 0; i < nb && g_kept_bytes > KEEP_BUDGET; i++) free_backend(batch[i]);
     }
     static uint64_t last_log;
     if (due > expire_max && now - last_log > 600) {
@@ -2364,6 +2387,7 @@ static float sampler_user_lod_bias(const NvnSamplerDesc *d) {
     if (d->min_filter <= 1 || d->compare_mode) return 0.0f;
     if (g_settings.tex_lod_bias == TEX_LOD_SHARP) return -0.5f;
     if (g_settings.tex_lod_bias == TEX_LOD_SHARPER) return -1.0f;
+    if (g_settings.tex_lod_bias == TEX_LOD_ULTRA) return -1.5f;
     return 0.0f;
 }
 

@@ -5,7 +5,8 @@
 // quest items, Korok seeds), cooked dishes (CookResult: they need their effects) and rupees. Each has the name the
 // game gives it, <actor>_Name in Message/Msg_<lang>.product.ssarc's ActorType/*.msbt inside Pack/Bootup_<lang>.pack;
 // one without a name is left out, and of several actors with one name (armour's upgrade levels, dyes) the first by
-// actor name stays.
+// actor name stays. The name's pinyin comes with it (runtime/pinyin.h): the menu's search is typed on a controller's
+// on-screen keyboard, which has no IME and only ASCII keys, so 鲈鱼 is found by "luyu".
 //
 // Adding: the pause menu data's item get (1.9.0 0x7000d921bc; x0 the pause menu data, x1 the item's name as a
 // sead::SafeString, w2 its value, x3 its weapon modifier or NULL) is what picking an item up calls: a stack's value
@@ -13,6 +14,7 @@
 // rt_item_tick (tools/patches.py _item_tick), at the entry of Link's damage handling, which runs every frame in play,
 // as picking an item up does.
 #include <ctype.h>
+#include <math.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdint.h>
@@ -21,25 +23,22 @@
 
 #include "control.h"
 #include "cpu.h"
+#include "game_sites.h"
 #include "gamelib.h"
 #include "hle.h"
 #include "items.h"
 #include "kernel.h"
 #include "language.h"
 #include "nvn/tegra.h"
+#include "pinyin.h"
+#include "platform.h"
 #include "rt.h"
 #include "services/archive.h"
+#include "services/formats.h"
 #include "settings.h"
 #include "ui/i18n.h"
 
 uint8_t *fs_game_file(const char *path, size_t *out_n);  // runtime/services/fs.c
-
-// ---- BYML (little-endian "YB", version 2 and up): dictionaries, arrays, strings and numbers
-typedef struct {
-    const uint8_t *d;
-    size_t n;
-    uint32_t keys, strs;  // their string tables
-} Byml;
 
 static uint32_t rd32(const uint8_t *p) { uint32_t v; memcpy(&v, p, 4); return v; }
 static char *copy(const char *s, size_t n) {
@@ -47,94 +46,21 @@ static char *copy(const char *s, size_t n) {
     if (o) memcpy(o, s, n), o[n] = 0;
     return o;
 }
-static uint16_t rd16(const uint8_t *p) { uint16_t v; memcpy(&v, p, 2); return v; }
 
-static const char *byml_str(const Byml *b, uint32_t table, uint32_t i) {
-    if (!table || table + 8 > b->n || i >= (rd32(b->d + table) >> 8)) return NULL;
-    uint32_t o = table + rd32(b->d + table + 4 + 4 * i);
-    return o < b->n ? (const char *)b->d + o : NULL;
-}
-static uint32_t byml_count(const Byml *b, uint32_t node) { return node + 4 <= b->n ? rd32(b->d + node) >> 8 : 0; }
-// Entry `key` of the dictionary at `node`: its type and value; false if it has none
-static bool byml_get(const Byml *b, uint32_t node, const char *key, uint8_t *type, uint32_t *value) {
-    if (node + 4 > b->n || b->d[node] != 0xc1) return false;
-    uint32_t n = byml_count(b, node);
-    for (uint32_t i = 0; i < n && node + 12 + 8 * i <= b->n; i++) {
-        const uint8_t *e = b->d + node + 4 + 8 * i;
-        const char *k = byml_str(b, b->keys, rd32(e) & 0xffffff);
-        if (k && !strcmp(k, key)) { *type = e[3], *value = rd32(e + 4); return true; }
-    }
-    return false;
-}
-static const char *byml_get_str(const Byml *b, uint32_t node, const char *key) {
-    uint8_t t; uint32_t v;
-    return byml_get(b, node, key, &t, &v) && t == 0xa0 ? byml_str(b, b->strs, v) : NULL;
-}
-static int byml_get_int(const Byml *b, uint32_t node, const char *key, int def) {
-    uint8_t t; uint32_t v;
-    return byml_get(b, node, key, &t, &v) && (t == 0xd1 || t == 0xd3) ? (int)v : def;
-}
-
-// ---- MSBT: the label's text, UTF-16 to UTF-8, control tags left out
-static void utf8_put(char **o, char *end, uint32_t c) {
-    char *p = *o;
-    if (c < 0x80) { if (p + 1 < end) *p++ = (char)c; }
-    else if (c < 0x800) { if (p + 2 < end) *p++ = (char)(0xc0 | c >> 6), *p++ = (char)(0x80 | (c & 63)); }
-    else if (p + 3 < end) *p++ = (char)(0xe0 | c >> 12), *p++ = (char)(0x80 | ((c >> 6) & 63)), *p++ = (char)(0x80 | (c & 63));
-    *o = p;
-}
-
+// ---- the names: each <actor>_Name message's text
 typedef struct { char *label, *text; } Msg;
 static Msg *g_msgs;
 static int g_nmsgs, g_capmsgs;
 
-static void msbt_read(const uint8_t *d, size_t n) {
-    if (n < 0x20 || memcmp(d, "MsgStdBn", 8) || d[8] != 0xff) return;  // (little-endian only, as the Switch's are)
-    uint16_t nsec = rd16(d + 0xe);
-    size_t off = 0x20, lbl = 0, txt = 0, txt_size = 0;
-    for (int s = 0; s < nsec && off + 0x10 <= n; s++) {
-        uint32_t size = rd32(d + off + 4);
-        if (!memcmp(d + off, "LBL1", 4)) lbl = off + 0x10;
-        if (!memcmp(d + off, "TXT2", 4)) txt = off + 0x10, txt_size = size;
-        off = (off + 0x10 + size + 15) & ~(size_t)15;
-    }
-    if (!lbl || !txt || txt + 4 > n) return;
-    uint32_t ntxt = rd32(d + txt), nb = rd32(d + lbl);
-    for (uint32_t b = 0; b < nb && lbl + 12 + 8 * b <= n; b++) {
-        uint32_t cnt = rd32(d + lbl + 4 + 8 * b);
-        size_t p = lbl + rd32(d + lbl + 8 + 8 * b);
-        for (uint32_t k = 0; k < cnt && p < n; k++) {
-            uint8_t len = d[p];
-            if (p + 1 + len + 4 > n) return;
-            uint32_t idx = rd32(d + p + 1 + len);
-            if (len > 5 && !memcmp(d + p + 1 + len - 5, "_Name", 5) && idx < ntxt) {
-                size_t t0 = txt + rd32(d + txt + 4 + 4 * idx);
-                size_t t1 = idx + 1 < ntxt ? txt + rd32(d + txt + 8 + 4 * idx) : txt + txt_size;
-                char buf[160], *o = buf;
-                for (size_t q = t0; q + 1 < t1 && q + 1 < n;) {
-                    uint16_t c = rd16(d + q);
-                    q += 2;
-                    if (!c) break;
-                    if (c == 0x0e) { if (q + 6 <= n) q += 6 + rd16(d + q + 4); continue; }  // (a tag: group, type, size, data)
-                    if (c >= 0xd800 && c < 0xdc00 && q + 1 < n) {
-                        uint16_t lo = rd16(d + q);
-                        q += 2;
-                        utf8_put(&o, buf + sizeof buf, 0x10000 + ((c - 0xd800) << 10) + (lo - 0xdc00));
-                        continue;
-                    }
-                    utf8_put(&o, buf + sizeof buf, c);
-                }
-                while (o > buf && (o[-1] == ' ' || (o[-1] == 'x' && o - 1 > buf && o[-2] == ' '))) o--;  // ("... x ": a count's place)
-                *o = 0;
-                if (buf[0]) {
-                    if (g_nmsgs == g_capmsgs) g_capmsgs = g_capmsgs ? g_capmsgs * 2 : 1024, g_msgs = realloc(g_msgs, sizeof *g_msgs * g_capmsgs);
-                    g_msgs[g_nmsgs].label = copy((const char *)d + p + 1, len - 5);
-                    g_msgs[g_nmsgs++].text = copy(buf, strlen(buf));
-                }
-            }
-            p += 1 + len + 4;
-        }
-    }
+static void name_add(void *ctx, const char *label, size_t len, const char *text) {
+    (void)ctx;
+    if (len <= 5 || memcmp(label + len - 5, "_Name", 5)) return;
+    size_t n = strlen(text);
+    while (n && (text[n - 1] == ' ' || (text[n - 1] == 'x' && n > 1 && text[n - 2] == ' '))) n--;  // ("... x ": a count's place)
+    if (!n) return;
+    if (g_nmsgs == g_capmsgs) g_capmsgs = g_capmsgs ? g_capmsgs * 2 : 1024, g_msgs = realloc(g_msgs, sizeof *g_msgs * g_capmsgs);
+    g_msgs[g_nmsgs].label = copy(label, len - 5);
+    g_msgs[g_nmsgs++].text = copy(text, n);
 }
 static int msg_cmp(const void *a, const void *b) { return strcmp(((const Msg *)a)->label, ((const Msg *)b)->label); }
 static const char *msg_name(const char *actor) {
@@ -155,7 +81,8 @@ static void names_read(void) {
     int nodes = msg ? sarc_count(msg, mn) : -1;
     for (int i = 0; i < nodes; i++) {
         const char *name; const uint8_t *data; size_t size;
-        if (sarc_node(msg, mn, i, &name, &data, &size) && name && !strncmp(name, "ActorType/", 10)) msbt_read(data, size);
+        if (sarc_node(msg, mn, i, &name, &data, &size) && name && !strncmp(name, "ActorType/", 10))
+            msbt_each(data, size, name_add, NULL);
     }
     if (g_nmsgs) qsort(g_msgs, g_nmsgs, sizeof *g_msgs, msg_cmp);
     LOG("[items] %d names from %s\n", g_nmsgs, path);
@@ -165,9 +92,14 @@ static void names_read(void) {
 // ---- the list
 static GameItem *g_items;
 static int g_nitems = -1;
+static GameItem *g_all;  // every item, by actor (g_items has one per name: the Divine Helms' upgrades share theirs)
+static int g_nall;
 static const char **g_stack_actors;
 static int g_nstack;
-static pthread_once_t g_once = PTHREAD_ONCE_INIT;
+// The list is read once the game's files are there: an ask from before the RomFS is mounted finds no ActorInfo and
+// asks again later, rather than leaving the list (Cheats > Add items, give) empty for the whole run
+static pthread_mutex_t g_list_mu = PTHREAD_MUTEX_INITIALIZER;
+static atomic_bool g_list_done;
 
 static int str_cmp(const void *a, const void *b) {
     return strcmp(*(const char *const *)a, *(const char *const *)b);
@@ -182,13 +114,17 @@ static uint32_t tag(const char *s) {  // (the tags are CRC-32s of their names)
     return ~c;
 }
 static bool has_tag(const Byml *b, uint32_t actor, uint32_t t) {
-    uint8_t ty; uint32_t tags;
-    if (!byml_get(b, actor, "tags", &ty, &tags) || ty != 0xc1) return false;
+    uint8_t ty; uint32_t tags, v;
+    if (!byml_get(b, actor, "tags", &ty, &tags) || ty != BYML_DICT) return false;
     uint32_t n = byml_count(b, tags);
-    for (uint32_t i = 0; i < n && tags + 12 + 8 * i <= b->n; i++)
-        if (rd32(b->d + tags + 8 + 8 * i) == t) return true;
+    for (uint32_t i = 0; i < n; i++)
+        if (byml_at(b, tags, i, &ty, &v, NULL) && v == t) return true;
     return false;
 }
+static int actor_cmp(const void *a, const void *b) {
+    return strcmp(((const GameItem *)a)->actor, ((const GameItem *)b)->actor);
+}
+
 static int item_cmp(const void *a, const void *b) {
     const GameItem *x = a, *y = b;
     if (x->cat != y->cat) return x->cat - y->cat;
@@ -214,15 +150,21 @@ static void effects(const char *type, unsigned char out[2]) {
     }
 }
 
-static void list_read(void) {
+// false: no ActorInfo yet (the game's files not mounted): try again later
+static bool list_read(void) {
     g_nitems = 0;
     size_t zn = 0, n = 0;
     uint8_t *z = fs_game_file("Actor/ActorInfo.product.sbyml", &zn), *d = z ? yaz0_unpack(z, zn, &n) : NULL;
     free(z);
-    if (!d || n < 16 || memcmp(d, "YB", 2)) { LOG("[items] no ActorInfo\n"); free(d); return; }
-    Byml b = {d, n, rd32(d + 4), rd32(d + 8)};
+    Byml b;
+    if (!byml_open(&b, d, n)) {
+        static bool told;
+        if (!told) told = true, LOG("[items] no ActorInfo yet: the list is read once the game's files are mounted\n");
+        free(d);
+        return false;
+    }
     uint8_t t; uint32_t actors;
-    if (!byml_get(&b, rd32(d + 12), "Actors", &t, &actors) || t != 0xc0) { free(d); return; }
+    if (!byml_get(&b, b.root, "Actors", &t, &actors) || t != BYML_ARRAY) { free(d); return true; }
     names_read();
     static const struct { const char *profile; int cat; } profiles[] = {
         {"WeaponSmallSword", ITEMCAT_WEAPON}, {"WeaponLargeSword", ITEMCAT_WEAPON}, {"WeaponSpear", ITEMCAT_WEAPON},
@@ -235,12 +177,11 @@ static void list_read(void) {
     uint32_t can_get = tag("CanGetPouch"), important = tag("Important"), cooked = tag("CookResult"), rupee = tag("Rupee"),
              arrow = tag("Arrow");
     uint32_t na = byml_count(&b, actors);
-    const uint8_t *types = d + actors + 4;
-    uint32_t vals = actors + 4 + ((na + 3) & ~3u);
     g_items = calloc(na ? na : 1, sizeof *g_items);
-    for (uint32_t i = 0; i < na && vals + 4 * i + 4 <= n; i++) {
-        if (types[i] != 0xc1) continue;
-        uint32_t a = rd32(d + vals + 4 * i);
+    for (uint32_t i = 0; i < na; i++) {
+        uint32_t a;
+        if (!byml_at(&b, actors, i, &t, &a, NULL)) break;
+        if (t != BYML_DICT) continue;
         const char *actor = byml_get_str(&b, a, "name"), *profile = byml_get_str(&b, a, "profile");
         if (!actor || !profile || !has_tag(&b, a, can_get) || has_tag(&b, a, important) || has_tag(&b, a, cooked) ||
             has_tag(&b, a, rupee))
@@ -256,6 +197,8 @@ static void list_read(void) {
         if (!name) continue;
         GameItem *it = &g_items[g_nitems++];
         it->actor = copy(actor, strlen(actor)), it->name = name, it->cat = cat;
+        char py[256];  // (the MSBT reader stops a name at 160 bytes: the readings always fit)
+        if (pinyin_text(name, py, sizeof py)) it->pinyin = copy(py, strlen(py));
         it->stack = cat == ITEMCAT_ARROW || cat == ITEMCAT_MATERIAL;
         it->value = cat <= ITEMCAT_SHIELD ? byml_get_int(&b, a, "generalLife", 1) * 100 : 1;
         it->attack = byml_get_int(&b, a, "attackPower", 0);
@@ -272,6 +215,11 @@ static void list_read(void) {
             if (g_items[i].stack) g_stack_actors[g_nstack++] = g_items[i].actor;
         qsort(g_stack_actors, (size_t)g_nstack, sizeof *g_stack_actors, str_cmp);
     }
+    if ((g_all = malloc(sizeof *g_all * (size_t)(g_nitems ? g_nitems : 1)))) {
+        memcpy(g_all, g_items, sizeof *g_all * (size_t)g_nitems);
+        g_nall = g_nitems;
+        qsort(g_all, (size_t)g_nall, sizeof *g_all, actor_cmp);
+    }
     qsort(g_items, g_nitems, sizeof *g_items, item_cmp);
     int w = 0;  // (one per name and category)
     for (int i = 0; i < g_nitems; i++)
@@ -280,10 +228,30 @@ static void list_read(void) {
     for (int i = 0; i < g_nitems; i++) ui_register_glyphs(g_items[i].name);
     LOG("[items] %d items can be added\n", g_nitems);
     free(d);
+    return true;
 }
 
-int items_count(void) { pthread_once(&g_once, list_read); return g_nitems; }
+int items_count(void) {
+    if (!atomic_load(&g_list_done)) {
+        static uint64_t tried_ns;
+        pthread_mutex_lock(&g_list_mu);
+        uint64_t now = plat_now_ns();
+        if (!atomic_load(&g_list_done) && (!tried_ns || now - tried_ns > 1000000000ull)) {  // (at most once a second)
+            tried_ns = now;
+            if (list_read()) atomic_store(&g_list_done, true);
+        }
+        pthread_mutex_unlock(&g_list_mu);
+        if (!atomic_load(&g_list_done)) return 0;
+    }
+    return g_nitems;
+}
 const GameItem *items_at(int i) { return i >= 0 && i < items_count() ? &g_items[i] : NULL; }
+
+const GameItem *items_by_actor(const char *actor) {
+    if (items_count() <= 0 || !g_all || !actor) return NULL;
+    GameItem key = {.actor = actor};
+    return bsearch(&key, g_all, (size_t)g_nall, sizeof *g_all, actor_cmp);
+}
 
 // ---- the item's picture in the pouch: UI/StockItem/<actor>.sbitemico, a Yaz0 BFRES whose BNTX holds one RGBA8
 // texture (BRTI: format 0x0bXX at +0x1c, width and height at +0x24, GOBs per block (log2) at +0x34), block linear,
@@ -326,16 +294,18 @@ bool items_available(void) {
 }
 
 // ---- requests, carried out on the game thread
-typedef struct { char actor[64]; int item, value, times, asked; unsigned seq; bool stack; } Request;
+typedef struct { char actor[64]; int item, value, times, asked; unsigned seq; bool stack; int chest; } Request;
 static Request g_req[32];
 static int g_nreq;
 static atomic_int g_pending;
 static unsigned g_seq;
 static ItemResult g_result;
+static ItemResult g_results[64];  // the latest results, by their request's number (seq % 64: items_result_of)
 static pthread_mutex_t g_req_lock = PTHREAD_MUTEX_INITIALIZER;
 
 RT_ON_RESET(items_reset) {  // (what was asked for in the last boot isn't for this one)
     pthread_mutex_lock(&g_req_lock);
+    for (int r = 0; r < g_nreq; r++) g_results[g_req[r].seq % 64] = (ItemResult){g_req[r].seq, -1, g_req[r].asked, 0};
     g_nreq = 0;
     atomic_store(&g_pending, 0);
     g_result = (ItemResult){g_seq, -1, 0, 0};
@@ -347,6 +317,14 @@ unsigned items_requested(void) {
     unsigned n = g_seq;
     pthread_mutex_unlock(&g_req_lock);
     return n;
+}
+
+bool items_result_of(unsigned seq, ItemResult *out) {
+    pthread_mutex_lock(&g_req_lock);
+    bool done = seq && g_results[seq % 64].seq == seq;
+    if (done) *out = g_results[seq % 64];
+    pthread_mutex_unlock(&g_req_lock);
+    return done;
 }
 
 ItemResult items_last_result(void) {
@@ -364,9 +342,11 @@ static int pouch_entries(uint64_t pmdm) {
     return used + free_ == 420 ? (int)used : -1;
 }
 
-bool items_request(int i, int count) {
-    const GameItem *it = items_at(i);
-    if (!it || count < 1) return false;
+bool items_request(int i, int count) { return items_request_seq(i, count) != 0; }
+
+// chest: 0 into the pouch; else in a chest in front of Link, the chest-th of those asked for at once (side by side)
+static unsigned request(const GameItem *it, int i, int count, int chest) {
+    if (!it || count < 1) return 0;
     pthread_mutex_lock(&g_req_lock);
     bool ok = g_nreq < (int)(sizeof g_req / sizeof *g_req);
     if (ok) {
@@ -377,10 +357,25 @@ bool items_request(int i, int count) {
         r->times = it->stack ? 1 : (count > ITEMS_MAX_EACH ? ITEMS_MAX_EACH : count);
         r->asked = it->stack ? r->value : r->times;
         r->stack = it->stack;
+        r->chest = chest;
         atomic_store(&g_pending, g_nreq);
     }
+    unsigned seq = ok ? g_seq : 0;
     pthread_mutex_unlock(&g_req_lock);
-    return ok;
+    return seq;
+}
+
+unsigned items_request_seq(int i, int count) { return request(items_at(i), i, count, 0); }
+
+unsigned items_request_actor(const char *actor, int count) { return request(items_by_actor(actor), 0, count, 0); }
+
+bool items_chests_available(void) {
+    return g_site.actor_create && g_site.actor_creator && g_site.actor_create_heap && g_site.inst_params_vt &&
+           g_site.inst_params_init && g_site.inst_params_add && g_site.inst_params_add_string && g_site.player_info;
+}
+
+unsigned items_request_chest(const char *actor, int place) {
+    return items_chests_available() ? request(items_by_actor(actor), 0, 1, place + 1) : 0;
 }
 
 static _Thread_local bool g_in_give;
@@ -414,6 +409,80 @@ uint32_t rt_item_get_scale(uint64_t safe_str, uint32_t value) {
     return scaled > 999 ? 999 : (uint32_t)scaled;
 }
 
+// A treasure chest with req's item in it, in front of Link: the amiibo drop's own (iron with gold), or with the
+// downloadable content set up, its EX chest (purple and gold). Made by the actor creation the amiibo drop makes its
+// chest with (tools/game_sites.py actor_create), its instance parameters
+// @P (where), @R (turned, in radians: its front to Link) and DropActor (what is in it). The game thread, from
+// rt_item_tick (its CPU state is put back after). Opening it is the game's own: with no room in the pouch the game
+// offers to drop something or leaves the item by the chest. false: no Link, or the creator didn't take the request.
+#define REWARD_CHEST "TBox_Field_Iron"
+#define REWARD_CHEST_DLC "TBox_Field_Iron_NoReaction_Aoc"
+static bool spawn_chest(Cpu *c, const Request *req, uint64_t sstr_vt) {
+    uint64_t pinfo = *(volatile uint64_t *)(uintptr_t)g_site.player_info;
+    if (!pinfo) return false;
+    float link[3];
+    memcpy(link, (const void *)(uintptr_t)(pinfo + 0x88), sizeof link);
+    if (link[0] == 0 && link[1] == 0 && link[2] == 0) return false;
+    // ahead of Link along the camera (where the player looks), the chests of one reward side by side
+    extern bool control_camera_angles(double *yaw, double *pitch);
+    double yaw_deg = 0, pitch = 0;
+    control_camera_angles(&yaw_deg, &pitch);
+    double yaw = yaw_deg * 3.14159265358979 / 180, fx = sin(yaw), fz = cos(yaw);
+    // (the chests made close together: the first ahead, the next two to its sides, then a row further on)
+    static uint64_t last_ns;
+    static int made;
+    uint64_t now_ns = plat_now_ns();
+    if (now_ns - last_ns > 10000000000ull) made = 0;
+    last_ns = now_ns;
+    int k = made++;
+    double side = k % 3 == 1 ? 1.8 : k % 3 == 2 ? -1.8 : 0, ahead = 3.0 + 2.2 * (k / 3);
+    float pos[3] = {(float)(link[0] + fx * ahead + fz * side), link[1] + 0.2f, (float)(link[2] + fz * ahead - fx * side)};
+    float rot[3] = {0, (float)(yaw + 3.14159265358979), 0};
+
+    uint64_t buf = (c->sp - 0x800) & ~15ull;
+    uint8_t *m = (uint8_t *)(uintptr_t)buf;
+    memset(m, 0, 0x700);
+    uint64_t pack = buf, data = buf + 0x400;  // (the parameters' object: 0x10 of its own, then what the setup lays out)
+    // sead::SafeStrings (vtable, text) and their texts, after the parameters
+    struct { uint64_t ss; const char *text; } strs[] = {{0, "@P"}, {0, "@R"}, {0, "DropActor"}, {0, req->actor}};
+    uint64_t at = data;
+    for (size_t k = 0; k < sizeof strs / sizeof *strs; k++) {
+        size_t n = strlen(strs[k].text) + 1;
+        uint64_t text = at + 16;
+        memcpy((void *)(uintptr_t)text, strs[k].text, n);
+        *(uint64_t *)(uintptr_t)at = sstr_vt, *(uint64_t *)(uintptr_t)(at + 8) = text;
+        strs[k].ss = at;
+        at = (text + n + 15) & ~15ull;
+    }
+    uint64_t vpos = at, vrot = at + 16, name = at + 32;
+    memcpy((void *)(uintptr_t)vpos, pos, sizeof pos);
+    memcpy((void *)(uintptr_t)vrot, rot, sizeof rot);
+    const char *chest = getenv("SAVAGEWIND_REWARD_CHEST");  // (testing: another chest actor)
+    if (!chest || !*chest || strlen(chest) > 90) chest = fs_aoc_present(1) ? REWARD_CHEST_DLC : REWARD_CHEST;
+    memcpy((void *)(uintptr_t)name, chest, strlen(chest) + 1);
+
+    *(uint64_t *)(uintptr_t)pack = g_site.inst_params_vt + 0x10;  // (its vtable: the class's address, 0x10 in)
+    c->sp = buf;
+    c->x[0] = pack + 0x10;
+    guest_call(c, g_site.inst_params_init);
+    c->sp = buf, c->x[0] = pack + 0x10, c->x[1] = vpos, c->x[2] = strs[0].ss, c->x[3] = 12, c->x[4] = 4;
+    guest_call(c, g_site.inst_params_add);
+    c->sp = buf, c->x[0] = pack + 0x10, c->x[1] = vrot, c->x[2] = strs[1].ss, c->x[3] = 12, c->x[4] = 4;
+    guest_call(c, g_site.inst_params_add);
+    c->sp = buf, c->x[0] = pack + 0x10, c->x[1] = strs[3].ss, c->x[2] = strs[2].ss;
+    guest_call(c, g_site.inst_params_add_string);
+    uint64_t creator = *(volatile uint64_t *)(uintptr_t)g_site.actor_creator;
+    uint64_t holder = *(volatile uint64_t *)(uintptr_t)g_site.actor_create_heap;
+    if (!creator || !holder) return false;
+    c->sp = buf;
+    c->x[0] = creator, c->x[1] = name, c->x[2] = *(volatile uint64_t *)(uintptr_t)(holder + 0x28);
+    c->x[3] = 0, c->x[4] = pack, c->x[5] = 0, c->x[6] = 1;
+    guest_call(c, g_site.actor_create);
+    bool ok = c->x[0] & 1;
+    LOG("[items] %s in a chest at %.1f %.1f %.1f: %s\n", req->actor, pos[0], pos[1], pos[2], ok ? "made" : "refused");
+    return ok;
+}
+
 // The game thread, every frame in play (tools/patches.py _item_tick: at a function's entry, so only its arguments are
 // live; the whole guest CPU state is put back afterwards). get: the item get; mgr: where the pause menu data's address
 // is; sstr_vt: sead::SafeString's vtable. The name and its SafeString go on the guest stack below sp.
@@ -434,6 +503,13 @@ void rt_item_tick(Cpu *c, uint64_t get, uint64_t mgr, uint64_t sstr_vt) {
     memcpy(keep, c, sizeof *c);
     uint64_t buf = (c->sp - 0x100) & ~15ull;
     for (int r = 0; r < n; r++) {
+        if (req[r].chest) {  // (a chest in front of Link instead of the pouch)
+            bool made = spawn_chest(c, &req[r], sstr_vt);
+            pthread_mutex_lock(&g_req_lock);
+            g_result = g_results[req[r].seq % 64] = (ItemResult){req[r].seq, req[r].item, req[r].asked, made ? 1 : 0};
+            pthread_mutex_unlock(&g_req_lock);
+            continue;
+        }
         memcpy((void *)(uintptr_t)(buf + 0x20), req[r].actor, sizeof req[r].actor);
         *(uint64_t *)(uintptr_t)buf = sstr_vt;
         *(uint64_t *)(uintptr_t)(buf + 8) = buf + 0x20;
@@ -452,7 +528,7 @@ void rt_item_tick(Cpu *c, uint64_t get, uint64_t mgr, uint64_t sstr_vt) {
         }
         LOG("[items] %s: value %d, %d of %d\n", req[r].actor, req[r].value, added, req[r].asked);
         pthread_mutex_lock(&g_req_lock);
-        g_result = (ItemResult){req[r].seq, req[r].item, req[r].asked, added};
+        g_result = g_results[req[r].seq % 64] = (ItemResult){req[r].seq, req[r].item, req[r].asked, added};
         pthread_mutex_unlock(&g_req_lock);
     }
     memcpy(c, keep, sizeof *c);
@@ -470,24 +546,29 @@ static bool has_text(const char *s, const char *t) {  // (ignoring case)
     return false;
 }
 
+bool items_matches(int i, const char *text) {
+    const GameItem *it = items_at(i);
+    return it && (has_text(it->name, text) || has_text(it->actor, text) || (it->pinyin && pinyin_match(it->pinyin, text)));
+}
+
 static void cmd_give(int argc, char **argv, ControlReply *r) {
-    if (argc < 2 || argc > 3) { control_fail(r, "Usage: give <actor or part of a name> [count]"); return; }
+    if (argc < 2 || argc > 3) { control_fail(r, "Usage: give <actor, part of a name or its pinyin> [count]"); return; }
     int count = argc == 3 ? atoi(argv[2]) : 1, i = 0, n = items_count();
     while (i < n && strcmp(g_items[i].actor, argv[1])) i++;
-    if (i == n) {  // not an actor: the items whose name or actor has this in it. One is given, several are listed
+    if (i == n) {  // not an actor: the items whose name, actor or pinyin has this in it. One is given, several are listed
         int found = 0, first = n;
         for (int k = 0; k < n; k++) {
-            if (!has_text(g_items[k].name, argv[1]) && !has_text(g_items[k].actor, argv[1])) continue;
+            if (!items_matches(k, argv[1])) continue;
             if (!found++) first = k;
         }
-        if (!found) { control_fail(r, "No item has this in its name or actor"); return; }
+        if (!found) { control_fail(r, "No item has this in its name, actor or pinyin"); return; }
         if (found > 1) {
             // (the fields for scripts, the lines for the console, which prints them instead)
             char list[2048] = "";
             size_t at = 0;
             int shown = 0;
             for (int k = first; k < n && shown < 30; k++) {
-                if (!has_text(g_items[k].name, argv[1]) && !has_text(g_items[k].actor, argv[1])) continue;
+                if (!items_matches(k, argv[1])) continue;
                 control_text(r, "%s  %s", g_items[k].actor, g_items[k].name);
                 if (at < sizeof list) at += (size_t)snprintf(list + at, sizeof list - at, "%s%s", shown ? " " : "", g_items[k].actor);
                 shown++;
@@ -508,7 +589,7 @@ static void cmd_give(int argc, char **argv, ControlReply *r) {
 
 void control_items_init(void) {
     static const ControlCmd cmds[] = {
-        {"give", "<actor or part of a name> [count]", "Put an item in the pouch, in play (several matches: lists them)", cmd_give},
+        {"give", "<actor, part of a name or its pinyin> [count]", "Put an item in the pouch, in play (several matches: lists them)", cmd_give},
     };
     control_register(cmds, (int)(sizeof cmds / sizeof *cmds));
 }

@@ -3,10 +3,10 @@
 #include <stdbool.h>
 
 // Upscalers (Video > Upscaler; runtime/nvn/output_scale.c): Off renders at the window's size; the others render
-// smaller by their quality mode's factor and scale up to the window. DLSS needs NVIDIA's DLL, which the setup downloads.
+// smaller by their quality mode's factor and scale up to the window. DLSS needs NVIDIA's DLLs, which the setup downloads.
 enum { UPSCALE_OFF = 0, UPSCALE_METALFX = 1 /* macOS */, UPSCALE_FSR1 = 2 /* AMD FSR 1, Vulkan */,
        UPSCALE_FSR3 = 3 /* AMD FSR 3.1, Vulkan where built in (vulkan/fsr3.h) */,
-       UPSCALE_DLSS = 4 /* NVIDIA DLSS: Windows, NVIDIA RTX and NVIDIA's DLL (vulkan/dlss.c) */,
+       UPSCALE_DLSS = 4 /* NVIDIA DLSS: Windows, NVIDIA RTX and NVIDIA's DLLs (vulkan/dlss.c) */,
        UPSCALE_FSR4 = 5 /* AMD FSR 4, Vulkan on Windows with AMD's DLLs and an AMD Radeon (vulkan/fsr_api.h) */,
        UPSCALE_XESS = 6 /* Intel XeSS, Vulkan on Windows with libxess.dll (vulkan/xess.h) */,
        UPSCALE_COUNT };
@@ -50,13 +50,13 @@ enum { PERF_OFF = 0, PERF_FPS = 1, PERF_FULL = 2 };
 // Frame rate (Video > Frame rate; runtime/hle/framepace.c): frames per second, 0 = no limit. The game's clock is the
 // same at every rate. The console runs the game at 30.
 #define FPS_DEFAULT 60
-#define FPS_CHOICES {0, 30, 60, 90, 120, 144, 165, 240, 360}
+#define FPS_CHOICES {0, 30, 60, 72, 90, 120, 144, 165, 240, 360}
 // PC handhelds (settings_handheld): 40 for a screen at 40 or 80 Hz, 45 at 90 Hz; no Off, no Match display. Their
 // faster screens add their own rates (#712: 90 on a Steam Deck OLED, 120 on a ROG Ally, 144 on a Legion Go): those of
 // FPS_CHOICES_HANDHELD_FAST up to the screen's refresh rate, all of them while it isn't known yet.
 #define FPS_CHOICES_HANDHELD {30, 40, 45, 60}
-#define FPS_CHOICES_HANDHELD_FAST {90, 120, 144}
-#define FPS_CHOICES_MAX 9
+#define FPS_CHOICES_HANDHELD_FAST {72, 90, 120, 144}
+#define FPS_CHOICES_MAX 10
 int fps_choices(const int **list);  // this machine's frame rates (FPS_CHOICES, or FPS_CHOICES_HANDHELD): their count
 // VSync (Video > VSync; runtime/nvn/vulkan/device.c picks the present mode): On waits for the display (FIFO; with
 // G-SYNC / FreeSync the display waits for the game instead), Fast shows the newest frame at each refresh (MAILBOX),
@@ -72,12 +72,20 @@ enum { SPARSE_HEAP_AUTO = 0, SPARSE_HEAP_ON = 1, SPARSE_HEAP_OFF = 2, SPARSE_HEA
 // copy of the 3D image that water, waterfalls, rain and glass refract is made again. Fast: once a frame for each effect
 // that reads it; Exact: after every later pass that drew into it (#848), many more copies; Automatic: Fast.
 enum { SCENE_COPIES_AUTO = 0, SCENE_COPIES_FAST = 1, SCENE_COPIES_EXACT = 2, SCENE_COPIES_COUNT };
+
+// Video > Frame generation: a frame made between each two the game draws, by AMD FSR 3 (vulkan/framegen.cpp) or
+// NVIDIA DLSS Frame Generation (vulkan/dlss.c: RTX 40 and later, Windows)
+enum { FG_OFF = 0, FG_FSR3 = 1, FG_DLSS = 2, FG_COUNT };
+// Video > Frame generation multiplier: the frames on screen for each the game draws (DLSS: 2x, 3x, 4x where the GPU
+// makes that many; FSR 3: 2x)
+#define FG_MULT_MIN 2
+#define FG_MULT_MAX 4
 // Video > Fullscreen mode (runtime/window_size.c winsize_apply): Automatic is borderless at the desktop's size and the
 // display's own mode at any other size it has; Borderless never changes the display's mode (another size is scaled to
 // the screen); Exclusive always uses a display mode (the desktop's size too, at its highest refresh rate)
 enum { FSMODE_AUTO = 0, FSMODE_BORDERLESS = 1, FSMODE_EXCLUSIVE = 2, FSMODE_COUNT };
 // Texture LOD bias (Video > Texture sharpness): pulls forward mipmaps for sharper ground/object textures.
-enum { TEX_LOD_DEFAULT = 0, TEX_LOD_SHARP = 1, TEX_LOD_SHARPER = 2, TEX_LOD_COUNT };
+enum { TEX_LOD_DEFAULT = 0, TEX_LOD_SHARP = 1, TEX_LOD_SHARPER = 2, TEX_LOD_ULTRA = 3, TEX_LOD_COUNT };
 
 // Audio > Audio output (runtime/services/audio.c): Stereo mixes the game's 6 channels (FL, FR, FC, LFE, BL, BR) down
 // to 2; Surround 5.1 sends all 6 channels to the audio device; 3D Headphones mixes the 6 channels to stereo with
@@ -88,6 +96,11 @@ enum { START_PICTURE_ART, START_PICTURE_SCREENSHOT, START_PICTURE_SAVE, START_PI
 
 // Gameplay > Dialogue text speed (runtime/pc_cursor.c): speed at which dialogue text appears during conversations
 enum { TEXT_SPEED_NORMAL = 0, TEXT_SPEED_FAST = 1, TEXT_SPEED_INSTANT = 2, TEXT_SPEED_COUNT = 3 };
+enum { DAY_CYCLE_DEFAULT = 1, DAY_CYCLE_MAX = 4 };
+
+// Video > Stars (maxwell/translate.c maxwell_stars): the game's own, then brighter and bigger
+enum { STARS_ORIGINAL, STARS_BRIGHT, STARS_BRIGHTER, STARS_BRIGHTEST, STARS_COUNT };
+
 typedef struct {
     bool fullscreen;
     int fullscreen_mode;     // FSMODE_*
@@ -101,17 +114,20 @@ typedef struct {
     int antialias;       // AA_*: anti-aliasing of the game image before it is scaled to the window
     bool game_fxaa;      // the game's own FXAA, in its scene -> final image composite (vulkan/exec.c fxaa_patch)
     bool wet_fix;        // Video > Wet grass fix: tames the white glare of rain in sunshine (maxwell/translate.c maxwell_wet_lighting)
+    int stars;           // STARS_*: the night sky's stars, brighter and bigger (maxwell/translate.c maxwell_stars)
     int render_scale;    // 50%, 75%, 100% (RSCALE_100: the window's size), 125%, 150%, 200% (nvn/output_scale.c)
     int anisotropy;      // texture filtering: 0 the game's own, 1..4 = 2x, 4x, 8x, 16x (vulkan/textures.c)
     int tex_lod_bias;    // TEX_LOD_*: texture LOD bias, 0 = default (0.0), 1 = sharp (-0.5), 2 = sharper (-1.0)
     int sharpening;      // AMD CAS sharpening of the 3D image, 0 (off) .. 10 (100%) (vulkan/exec.c scene_post)
-    bool frame_gen;      // AMD FSR 3 frame generation: a frame made between each two the game draws (vulkan/framegen.cpp)
+    int frame_gen;       // FG_*: frame generation, a frame made between each two the game draws
+    int frame_gen_mult;  // FG_MULT_MIN..FG_MULT_MAX: frames on screen for each drawn (DLSS's multi frame generation)
     float volume;        // master volume, 1 = 100%
     int audio_output;    // AUDIO_OUT_*: Stereo, Surround 5.1, or 3D Headphones
     bool reverb;         // room reverb effect
     bool movie_audio;
     bool mute_unfocused; // mute audio while the window is in the background or minimized
     int shrine_sensor_volume; // Sheikah sensor volume: 0% (mute) .. 100% (normal)
+    int music_volume;         // the game's music: 0% (off) .. 100% (normal); effects and voices keep theirs (music_volume.c)
     char amiibo_reader[128]; // the figure on the virtual reader: its dump as "<series>/<name>" ("": none; runtime/amiibo.h)
     bool amiibo_random_uid;  // give the figure a fresh tag UID on each scan (unlimited daily uses)
     int perf_overlay;    // PERF_*: the performance overlay (F10 cycles it)
@@ -123,6 +139,7 @@ typedef struct {
     bool freecam_sticks; // both stick clicks together turn the free camera on and off (hle/input.c)
     int gpu;             // Vulkan adapter index from the startup log; -1: automatic (restart required)
     bool quick_replace;   // native full-inventory replacement (1.9.0)
+    int day_cycle_length; // multiple of the original 24-minute day/night cycle
     bool quick_drop;      // native dropping from the quick equipment selector
     bool quick_sort;      // native sorting in the quick equipment selector
     bool menu_wrap;      // the game's menus wrap around: past the last button to the first (runtime/menu_wrap.c)
@@ -153,13 +170,14 @@ typedef struct {
     bool async_shaders;  // draw on while new shaders compile (no stutter; what needs them is skipped meanwhile; on by
                          // default since settings_version 4; off: every draw waits for its shaders, as before)
     bool precompile_shaders;  // setting the game files up also precompiles every shader (runtime/nvn/precompile.h)
-    bool dlss_download;       // ... and downloads NVIDIA's DLSS library on PCs with an NVIDIA driver (dlss_fetch.h)
+    bool dlss_download;       // ... and downloads NVIDIA's DLSS libraries on PCs with an NVIDIA driver (dlss_fetch.h)
     bool xess_download;      // after a setup, Intel's XeSS library is downloaded (runtime/xess_fetch.h)
     bool start_in_config;     // Windows releases: a plain start opens Savage Wind Configuration first
     int start_picture;        // the start screen's background (ui/splash.mm): START_PICTURE_*
     bool boot_picture;        // that picture while the game loads (vulkan/device.c boot_splash_start); off: black
     bool check_updates;       // Savage Wind Configuration asks SW Update if there is a new version
     bool companion_apps;      // the read-only companion socket for map and tracker apps (control_companion_start); off
+    bool swmm_mods;           // Play loads the mods SWMM+ deployed (runtime/ui/launcher.mm); on
     int shadow_res;      // SHADOW_*: shadow maps at the console's size, bigger, or (Potato) smaller
     int sharper_menus;   // the menus' one-channel textures enlarged this many times (2 or 4; 0: off), runtime/nvn/text_upscale.c
     int sharper_text;    // the game's font sheets enlarged this many times (2 or 4; 0: off), runtime/nvn/text_upscale.c
@@ -196,12 +214,14 @@ typedef struct {
     int fov;             // field of view in play, percent of the game's own (FOV_CHOICES)
     bool handheld_setup; // a PC handheld's own settings were taken once (settings_load)
     int hud_size;        // the HUD's size in play, percent of the game's own (HUD_SIZE_CHOICES, runtime/nvn/hud_scale.h)
+    bool dynamic_hud;    // hide the HUD while exploring; show it for 5 s when Link takes damage (vulkan/exec.c)
     int menu_speed;      // menu cursor and UI animation speed, percent (MENU_SPEED_CHOICES, runtime/hle/framepace.c)
     int draw_distance;   // DRAWDIST_*: how far placed actors are kept (runtime/draw_distance.c)
     int haze;            // the air's haze, percent of the game's (services/fs.c haze_patch; from the next start)
     bool bloom;          // the glow around bright light (off: its draws clear their images: vulkan/exec.c)
     bool depth_of_field; // the distance blur over far pixels (off: its draw is skipped: vulkan/exec.c)
     bool grass;          // grass blades and crossed quads (off: draw_distance.c hides both layers)
+    int grass_distance;  // GRASS_DIST_*: independent grass draw distance (0: follow draw_distance)
     bool lens_flare;     // sun glare / lens flare (off: vulkan/exec.c skips sun occlusion queries)
     bool fast_fma;       // CPUs without FMA instructions (gamelib_compat): the game's fused multiply-adds rounded twice,
                          // faster (simd.h simd_fma_unfused); off: exact, as the console
@@ -222,18 +242,27 @@ typedef struct {
     int weapon_wear;         // how fast they wear out otherwise, percent of the game's (WEAPON_WEAR_MIN..MAX)
     bool infinite_arrows;    // shooting a bow takes no arrows from the pouch
     bool infinite_stamina;   // the stamina wheel never goes down
+    int stamina_drain;       // percent of stamina drained (DAMAGE_CHOICES)
     bool infinite_rupees;    // the wallet is kept at 9999 rupees (runtime/rupees.c)
     int item_multiplier;     // 1, 2, 4 or 8: multiply stackable item pickups (runtime/items.c)
     bool free_sprint;        // sprinting takes no stamina while no enemy is fighting Link (runtime/free_sprint.c)
     bool sure_footed;        // a running horse doesn't stop dead and rear when it hits something (runtime/sure_footed.c)
+    bool collectibles_map;   // the Korok seeds and shrines not found yet on the game's map (runtime/collectibles_map.c)
+    bool show_all_places;    // every shrine, tower, lab and stable on the map (runtime/place_display.c)
     int weather;             // WEATHER_COUNT: the game's, rain or thunderstorms kept out, or one weather held (weather.c)
     bool god_mode;           // Link takes no damage
     bool one_hit_kill;       // whatever else takes damage loses all its life at once
+    bool silent_link;        // Link's noise channel 1 (whistling and the sounds like it) stays at zero (silent_link.c)
+    bool hero_soul_wind;     // Revali's Gale works in shrines and the Trial of the Sword (assists.c rt_hero_soul)
+    bool hero_soul_electric; // Urbosa's Fury, likewise
+    bool hero_soul_fire;     // Daruk's Protection, likewise
+    bool hero_soul_water;    // Mipha's Grace, likewise
     int damage_taken;        // percent of the damage Link takes (DAMAGE_CHOICES)
     int damage_dealt;        // percent of the damage everything else takes (DAMAGE_CHOICES)
     bool toggle_zl;          // press ZL once in play to hold shield / focus; press again to release (hle/input.c)
     bool toggle_zr;          // press ZR once in play to draw / hold bow; press again to release (hle/input.c)
     int menu_text_size;      // overlay text scale, percent (80..150, ui/menu.mm)
+    bool menu_remember_pos;  // remember last focused option and scroll position when reopening the F1 overlay
     int text_language;   // index in g_text_languages (runtime/language.h), 0: the host's
     int voice_language;  // index in g_voice_languages, 0: the text language's voices
     bool save_backups;   // Saves > Back up at each start: a copy of the save folder as the game starts (runtime/save_backup.c)
@@ -241,6 +270,7 @@ typedef struct {
     bool auto_continue;  // Gameplay > Start at Continue: past the start screen into the latest save (hle/input.c)
     int text_speed;      // TEXT_SPEED_*: dialogue text appearance speed (Normal, Fast, Instant)
     bool menu_tip_seen;  // the start screen's one-time "how to open the menu" note was shown (first PLAY ever)
+    bool camera_keep_stealth;  // Gameplay > Keep crouch after camera (runtime/camera_stealth.c)
 } Settings;
 
 #define RUMBLE_STRENGTH_MIN 10
@@ -250,8 +280,10 @@ typedef struct {
 #define STICK_CAM_MAX 600
 #define STICK_CAM_DEFAULT 200
 #define STICK_DEADZONE_DEFAULT 0.10f  // (the Switch's own input service has one: the game expects 0 at rest)
-#define HAZE_CHOICES {75, 90, 100}  // (percent of the game's haze: below 75 the whole picture turns teal)
+#define HAZE_CHOICES {75, 90, 100, 125, 150}  // (percent of the game's haze: below 75 the whole picture turns teal)
 #define HAZE_MIN 75
+#define HAZE_MAX 150
+enum { GRASS_DIST_FOLLOW = 0, GRASS_DIST_POTATO, GRASS_DIST_ORIGINAL, GRASS_DIST_MEDIUM, GRASS_DIST_HIGH, GRASS_DIST_COUNT };
 enum { DRAWDIST_ORIGINAL, DRAWDIST_MEDIUM, DRAWDIST_HIGH, DRAWDIST_POTATO, DRAWDIST_COUNT };  // (Original: the game's own
                                                                                   // distances; Potato: nearer)
 float draw_distance_factor(void);  // the setting's factor on the game's distances (1: Original)

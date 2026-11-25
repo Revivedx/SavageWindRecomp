@@ -397,6 +397,29 @@ PlatProc plat_spawn(const char *const argv[], const char *log_path, bool append_
     return rc ? 0 : (PlatProc)pid;
 }
 
+// Another program on its own (platform.h): its own session (it stays when this process and its group end), stdin and
+// output to /dev/null
+bool plat_start_program(const char *const argv[]) {
+    posix_spawn_file_actions_t fa;
+    posix_spawn_file_actions_init(&fa);
+    posix_spawn_file_actions_addopen(&fa, 0, "/dev/null", O_RDONLY, 0);
+    posix_spawn_file_actions_addopen(&fa, 1, "/dev/null", O_WRONLY, 0);
+    posix_spawn_file_actions_adddup2(&fa, 1, 2);
+    posix_spawnattr_t at;
+    posix_spawnattr_init(&at);
+#ifdef POSIX_SPAWN_SETSID
+    posix_spawnattr_setflags(&at, POSIX_SPAWN_SETSID);
+#else
+    posix_spawnattr_setflags(&at, POSIX_SPAWN_SETPGROUP);
+    posix_spawnattr_setpgroup(&at, 0);
+#endif
+    pid_t pid;
+    int rc = posix_spawn(&pid, argv[0], &fa, &at, (char *const *)argv, environ);
+    posix_spawnattr_destroy(&at);
+    posix_spawn_file_actions_destroy(&fa);
+    return rc == 0;
+}
+
 void plat_proc_kill(PlatProc p) {
     kill(-(pid_t)p, SIGKILL);
     waitpid((pid_t)p, NULL, 0);

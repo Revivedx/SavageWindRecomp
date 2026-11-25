@@ -1,6 +1,7 @@
 // The start screen's background (splash.h). The player's own picture when there is one (rt_user_splash: splash.jpg /
-// splash.png in the data folder, decoded with stb_image), shown filling the window; else Savage Wind's own art, drawn
-// here: an old forest at a sunlit clearing, the icon's plain sword (docs/icon/icon.svg) in a mossy stone, the grass
+// splash.png in the data folder, decoded with stb_image), shown filling the window; else, on the boot picture only
+// (splash_load_boot), Savage Wind's own picture (docs/media/default_splash.jpg, shipped beside the executable as
+// default_splash.jpg); else, and always in Configuration, the art drawn here: an old forest at a sunlit clearing, the icon's plain sword (docs/icon/icon.svg) in a mossy stone, the grass
 // swaying, petals and fireflies. The menu sits on the left, so the clearing is on the right. The start screen lays its
 // dark banners over either, which keep its text readable.
 #ifdef SW_METAL
@@ -93,6 +94,7 @@ static bool pick_picture(char *out, size_t n) {
 }
 static ImTextureID g_tex;
 static int g_tex_w, g_tex_h;
+static bool g_tex_default;  // g_tex is Savage Wind's own picture, not the player's
 #ifdef SW_METAL
 static id<MTLTexture> g_mtl_tex;  // (ImGui only holds the pointer)
 #endif
@@ -147,18 +149,28 @@ static unsigned char *soften(const unsigned char *px, int *pw, int *ph) {
     return o;
 }
 
-void splash_load(void) {
+// Savage Wind's own picture (when the player has none, or theirs can't be read)
+static bool default_picture(char *out, size_t n) {
+    return rt_resource("default_splash.jpg", "docs/media/default_splash.jpg", out, n);
+}
+
+static void load(bool own_default) {
     splash_unload();
     char path[1100];
-    if (!pick_picture(path, sizeof path)) return;
+    bool user = pick_picture(path, sizeof path);
+    if (!user && (!own_default || !default_picture(path, sizeof path))) return;
     int w, h;
-    if (!rt_image_info(path, &w, &h) || w <= 0 || h <= 0 || w > 8192 || h > 8192) {
-        fprintf(stderr, "[splash] %s: not a JPEG / PNG up to 8192x8192, using the default art\n", path);
-        return;
+    unsigned char *px = NULL;
+    for (;;) {
+        if (!rt_image_info(path, &w, &h) || w <= 0 || h <= 0 || w > 8192 || h > 8192)
+            fprintf(stderr, "[splash] %s: not a JPEG / PNG up to 8192x8192\n", path);
+        else if (!(px = rt_image_rgba(path, &w, &h)))
+            fprintf(stderr, "[splash] %s: %s\n", path, rt_image_error());
+        if (px || !user || !own_default || !default_picture(path, sizeof path)) break;
+        user = false;  // (the player's picture failed: Savage Wind's own instead)
     }
-    unsigned char *px = rt_image_rgba(path, &w, &h);
     if (!px) {
-        fprintf(stderr, "[splash] %s: %s, using the default art\n", path, rt_image_error());
+        fprintf(stderr, "[splash] using the drawn art\n");
         return;
     }
     unsigned char *soft = w < 640 ? soften(px, &w, &h) : NULL;
@@ -181,8 +193,12 @@ void splash_load(void) {
     if (soft) free(px);
     else rt_image_free(px);
     if (g_tex) g_tex_w = w, g_tex_h = h;
-    fprintf(stderr, "[splash] %s (%dx%d)%s\n", path, w, h, g_tex ? "" : ": no texture, using the default art");
+    g_tex_default = g_tex && !user;
+    fprintf(stderr, "[splash] %s (%dx%d)%s\n", path, w, h, g_tex ? "" : ": no texture, using the drawn art");
 }
+
+void splash_load(void) { load(false); }
+void splash_load_boot(void) { load(true); }
 
 void splash_unload(void) {
     if (!g_tex) return;
@@ -192,9 +208,10 @@ void splash_unload(void) {
     vk_imgui_texture_free((uint64_t)g_tex);
 #endif
     g_tex = 0;
+    g_tex_default = false;
 }
 
-bool splash_is_user(void) { return g_tex != 0; }
+bool splash_is_user(void) { return g_tex != 0 && !g_tex_default; }
 
 // ------------------------------------------------------------------ drawing helpers
 static ImU32 rgba(uint32_t rgb, float a = 1) {
@@ -504,6 +521,30 @@ static void forest_art(ImDrawList *dl, ImVec2 sz, float t) {
     dl->AddRectFilledMultiColor(ImVec2(0, H * 0.82f), sz, z, z, v, v);
 }
 
+// Configuration's Home banner (launcher.mm): the same art (or picture) in a rectangle with rounded corners - drawn at the
+// shape of a wide window, its clearing with the sword at the rectangle's middle height, clipped, then moved into place
+void splash_draw_rect(ImDrawList *dl, ImVec2 pos, ImVec2 size, float t, float rounding, ImU32 behind) {
+    ImVec2 virt(size.x, size.x * 9 / 16);
+    float oy = size.y * 0.5f - virt.y * 0.62f;
+    oy = oy > 0 ? 0 : oy < size.y - virt.y ? size.y - virt.y : oy;
+    dl->PushClipRect(pos, ImVec2(pos.x + size.x, pos.y + size.y), true);
+    int v0 = dl->VtxBuffer.Size;
+    if (!g_tex) forest_art(dl, virt, t);
+    else {  // (the player's picture fills it, cropped to its shape)
+        float ia = (float)g_tex_w / g_tex_h, da = size.x / size.y;
+        ImVec2 uv0(0, 0), uv1(1, 1);
+        if (ia > da) uv0.x = (1 - da / ia) * 0.5f, uv1.x = 1 - uv0.x;
+        else uv0.y = (1 - ia / da) * 0.5f, uv1.y = 1 - uv0.y;
+        dl->AddImage(g_tex, ImVec2(0, -oy), ImVec2(size.x, size.y - oy), uv0, uv1);
+    }
+    for (int i = v0; i < dl->VtxBuffer.Size; i++) dl->VtxBuffer[i].pos.x += pos.x, dl->VtxBuffer[i].pos.y += pos.y + oy;
+    if (rounding > 0)  // (the corners: a ring in the colour behind it, over the square corners)
+        dl->AddRect(ImVec2(pos.x - rounding * 0.5f, pos.y - rounding * 0.5f),
+                    ImVec2(pos.x + size.x + rounding * 0.5f, pos.y + size.y + rounding * 0.5f), behind, rounding * 1.5f, 0,
+                    rounding);
+    dl->PopClipRect();
+}
+
 void splash_draw(ImDrawList *dl, ImVec2 sz, float t) {
     if (!g_tex) { forest_art(dl, sz, t); return; }
     // the picture fills the window (cropped to its shape, centred)
@@ -512,5 +553,6 @@ void splash_draw(ImDrawList *dl, ImVec2 sz, float t) {
     if (ia > da) uv0.x = (1 - da / ia) * 0.5f, uv1.x = 1 - uv0.x;
     else uv0.y = (1 - ia / da) * 0.5f, uv1.y = 1 - uv0.y;
     dl->AddImage(g_tex, ImVec2(0, 0), sz, uv0, uv1);
-    dl->AddRectFilled(ImVec2(0, 0), sz, IM_COL32(4, 8, 20, 56));  // (a touch darker: the text stays the brightest)
+    if (!g_tex_default)  // (a touch darker: the text stays the brightest; Savage Wind's own is darkened already)
+        dl->AddRectFilled(ImVec2(0, 0), sz, IM_COL32(4, 8, 20, 56));
 }

@@ -11,6 +11,7 @@
 
 #include "gamelib.h"
 #include "hle.h"
+#include "mods.h"
 #include "paths.h"
 #include "platform.h"
 #include "settings.h"
@@ -192,15 +193,16 @@ const char *problem_report_make(void) {
         free(data);
     }
     int copied = count;
-    char summary[512];
+    char summary[1024], mods[400];
+    mods_report_line(mods, sizeof mods);  // (a report with mods: tried without them first)
     int n = snprintf(summary, sizeof summary,
                      "Savage Wind %s\n"  // (the build it came from: the log's first line)
                      "System: %s, %d logical processors, %d MB of memory\n"
                      "Game code: %s%s\n"
                      "Made: %s\n"
-                     "%s",
+                     "%s%s",
                      rt_version(), SDL_GetPlatform(), SDL_GetNumLogicalCPUCores(), SDL_GetSystemRAM(), gamelib_id(),
-                     gamelib_compat() ? " (compatible mode)" : "", when,
+                     gamelib_compat() ? " (compatible mode)" : "", when, mods,
                      log[0] ? "" : "Log: not in a file (this run's output went to a console or was redirected)\n");
     if (ok && n > 0) {
         entries[count].name = "system.txt";

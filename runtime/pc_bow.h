@@ -31,6 +31,6 @@ static inline uint64_t pc_bow_buttons(PcBow *b, uint64_t now) {
     if (b->phase == PC_BOW_CANCEL && now >= b->until) { b->phase = PC_BOW_SETTLE; b->until = now + 60000000; }
     if (b->phase == PC_BOW_SETTLE && now >= b->until) b->phase = b->aiming ? PC_BOW_DRAW : PC_BOW_IDLE;
     if (b->phase == PC_BOW_CANCEL) return zr | cancel;  // (B while ZR is held: the arrow is put away, not shot)
-    if (b->phase == PC_BOW_SETTLE) return cancel;       // (ZR let go after B: nothing fires)
+    if (b->phase == PC_BOW_SETTLE) return 0;            // (ZR let go after B: avoid holding bare B, which triggers Sprint)
     return b->phase == PC_BOW_DRAW ? zr : 0;
 }

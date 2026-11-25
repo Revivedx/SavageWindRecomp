@@ -32,6 +32,6 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - run: make test-quick-replace test-quick-drop-native test-quick-inventory-sort
-      - uses: astral-sh/setup-uv@v10.3.3
+      - uses: astral-sh/setup-uv@v10.4.0
       - run: uv run --no-project --with lz4 --with capstone --with unicorn python tools/test_game_sites.py
       - run: uv run --no-project --with lz4 --with capstone --with unicorn python tools/test_quick_replace_codegen.py

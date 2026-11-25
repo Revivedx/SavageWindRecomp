@@ -2,6 +2,7 @@
 #include "gamelib.h"
 
 #include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -11,6 +12,7 @@
 #include <dlfcn.h>
 #endif
 
+#include "game_cpu.h"
 #include "game_sites.h"
 #include "paths.h"
 #include "rt.h"
@@ -26,25 +28,12 @@ static char g_error[256];
 #define GAMELIB_ARCH ""
 #endif
 
-// Whether this CPU runs code built for arch: the x86-64 levels the Makefile uses. Another -march (a build's own
-// GENARCH) isn't checked.
-static bool cpu_runs(const char *arch) {
-#if defined(__x86_64__)
-    __builtin_cpu_init();
-    if (strstr(arch, "x86-64-v3"))
-        return __builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma") && __builtin_cpu_supports("bmi2");
-    if (strstr(arch, "x86-64-v2")) return __builtin_cpu_supports("sse4.2") && __builtin_cpu_supports("popcnt");
-#endif
-    (void)arch;
-    return true;
-}
-
 bool gamelib_compat(void) {
 #ifdef GAMELIB_ID_COMPAT
     static int compat = -1;
     if (compat < 0) {
         const char *e = getenv("SAVAGEWIND_COMPAT_CPU");
-        compat = (e && *e && strcmp(e, "0")) || !cpu_runs(GAMELIB_ARCH);
+        compat = (e && *e && strcmp(e, "0")) || !game_cpu_runs(GAMELIB_ARCH);
     }
     return compat;
 #else
@@ -61,12 +50,12 @@ const char *gamelib_id(void) {
 
 const char *gamelib_cpu_problem(void) {
 #ifdef GAMELIB_ID_COMPAT
-    if (!cpu_runs(GAMELIB_ARCH_COMPAT))
+    if (!game_cpu_runs(GAMELIB_ARCH_COMPAT))
         return "a CPU with SSE4.2 (Intel Nehalem / 2008 or newer, AMD Bulldozer / 2011 or newer)";
     return NULL;
 #else
-    return cpu_runs(GAMELIB_ARCH) ? NULL
-                                  : "a CPU with AVX2 (Intel Haswell / 2013 or newer, AMD Excavator / Zen or newer)";
+    return game_cpu_runs(GAMELIB_ARCH) ? NULL
+                                       : "a CPU with AVX2 (Intel Haswell / 2013 or newer, AMD Excavator / Zen or newer)";
 #endif
 }
 
@@ -142,6 +131,51 @@ static bool exists(const char *p) {
     return f != NULL;
 }
 
+static uint32_t le32(const unsigned char *p) { return p[0] | p[1] << 8 | p[2] << 16 | (uint32_t)p[3] << 24; }
+
+// The library's file is whole as far as its headers say: on Windows a PE image (MZ, PE at e_lfanew) whose sections'
+// data all lie within the file; elsewhere an ELF or Mach-O header. A library with the right id that fails this was cut
+// short or overwritten, and LoadLibrary refused it with error 193 (#1084): it counts as not built, so the start screen
+// builds it again instead of the game stopping at Play.
+static bool lib_intact(const char *p) {
+    FILE *f = fopen(p, "rb");
+    if (!f) return false;
+    unsigned char h[64] = {0};
+    bool ok = fread(h, 1, sizeof h, f) == sizeof h;
+#ifdef _WIN32
+    uint32_t pe = le32(h + 0x3c);
+    unsigned char coff[24];
+    ok = ok && h[0] == 'M' && h[1] == 'Z' && pe >= 0x40 && pe < (1u << 20) && !fseek(f, (long)pe, SEEK_SET) &&
+         fread(coff, 1, sizeof coff, f) == sizeof coff && !memcmp(coff, "PE\0\0", 4);
+    if (ok) {
+        unsigned nsec = coff[6] | coff[7] << 8, opt = coff[20] | coff[21] << 8;
+        uint64_t end = 0;
+        ok = !fseek(f, (long)(pe + 24 + opt), SEEK_SET);
+        for (unsigned i = 0; ok && i < nsec; i++) {
+            unsigned char s[40];
+            ok = fread(s, 1, sizeof s, f) == sizeof s;
+            uint64_t e = (uint64_t)le32(s + 20) + le32(s + 16);  // (PointerToRawData + SizeOfRawData)
+            if (ok && e > end) end = e;
+        }
+        long long size = ok && !_fseeki64(f, 0, SEEK_END) ? _ftelli64(f) : -1;
+        ok = ok && size >= 0 && end <= (uint64_t)size;
+    }
+#elif defined(__APPLE__)
+    uint32_t m = le32(h);
+    ok = ok && (m == 0xfeedfacfu || m == 0xcffaedfeu || m == 0xcafebabeu || m == 0xbebafecau);
+#else
+    ok = ok && !memcmp(h, "\x7f" "ELF", 4);
+#endif
+    fclose(f);
+    return ok;
+}
+
+bool gamelib_damaged(const char *game_dir) {
+    char lib[1100];
+    snprintf(lib, sizeof lib, "%s/%s", game_dir, GAMELIB_NAME);
+    return exists(lib) && id_matches(lib) && !lib_intact(lib);
+}
+
 // The places to look, in order (gamelib.h). Returns how many were filled.
 static int candidates(const char *game_dir, char out[3][1100]) {
     int n = 0;
@@ -159,7 +193,7 @@ bool gamelib_present(const char *game_dir) {
     char c[3][1100];
     int n = candidates(game_dir, c);
     for (int i = 0; i < n; i++)
-        if (exists(c[i]) && id_matches(c[i])) return true;
+        if (exists(c[i]) && id_matches(c[i]) && lib_intact(c[i])) return true;
     return false;
 }
 
@@ -195,6 +229,11 @@ bool gamelib_load(const char *game_dir, char *why, size_t why_size) {
             bool given = i == 0 && env && *env;  // SAVAGEWIND_GAME_LIB: loaded as given, the library's own id decides
             if (!given && !id_matches(c[i])) {
                 snprintf(g_error, sizeof g_error, "%s was built for another version", c[i]);
+                continue;
+            }
+            if (!lib_intact(c[i])) {
+                snprintf(g_error, sizeof g_error, "%s is damaged: in Savage Wind Configuration, choose Set up game "
+                         "files to build the game code again", c[i]);
                 continue;
             }
             g_tables = open_lib(c[i]);

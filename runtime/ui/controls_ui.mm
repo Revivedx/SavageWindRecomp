@@ -9,6 +9,7 @@
 
 #include "i18n.h"
 #include "imgui.h"
+#include "ui_theme.h"
 
 extern "C" {
 #include "../input_bind.h"
@@ -245,7 +246,7 @@ extern "C" void controls_bindings_draw(float scale) {
         else if (kind == 6) snprintf(msg, sizeof msg, "%s", tr("A and B swapped, with the actions on them."));
         if (kind == 1 || kind == 2 || kind == 5 || kind == 6) settings_save();
     }
-    if (msg[0]) ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), "%s", msg);
+    if (msg[0]) ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(UI_ACCENT_LIGHT), "%s", msg);
 
     // the page: the game's actions first (they follow the Switch inputs below until given a binding of their own)
     action_table("##actions", fam, cd, cs, ms);
@@ -259,7 +260,7 @@ extern "C" void controls_bindings_draw(float scale) {
     // never listed by their name, only by what they do.
     ImGui::SeparatorText(tr("Menus"));
     static const int menus[] = {BIND_PLUS, BIND_MINUS, BIND_UP, BIND_LEFT, BIND_RIGHT, BIND_DOWN, BIND_A, BIND_B, BIND_X,
-                                BIND_Y, BIND_L, BIND_R, BIND_ZL, BIND_ZR, BIND_RSTICK, FIXED_ESC, FIXED_F2, FIXED_F1};
+                                BIND_Y, BIND_L, BIND_R, BIND_ZL, BIND_ZR, BIND_RSTICK, BIND_CONSOLE, FIXED_ESC, FIXED_F2, FIXED_F1};
     switch_table("##binds_menus", menus, (int)(sizeof menus / sizeof *menus), fam, cd, cs, ms);
     ImGui::SeparatorText(tr("Movement, camera and motion"));
     static const int other[] = {BIND_LS_UP, BIND_LS_DOWN, BIND_LS_LEFT, BIND_LS_RIGHT, BIND_RS_UP, BIND_RS_DOWN,
@@ -282,7 +283,7 @@ extern "C" void controls_bindings_draw(float scale) {
     if (swapped) { bind_capture_cancel(); bind_swap_ab(); }
     // in game: the HUD's diamond was laid out when the game started (runtime/services/fs.c) and moves at the next one
     if (glyphs_hud_positions_stale()) {
-        ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), "%s", tr("Restart the game to update the HUD buttons."));
+        ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(UI_ACCENT_LIGHT), "%s", tr("Restart the game to update the HUD buttons."));
         // the note appears under the button: scroll down to it when it falls below the bottom of the page
         if (swapped && ImGui::GetItemRectMax().y > ImGui::GetWindowDrawList()->GetClipRectMax().y)
             ImGui::SetScrollHereY(1.0f);

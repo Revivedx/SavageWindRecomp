@@ -224,6 +224,13 @@ int main(void) {
         assert(nearf(sx, act == 2 ? -1.0f : 1.0f));
         assert(nearf(wx, act == 3 ? 33.0f : -33.0f));
         assert(nearf(wsx, act == 3 ? -1.0f : 1.0f));
+        // The labels hang from the button's side: right-anchored (2) on the west, left (1) elsewhere, in both the
+        // pane's origin (+9) and the text's position (+0x5C); the alignment (+0x5D) stays as it was (#1055)
+        const uint8_t *g1 = find_pane(dst, dn, "T_Guide_01"), *g0 = find_pane(dst, dn, "T_Guide_00");
+        assert(g1 && g0);
+        uint8_t at = act == 3 ? 2 : 1;
+        assert(g1[9] == at && g1[0x5C] == at && g1[0x5D] == 0);
+        assert(g0[9] == at && g0[0x5C] == at && g0[0x5D] == 0);
     }
     assert(panes == 12);
 

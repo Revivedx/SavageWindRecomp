@@ -1,7 +1,7 @@
-// Saves > Back up at each start: a copy of the save folder as the game starts, into save-backups/auto-<date and time>
-// next to it (sc_backup, the copy the Saves tab's "Back up saves" makes), the newest AUTO_BACKUPS of them kept. Only
-// when something in the save folder changed since the last one (the newest file's time, in AUTO_LAST; not option.sav,
-// which the game writes at every start), once per run of
+// Saves > Back up at each start: a copy of the active profile's save folder (sp_session_save_dir) as the game starts,
+// into save-backups/auto-<date and time> next to it (sc_backup, the copy the Saves tab's "Back up saves" makes), the
+// newest AUTO_BACKUPS of them kept. Only when something in the save folder changed since the last one (the newest
+// file's time, in save-backups/auto-last.txt; not option.sav, which the game writes at every start), once per run of
 // the program, and not for tests with a scratch save folder (SAVAGEWIND_SAVE_DIR). The player's own backups
 // (save-backups/save-*) are never removed. From Slop of the Wild.
 #include <SDL3/SDL.h>
@@ -12,12 +12,10 @@
 
 #include "rt.h"
 #include "services/save_convert.h"
+#include "services/save_profiles.h"
 #include "settings.h"
 
-#define SAVE_DIR "save"
-#define BACKUP_DIR SAVE_DIR "-backups"            // (sc_backup_path's folder)
 #define AUTO_PREFIX "auto-"
-#define AUTO_LAST BACKUP_DIR "/auto-last.txt"
 #define AUTO_BACKUPS 5
 
 static SDL_EnumerationResult SDLCALL newest(void *out, const char *dir, const char *name) {
@@ -51,12 +49,14 @@ static SDL_EnumerationResult SDLCALL list_auto(void *out, const char *dir, const
 
 static int by_name(const void *a, const void *b) { return strcmp(a, b); }  // (dated names: oldest first)
 
-// (runtime/main.c: before each game start takes the save folder's lock)
+// (runtime/main.c: after sp_session_begin, before each game start takes the save folder's lock). The session's save
+// folder, not "save": with another save profile active, "save" is the Default profile and the one played was never
+// backed up (#1114). Each profile's backups go beside it (save-profiles/<name>/save-backups).
 void save_backup_at_start(void) {
     static bool done;  // (once a run: a reboot starts the game again in the same process)
     if (done || !g_settings.save_backups || getenv("SAVAGEWIND_SAVE_DIR")) return;
     done = true;
-    const char *save = g_settings.save_dir[0] ? g_settings.save_dir : SAVE_DIR;
+    const char *save = sp_session_save_dir();
     SDL_Time t = 0, last = 0;
     SDL_EnumerateDirectory(save, newest, &t);
     if (!t) return;  // (no saves yet)

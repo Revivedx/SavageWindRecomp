@@ -1,6 +1,5 @@
-// The drag at a shrine apparatus (runtime/pc_gyro_scene.c), drawn from runtime/ui/menu.mm: hold the left mouse
-// button and drag to roll the virtual controller like a ball under the hand (an arcball centred on the click); let
-// go to keep its pose and take a new grip elsewhere. Nothing is drawn.
+// The drag at a shrine apparatus (runtime/pc_gyro_scene.c), run from runtime/ui/menu.mm. Left drag rolls an
+// arcball centred on the click. Right drag banks and tilts in the table's axes. Releasing keeps the pose.
 #pragma once
 #include <algorithm>
 #include <cmath>
@@ -43,33 +42,42 @@ static bool gyro_ball_delta(const float from[3], const float to[3], float q[4]) 
     return true;
 }
 
-static void gyro_scene_hidden_drag(ImGuiIO &io, const GyroScene &scene, bool enabled) {
-    static bool dragging;
+static void gyro_scene_draw(ImGuiIO &io, const GyroScene &scene, bool enabled) {
+    static int button = -1;
     static unsigned generation;
     static ImVec2 origin;
     static float radius, previous[3];
-    if (!enabled || !scene.active || generation != scene.generation || !ImGui::IsMouseDown(0)) dragging = false;
+    if (!enabled || !scene.active || generation != scene.generation ||
+        (button >= 0 && !ImGui::IsMouseDown(button))) button = -1;
     generation = scene.generation;
-    if (!enabled || !scene.active) return;
+    if (!enabled || !scene.active || !ImGui::IsMousePosValid()) return;
+
     float w = io.DisplaySize.x, h = io.DisplaySize.y;
     bool inside = io.MousePos.x >= 0 && io.MousePos.x <= w && io.MousePos.y >= 0 && io.MousePos.y <= h;
-    bool clicked = ImGui::IsMouseClicked(0);
-    if (clicked && inside) {  // (a grip where the click is: no model's place on screen needed, it differs by shrine)
-        dragging = true;
+    bool left = ImGui::IsMouseClicked(ImGuiMouseButton_Left);
+    bool right = ImGui::IsMouseClicked(ImGuiMouseButton_Right);
+    if (inside && (left || right)) {
+        button = right ? ImGuiMouseButton_Right : ImGuiMouseButton_Left;
         origin = io.MousePos;
         radius = fmaxf(1.f, fminf(w, h) * .38f);
         gyro_ball_vector(io.MousePos, origin, radius, previous);
+        return;
     }
-    if (dragging && ImGui::IsMouseDown(0) && !clicked) {
+
+    if (button == ImGuiMouseButton_Left) {
         float v[3], q[4];
         gyro_ball_vector(io.MousePos, origin, radius, v);
         if (gyro_ball_delta(previous, v, q)) motion_gizmo_arcball(q[0], q[1], -q[3], q[2]);  // (screen -> table axes)
         memcpy(previous, v, sizeof v);
-        ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
+    } else if (button == ImGuiMouseButton_Right) {
+        // Compose a pitch about table X and a bank about table Y. The radius gives the same scale as a small arcball drag.
+        if (io.MouseDelta.x != 0 || io.MouseDelta.y != 0) {
+            // Keep even a full-window flick in one frame below a half-turn, which could wrap the pose backward.
+            float scale = fmaxf(2 * radius, hypotf(io.MouseDelta.x, io.MouseDelta.y) / .7853981634f);
+            float pitch = io.MouseDelta.y / scale, bank = io.MouseDelta.x / scale;
+            float cp = cosf(pitch), sp = sinf(pitch), cb = cosf(bank), sb = sinf(bank);
+            motion_gizmo_arcball(cp * cb, sp * cb, cp * sb, sp * sb);
+        }
     }
-}
-
-static void gyro_scene_draw(ImGuiIO &io, float scale, const GyroScene &scene) {
-    (void)scale;
-    gyro_scene_hidden_drag(io, scene, true);
+    if (button >= 0) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
 }

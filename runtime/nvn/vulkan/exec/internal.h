@@ -7,9 +7,13 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "../vk.h"
+
+// (an environment switch read once: the debug logs that would otherwise call getenv per command)
+#define ENV_ONCE(name) ({ static int env_once_ = -1; if (env_once_ < 0) env_once_ = getenv(name) != NULL; env_once_; })
 
 // The render targets bound by the command list (begin_pass reads them).
 typedef struct {
@@ -89,3 +93,14 @@ static inline void dyn_check(void) {
     dc.epoch = dyn_epoch;
 }
 #define DYN_SAME(field, val) (dc.field == (val) ? true : (dc.field = (val), false))
+
+// Helpers that stay in exec.c and are shared with the modules it is split into.
+extern const char *snap_reason;
+extern int dl_on;
+extern bool g_debug_frame;
+void snapshots_invalidate(NvnTexture *t);
+void gp_mark(VkCommandBuffer cb, const char *fmt, ...);
+void dl_note(const char *fmt, ...);
+int rt_kind(uint32_t f);
+uint32_t level_extent(uint32_t v, uint32_t lv);
+void hc_cpu_wrote(uint64_t addr, uint64_t size);

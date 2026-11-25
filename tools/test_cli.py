@@ -61,6 +61,7 @@ def main():
 def tests():
     # help, version, completion
     check('help lists the commands', 'settings' in run('help', code=0).stdout)
+    check('help lists skip-launcher', '--skip-launcher' in run('help', code=0).stdout and '--no-launcher' in run('help', code=0).stdout)
     check('help <command>', 'restore' in run('help', 'saves', code=0).stdout)
     run('help', 'nosuch', code=2)
     check('version', run('version', code=0).stdout.startswith('Savage Wind '))

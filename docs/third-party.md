@@ -21,7 +21,7 @@
 - Libraries: [SDL 3](https://libsdl.org) (zlib), [FFmpeg](https://ffmpeg.org) (LGPL),
   [Dear ImGui](https://github.com/ocornut/imgui) (MIT),
   [NVIDIA DLSS](https://github.com/NVIDIA/DLSS) (NVIDIA's own license; neither shipped nor linked: on Windows PCs with an
-  NVIDIA driver the setup downloads NVIDIA's DLL and `LICENSE.txt`),
+  NVIDIA driver the setup downloads NVIDIA's DLLs and `LICENSE.txt`),
   [Intel XeSS](https://github.com/intel/xess) (Intel Simplified Software License; neither shipped nor linked: on Windows
   PCs with an Intel graphics card the setup downloads Intel's DLL and `LICENSE.txt`; the API headers in
   `third_party/xess` are MIT),
@@ -31,10 +31,14 @@
   [AMD FidelityFX SDK 1.1.4](https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/tree/v1.1.4) (MIT: FSR 3 frame
   generation),
   [Fira Sans](https://github.com/mozilla/Fira) (SIL OFL 1.1), [Noto Sans Thai](https://github.com/notofonts/thai)
-  (SIL OFL 1.1), [Noto Sans Hebrew](https://github.com/notofonts/hebrew) (SIL OFL 1.1), [stb_image / stb_image_write](https://github.com/nothings/stb)
+  (SIL OFL 1.1), [Noto Sans Hebrew](https://github.com/notofonts/hebrew) (SIL OFL 1.1),
+  [Font Awesome Free 6](https://fontawesome.com) (font: SIL OFL 1.1; icons: CC BY 4.0), [stb_image / stb_image_write](https://github.com/nothings/stb)
   (public domain / MIT), [shaderc](https://github.com/google/shaderc)
   (Apache 2.0), [Zig](https://ziglang.org) (MIT), [Capstone](https://www.capstone-engine.org) (BSD),
   [Unicorn](https://www.unicorn-engine.org) (GPL 2.0), [python-lz4](https://github.com/python-lz4/python-lz4) (BSD).
+- [Unicode Han Database (Unihan)](https://www.unicode.org/Public/UCD/latest/ucd/Unihan.zip) - the readings behind the
+  menus' pinyin search, `kMandarin` of `Unihan_Readings.txt` (`runtime/pinyin_data.inc`, `tools/gen_pinyin_table.py`;
+  Unicode License v3, `third_party/unihan/LICENSE.txt`).
 - Colour LUTs from [FreshLUTs](https://freshluts.com), CC0 1.0, renamed: "Savage Wind" is
   [CINEMA 3](https://freshluts.com/luts/219) and "Dormant" is [CARIBE](https://freshluts.com/luts/217), both
   uploaded by Andy; "Ember" is [powerful cold](https://freshluts.com/luts/107), uploaded by sagi hershkovich
@@ -62,4 +66,6 @@ The Windows release zip also bundles, unchanged unless noted, under their own li
 - The Fira Sans font, Medium and SemiBold (SIL OFL 1.1, `FiraSans-OFL.txt`), and the Noto Sans Thai and Noto Sans
   Hebrew fonts, Medium, for the menus in Thai and Hebrew (SIL OFL 1.1, `NotoSansThai-OFL.txt`,
   `NotoSansHebrew-OFL.txt`).
+- Font Awesome Free's solid icons (`fa-solid-900.ttf`, by Fonticons, Inc.; the font under SIL OFL 1.1, the icons
+  under CC BY 4.0: `FontAwesome-LICENSE.txt`), the same icons as SWMM+, for the menus' sidebar and buttons.
 - Three colour LUTs in `colour-luts/` (CC0 1.0, from FreshLUTs: see "Credits" and `colour-luts/README.md`).

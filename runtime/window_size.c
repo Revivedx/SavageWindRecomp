@@ -335,9 +335,58 @@ void winsize_refresh(void *win) {
     refresh_display(win ? SDL_GetDisplayForWindow((SDL_Window *)win) : target_display());
 }
 
+// Savage Wind Configuration (runtime/ui/launcher.mm) is always a window, never fullscreen: 1280 x 800 points, at most
+// 90 % of the display's usable area, never smaller than 960 x 600 (or the display). The game's own Video settings
+// (fullscreen, size, monitor) apply once Play is pressed (winsize_config_mode(false), then winsize_apply).
+static bool g_config_mode;
+void winsize_config_mode(bool on) { g_config_mode = on; }
+bool winsize_config_active(void) { return g_config_mode; }
+void winsize_config_size(unsigned display, int *w, int *h, int *min_w, int *min_h) {
+    int cw = 1280, ch = 800, mw = 960, mh = 600;
+    SDL_Rect u;
+    if (display && SDL_GetDisplayUsableBounds((SDL_DisplayID)display, &u) && u.w > 0 && u.h > 0) {
+        if (cw > u.w * 9 / 10) cw = u.w * 9 / 10;
+        if (ch > u.h * 9 / 10) ch = u.h * 9 / 10;
+        if (mw > u.w) mw = u.w;
+        if (mh > u.h) mh = u.h;
+    }
+    if (cw < mw) cw = mw;
+    if (ch < mh) ch = mh;
+    *w = cw, *h = ch;
+    if (min_w) *min_w = mw;
+    if (min_h) *min_h = mh;
+}
+
+static void config_window(SDL_Window *w) {
+    SDL_DisplayID d = SDL_GetDisplayForWindow(w);
+    if (SDL_GetWindowFlags(w) & SDL_WINDOW_FULLSCREEN) {
+        SDL_SetWindowFullscreen(w, false);
+        SDL_SyncWindow(w);
+    }
+    if (SDL_GetWindowFlags(w) & SDL_WINDOW_MAXIMIZED) SDL_RestoreWindow(w);
+    int cw, ch, mw, mh;
+    winsize_config_size(d, &cw, &ch, &mw, &mh);
+    SDL_SetWindowMinimumSize(w, mw, mh);
+    int now_w = 0, now_h = 0;
+    SDL_GetWindowSize(w, &now_w, &now_h);
+    static SDL_Window *sized;  // (sized once per window: the player's own resizing stays)
+    if (sized != w || now_w < mw || now_h < mh) {
+        SDL_SetWindowSize(w, cw, ch);
+        if (d) SDL_SetWindowPosition(w, (int)SDL_WINDOWPOS_CENTERED_DISPLAY(d), (int)SDL_WINDOWPOS_CENTERED_DISPLAY(d));
+        SDL_SyncWindow(w);
+        sized = w;
+        LOG("[window] Configuration: a %dx%d window (at least %dx%d)\n", cw, ch, mw, mh);
+    }
+}
+
 void winsize_apply(void *win) {
     SDL_Window *w = (SDL_Window *)win;
     if (!w) return;
+    if (g_config_mode && !getenv("SAVAGEWIND_WINDOW")) {  // (Configuration: its own window; test windows keep theirs)
+        config_window(w);
+        return;
+    }
+    SDL_SetWindowMinimumSize(w, 0, 0);  // (back from Configuration: the game's sizes)
     static bool first = true;
     // test windows (SAVAGEWIND_WINDOW / SAVAGEWIND_HIDDEN) keep their size and display at start and are never made
     // fullscreen

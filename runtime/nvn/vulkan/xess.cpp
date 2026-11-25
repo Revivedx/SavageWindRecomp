@@ -161,8 +161,11 @@ bool xess_required_device_extensions(VkInstance inst, VkPhysicalDevice phys, con
 }
 
 // The context's state: the output size xessVKInit ran for (0: none yet) and the quality mode it ran with, and whether
-// it failed this run
+// it failed this run. ctx_iw/ctx_ih are the input size the last dispatch used, only so a change of it can be logged:
+// the Dynamic mode moves the render size every few seconds, and without a line per change the log's one
+// "initialized ... -> ..." reads as if the scene were still at the size it was first made for.
 static uint32_t ctx_ow, ctx_oh;
+static uint32_t ctx_iw, ctx_ih;
 static int ctx_quality = -1;
 static bool failed;
 static VkDevice ctx_dev;
@@ -238,6 +241,7 @@ static bool init_for(const Fsr3Dispatch *d) {
         return false;
     }
     ctx_ow = d->output.width, ctx_oh = d->output.height, ctx_quality = d->quality;
+    ctx_iw = d->color.width, ctx_ih = d->color.height;
     LOG("[xess] initialized %ux%u -> %ux%u (mode %d, setting %d)\n", d->color.width, d->color.height, ctx_ow, ctx_oh,
         d->quality, (int)ip.qualitySetting);
     return true;
@@ -287,6 +291,15 @@ bool xess_dispatch(const Fsr3Dispatch *d) {
     if (resize && !init_for(d)) {  // (xessVKInit wants the device idle; the caller drains and idles for that frame)
         failed = true;
         return false;
+    }
+    // The Dynamic mode changes the render size without touching the output size or the mode, so this is not a
+    // re-init - XeSS is told the input's size per execute call (ep.inputWidth below). Logged once per change so the
+    // "initialized ..." line above is not the only size in the file, and to keep SAVAGEWIND_DYNAMIC_LOG's steps
+    // readable against what XeSS was actually given.
+    if (d->color.width != ctx_iw || d->color.height != ctx_ih) {
+        LOG("[xess] render size %ux%u -> %ux%u (Dynamic: the output stays %ux%u)\n", ctx_iw, ctx_ih, d->color.width,
+            d->color.height, ctx_ow, ctx_oh);
+        ctx_iw = d->color.width, ctx_ih = d->color.height;
     }
     VkCommandBuffer cb = d->cb;
     vk_full_barrier(cb);  // (the passes before wrote the inputs; the library is given clean layouts after it)
@@ -342,10 +355,10 @@ bool xess_dispatch(const Fsr3Dispatch *d) {
     ep.inputHeight = d->color.height;
     // Velocity scale: XeSS takes pixel vectors (this frame to the previous), the game's are NDC differences. The
     // same clip-space values FSR gets with motion_scale -0.5 w / +0.5 h go to XeSS through its own setter (its y
-    // points down, the game's up: the sign flips with it, as FSR's own mapping does). Set once per init (the scale
-    // only changes with the size).
-    if (ctx_ow != d->output.width || ctx_oh != d->output.height)
-        f_set_velocity_scale(ctx, -0.5f * (float)d->color.width, 0.5f * (float)d->color.height);
+    // points down, the game's up: the sign flips with it, as FSR's own mapping does). Set every frame: init_for()
+    // has already stored the new output size in ctx_ow/ctx_oh by now, so a "size changed" test here is never true
+    // (the scale stayed at XeSS's default 1, 1), and the render size can change without the output size changing.
+    f_set_velocity_scale(ctx, -0.5f * (float)d->color.width, 0.5f * (float)d->color.height);
     vk_gpuprof_mark(cb, "XeSS upscale");
     if (!rec_on_recorder()) rec_drain();  // (the library records into cb itself: what was queued before goes first; on
                                           //  the recorder thread everything before it is already recorded)

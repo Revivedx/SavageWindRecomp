@@ -569,7 +569,18 @@ static void disconnect(int slot) {
     c->socket = BAD_SOCKET;
     c->generation = generation;
 }
-static void stop(void) { fflush(stderr); _exit(0); }
+#ifdef SW_PGO_GENERATE
+// The instrumented runtime (tools/pgo/README.md) writes its profile every 3000 presented frames and when
+// SAVAGEWIND_EXIT_AT ends the run; _exit skips the exit handler, so a run ended by the `exit` command writes it here.
+// (A helper that is empty in the normal build: the callers keep the same statements, so their profile data still fits.)
+static void pgo_dump(void) {
+    extern int __llvm_profile_write_file(void);  // (appends a snapshot of the counts since the last one: device.c resets them after each)
+    if (__llvm_profile_write_file()) LOG("[pgo] could not write the runtime profile\n");
+}
+#else
+static void pgo_dump(void) {}
+#endif
+static void stop(void) { pgo_dump(); fflush(stderr); _exit(0); }
 // A web page in the player's browser can send to 127.0.0.1 too: an HTTP request whose body is lines of commands
 // (fetch with no-cors, a form, a WebSocket handshake). Such a connection starts with an HTTP request line; it is
 // closed before any of its lines run. (The protocol's own first line is a command, never "WORD /path" or "HTTP/".)

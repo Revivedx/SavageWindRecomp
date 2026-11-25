@@ -25,16 +25,36 @@ was worse than the new one alone: regenerate instead of merging.
 
 - A profile only fits the compiler that wrote it. With another clang, `PGO=use` can fail with an "unsupported
   instrumentation profile format version" error: make a new one (below).
-- It goes stale as the runtime changes. A function that was edited since loses its data and is built as usual; everything else keeps working. Regenerating every so often keeps the gain.
+- It goes stale as the runtime changes. A function that was edited since loses its data and is built as usual; everything else keeps working. Regenerating every so often keeps the gain. After a change to a hot function (anything in `runtime/nvn/vulkan/` that runs per
+  draw), check the `PGO=use` build log for "profile data may be out of date" and retrain if it names more than a few functions.
+- The instrumented build must have the same function structure as the normal one: the profile is keyed by a hash of the
+  control flow, so `#ifdef SW_PGO_GENERATE` must not add or remove branches or loops in a function that is also profiled
+  (`present_locked` calls `pgo_frame()` unconditionally for this reason; both builds have the same statements).
 
 ## Making a new profile
 
 ```
-make PGO=gen B=build-gen RELEASE=1 build-gen/savagewind.exe
-# run build-gen/savagewind.exe with LLVM_PROFILE_FILE=<dir>/rt-%p.profraw and play for a while (TAA on: the profile
-# should match the settings the game is played with), or script it:
-#   LLVM_PROFILE_FILE=<dir>/rt-%p.profraw python tools/perf_routes.py run --exe build-gen/savagewind.exe --routes kakariko field hateno korok rito ...
-# The profile is written every 3000 frames and at a scripted SAVAGEWIND_EXIT_AT, so closing the window is fine.
-llvm-profdata merge -o tools/pgo/runtime.profdata <dir>/*.profraw      # add the old file to the list to keep its data
-make PGO=use B=build-pgo RELEASE=1 build-pgo/savagewind.exe
+make PGO=gen B=build-gen RELEASE=1 build-gen/savagewind.exe       # (copy swgame.dll, swgame.dll.id and nvngx_dlss.dll next to the exe)
+LLVM_PROFILE_FILE=<dir>/rt-%p.profraw python tools/pgo/train.py --exe build-gen/savagewind.exe --tree . \
+    --data-root <own set-up data root> --save <folder with save_0> --ini <savagewind.ini> --out <runs dir> --profiles <dir> \
+    --env SAVAGEWIND_VK_CPU_OPTS=<the mask the game is played with, if any>
+llvm-profdata merge -o tools/pgo/runtime.profdata <dir>/*.profraw   # skip the near-empty files of a re-exec parent
+make PGO=use B=build-pgo RELEASE=1 build-pgo/savagewind.exe                # read the log for "out of date" warnings
 ```
+
+`train.py` boots the instrumented runtime once per place and config, plays a list of scenes over the control socket (day,
+a camera pan, a fly-around that streams in new ground, the pause menu and the map, dusk, night, rain, a thunderstorm,
+snow, dawn), and ends each boot with `exit`, which makes the runtime write its profile (`runtime/control.c` `pgo_dump`).
+Two configs: `play` (the player's own settings at the main monitor's size, all `perf_routes.py` places) and `taa1080` (TAA at
+1080p, high shadows, four places). A full run is about 65 minutes; `--quick` is a smoke test (a few seconds per scene,
+`--routes plateau --configs play` for one boot).
+
+The runtime appends a snapshot of the counters every 3000 presented frames and at the end, and resets them after each
+write, so the snapshots add up to the run (without the reset, the early frames were counted again in every later
+snapshot). On Windows a boot can re-exec itself when the guest address space is taken: the parent leaves a near-empty
+profraw (skip it when merging) and `train.py` retries a boot once. Use a data root of its own (the
+first boot compiles shaders for about two minutes, so give `--boot` 420) and a scratch copy of a save, never the player's.
+
+For a quick profile without `train.py`, run `perf_routes.py` over the routes with the same `LLVM_PROFILE_FILE`:
+`python tools/perf_routes.py run --exe build-gen/savagewind.exe --routes kakariko field hateno korok rito ...`. Regenerate
+instead of merging a new profile with an old one: a merge of the two was worse than the new one alone.

@@ -296,6 +296,7 @@ $(B)/rt/prof_sampler.o: RTFLAGS += -fms-extensions
 $(B)/rt/memscan_os.o: RTFLAGS += -fms-extensions
 
 $(B)/rt/control_places.o: runtime/control_places_data.inc  # (the generated table of shrines, Koroks ...)
+$(B)/rt/pinyin.o: runtime/pinyin_data.inc  # (the hanzi readings, tools/gen_pinyin_table.py)
 
 $(B)/rt/%.o: runtime/%.c $(RT_HDRS)
 	@mkdir -p $(dir $@)
@@ -457,6 +458,9 @@ dist:
 	cp third_party/fonts/NotoSansThai/OFL.txt "$(DIST)/NotoSansThai-OFL.txt"
 	cp third_party/fonts/NotoSansHebrew/NotoSansHebrew-Medium.ttf "$(DIST)/"  # (Hebrew menus, OFL)
 	cp third_party/fonts/NotoSansHebrew/OFL.txt "$(DIST)/NotoSansHebrew-OFL.txt"
+	cp third_party/fonts/FontAwesome/fa-solid-900.ttf "$(DIST)/"  # (the menus' icons, as SWMM+'s: OFL)
+	cp third_party/fonts/FontAwesome/LICENSE.txt "$(DIST)/FontAwesome-LICENSE.txt"
+	cp docs/media/wordmark.png docs/media/wordmark_config.png docs/media/wordmark_boot.png docs/media/default_splash.jpg "$(DIST)/"  # (the name in the menus' header: runtime/ui/ui_theme.h)
 	cp third_party/FidelityFX/LICENSE.txt "$(DIST)/FidelityFX-LICENSE.txt"  # (AMD FidelityFX SDK, MIT: README "License")
 	if [ -f build/fsr-dlls/amd_fidelityfx_loader_vk.dll ]; then cp build/fsr-dlls/amd_fidelityfx_*_vk.dll \
 	    build/fsr-dlls/AMD-FidelityFX-DLL-LICENSE.txt "$(DIST)/"; fi  # (AMD FSR 4: tools/fetch_fsr_dlls.py; AMD's licence allows binary redistribution with this notice)
@@ -466,7 +470,7 @@ dist:
 	PATH="$(CURDIR)/build/deps-win/bin:$$PATH" ldd $(WIN_B)/savagewind.exe | awk '(/ucrt64/ || /deps-win/) && !/vulkan-1/ {print $$3}' | sort -u | \
 	    xargs -I{} cp -u {} "$(DIST)/"
 	! ls "$(DIST)" | grep -iE 'x264|x265|xvid|postproc'  # (no GPL codec libraries in the release)
-	! ls "$(DIST)" | grep -i splash  # (no start screen picture: the player's own, never shipped)
+	! ls "$(DIST)" | grep -i splash | grep -vx default_splash.jpg  # (no start screen picture of the player's: only Savage Wind's own default)
 	python3 tools/make_update_manifest.py "$(DIST)" "$(VERSION)"  # (what SW Update checks and replaces: this list, nothing else)
 	cd build/dist && if command -v zip >/dev/null; then zip -qr "SavageWind-$(VERSION)-windows.zip" "Savage Wind"; \
 	    else /c/Windows/System32/tar.exe -a -cf "SavageWind-$(VERSION)-windows.zip" "Savage Wind"; fi
@@ -547,6 +551,16 @@ test-actions: $(B)/test_actions
 
 .PHONY: test-actions
 
+# the Accessibility assists' arithmetic (runtime/assists.c): wear, damage, stamina drain
+$(B)/test_assists: tools/test_assists.c runtime/assists.c runtime/settings.h
+	@mkdir -p $(B)
+	$(CC) -O1 $(OSFLAGS) $(DEPINC) -Iruntime -o $@ tools/test_assists.c runtime/assists.c
+
+test-assists: $(B)/test_assists
+	$(B)/test_assists
+
+.PHONY: test-assists
+
 $(B)/test_pc_controls: tests/test_pc_controls.c runtime/hle/input.c runtime/hle/bindings.c runtime/settings.h
 	@mkdir -p $(dir $@)
 	$(CC) -O2 -ffunction-sections -fdata-sections -DSDL_STATIC_LIB $(OSFLAGS) $(DEPINC) -Iruntime -isystem third_party -o $@ $< -fuse-ld=lld -Wl,--gc-sections $(if $(filter windows,$(PLATFORM)),-Wl$(comma)--exclude-all-symbols) -lSDL3 -lm
@@ -558,6 +572,20 @@ $(B)/test_pc_settings: tests/test_pc_settings.c runtime/settings.c runtime/setti
 $(B)/test_game_place: tests/test_game_place.c runtime/game_place.c runtime/game_place.h runtime/game_place_table.inc
 	@mkdir -p $(dir $@)
 	$(CC) -O1 -Iruntime -o $@ $<
+
+# Cheats > Collectible hints on the map: the table built from the player's own game files, the same as
+# tools/gen_collectibles.py builds it. The player supplies RomFS locally; nothing of it is distributed.
+$(B)/test_collectibles_table: tests/test_collectibles_table.c runtime/collectibles_table.c runtime/collectibles_table.h \
+                              runtime/services/formats.c runtime/services/archive.c $(RT_HDRS)
+	@mkdir -p $(dir $@)
+	$(CC) -O1 -Iruntime -o $@ $(filter %.c,$^)
+
+test-collectibles: $(B)/test_collectibles_table
+	@test -n "$(ROMFS)" || { echo 'Set ROMFS to your own extracted game RomFS directory.'; exit 2; }
+	$(B)/test_collectibles_table "$(ROMFS)" > $(B)/collectibles_c.txt
+	$(firstword $(PY) python3) tools/gen_collectibles.py "$(ROMFS)" $(B)/collectibles_c.txt
+
+.PHONY: test-collectibles
 
 $(B)/test_discord_rpc: tests/test_discord_rpc.c runtime/discord_rpc.c runtime/discord_rpc.h
 	@mkdir -p $(dir $@)
@@ -723,9 +751,30 @@ test-mods: $(B)/test_mods
 
 .PHONY: test-mods
 
+# Pinyin for the search fields (runtime/pinyin.c): the readings of a few ordinary Chinese names, and what a search
+# typed on a controller's ASCII on-screen keyboard finds with them
+$(B)/test_pinyin: tools/test_pinyin.c runtime/pinyin.c runtime/pinyin.h runtime/pinyin_data.inc
+	@mkdir -p $(B)
+	$(CC) -O1 -Wall -Wextra -Werror -std=gnu11 -Iruntime -o $@ tools/test_pinyin.c runtime/pinyin.c
+
+test-pinyin: $(B)/test_pinyin
+	$(B)/test_pinyin
+	$(firstword $(PY) python3) tools/test_pinyin_table.py
+
+.PHONY: test-pinyin
+
 $(B)/test_game_file_size: tools/test_game_file_size.c runtime/game_file_size.c runtime/game_file_size.h runtime/game_files.h
 	@mkdir -p $(B)
 	$(CC) -O1 -Wall $(OSFLAGS) -Iruntime -o $@ tools/test_game_file_size.c runtime/game_file_size.c
+
+$(B)/test_game_cpu: tools/test_game_cpu.c runtime/game_cpu.h
+	@mkdir -p $(B)
+	$(CC) -O1 -Wall -Wextra -Werror -std=gnu11 -Iruntime -o $@ tools/test_game_cpu.c
+
+test-game-cpu: $(B)/test_game_cpu
+	$(B)/test_game_cpu
+
+.PHONY: test-game-cpu
 
 test-game-file-size: $(B)/test_game_file_size
 	$(B)/test_game_file_size
@@ -789,6 +838,11 @@ test-hour: $(B)/test_hour
 
 .PHONY: test-hour
 
+# Tests that keep a few functions of a large runtime file and let --gc-sections drop the rest. ELF lld reports an
+# undefined symbol only when live code uses it; COFF lld (Windows) reports them before discarding sections, so there
+# the link allows them.
+GC_TEST_UNDEF := $(if $(filter windows,$(PLATFORM)),-Wl$(comma)-Xlink=-force:unresolved)
+
 # The BC5 view format (NVN 0x4C, SAVAGEWIND_BC5_UNORM): vk_format is the only function the section GC keeps from
 # textures.c, so no Vulkan device is needed. Run twice so both initial environment states cache the right format.
 ifneq ($(PLATFORM),macos)
@@ -796,7 +850,7 @@ $(B)/test_textures_format: tests/test_textures_format.c runtime/nvn/vulkan/textu
 	@mkdir -p $(dir $@)
 	$(CC) -O2 -ffunction-sections -fdata-sections $(OSFLAGS) $(DEPINC) -Iruntime -Iruntime/nvn -isystem third_party -isystem third_party/stb \
 	    -o $@ tests/test_textures_format.c runtime/nvn/vulkan/textures.c -fuse-ld=lld -Wl,--gc-sections \
-	    $(if $(filter windows,$(PLATFORM)),-Wl$(comma)--exclude-all-symbols) -lpthread -lm
+	    $(if $(filter windows,$(PLATFORM)),-Wl$(comma)--exclude-all-symbols) $(GC_TEST_UNDEF) -lpthread -lm
 
 test-textures: $(B)/test_textures_format
 	env -u SAVAGEWIND_BC5_UNORM $(B)/test_textures_format
@@ -814,7 +868,7 @@ $(B)/two_button_bindings.o: runtime/hle/bindings.c runtime/input_bind.h
 	$(CC) -O1 -ffunction-sections -fdata-sections -DSDL_STATIC_LIB $(OSFLAGS) $(DEPINC) -Iruntime -c $< -o $@
 
 $(B)/test_two_button_rows: tools/test_two_button_rows.cpp runtime/ui/game_options.mm runtime/ui/binding_row_layout.h $(B)/two_button_bindings.o
-	$(CXX) -std=c++17 -O1 -ffunction-sections -fdata-sections -DSDL_STATIC_LIB $(OSFLAGS) $(DEPINC) -Iruntime -Ithird_party -o $@ $< $(B)/two_button_bindings.o -fuse-ld=lld -Wl,--gc-sections $(if $(filter windows,$(PLATFORM)),-Wl$(comma)--exclude-all-symbols) -lSDL3 -lm
+	$(CXX) -std=c++17 -O1 -ffunction-sections -fdata-sections -DSDL_STATIC_LIB $(OSFLAGS) $(DEPINC) -Iruntime -Ithird_party -o $@ $< $(B)/two_button_bindings.o -fuse-ld=lld -Wl,--gc-sections $(if $(filter windows,$(PLATFORM)),-Wl$(comma)--exclude-all-symbols) $(GC_TEST_UNDEF) -lSDL3 -lm
 
 test-two-button-rows: $(B)/test_two_button_rows
 	$(B)/test_two_button_rows

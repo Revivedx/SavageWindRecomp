@@ -521,8 +521,15 @@ Pendiente:
          "Precompilar shaders" (dice "Hecho", "Volver a hacer" o "Sin hacer", con el número de shaders y la fecha de
          la última vez). Una barra con el paso (leer los archivos, traducir y compilar, pipelines) y la cuenta; Esc o
          B la para y lo hecho se queda. `savagewind --precompile-shaders` hace lo mismo sin el menú (ventana oculta
-         con `SAVAGEWIND_HIDDEN=1`); `savagewind --scan-shaders` solo cuenta lo que encuentra y cuántos de los shaders
+         con `SAVAGEWIND_HIDDEN=1`); `--precompile-shaders-if-needed`, solo si no están al día (`shader_precompile_status`
+         distinto de 1; si lo están, sale enseguida); `savagewind --scan-shaders` solo cuenta lo que encuentra y cuántos de los shaders
          del registro de claves (abajo) están entre ellos (`SAVAGEWIND_SCAN_LIST=1`: shaders por archivo).
+       - Al iniciar (2026-11-18): con "Precompilar todos los shaders" activado, un inicio normal cuyos shaders no
+         están precompilados para esta GPU y este driver (nunca hechos, o hechos por otro driver o traductor: una
+         actualización del driver, la carpeta de datos de otro PC, archivos del juego preparados sin la pantalla de
+         inicio) pasa antes por la pantalla de inicio (`LAUNCHER_SHADERS` en `runtime/main.c`): los precompila en la
+         barra de progreso (Esc o B la para) y sigue al juego. El estado necesita el dispositivo (driver y GPU de las
+         librerías), así que la ventana se crea oculta antes del arranque, como en Windows.
        - De dónde salen (`runtime/nvn/shader_archive.c`): de la RomFS del propio usuario (`romfs/`), en los
          archivos desde los que el juego sube sus shaders a NVN: FSHA con ficheros BNSH de nn::gfx (materiales,
          terreno, hierba: `*.sbfsha`, `*.bfsha` dentro de `*.ssarc`), SHARCB de agl/gsys (`*.sharcb`: postproceso,
@@ -1846,8 +1853,8 @@ driver's NGX core (`_nvngx.dll`, through `HKLM\SOFTWARE\NVIDIA Corporation\Globa
 points with `GetProcAddress`, and declares the few NGX types, values and parameter names it uses from the SDK's
 documented interface. NGX's parameter object is a C++ class reached through its vtable (MSVC's layout: each group of
 overloads in reverse order); a set-then-get round trip checks the layout first, and DLSS stays off if it fails. NGX is
-loaded only when NVIDIA's `nvngx_dlss.dll` is next to `savagewind.exe`. The setup page's Download NVIDIA DLSS (on PCs
-with an NVIDIA driver; `dlss_download = 1`, the default) and the game files page download it, with NVIDIA's
+loaded only when one of NVIDIA's DLLs is next to `savagewind.exe` (`nvngx_dlss.dll`; `nvngx_dlssg.dll` for frame
+generation, below). The setup page's Download NVIDIA DLSS (on PCs with an NVIDIA driver; `dlss_download = 1`, the default) and the game files page download them, with NVIDIA's
 `LICENSE.txt` as `NVIDIA-DLSS-LICENSE.txt`, from NVIDIA/DLSS on GitHub at release `v310.9.16` (`runtime/dlss_fetch.c`:
 WinHTTP; size and SHA-256 checked, written as `.part` and renamed only when both match). While it is missing on a PC
 with an NVIDIA driver, the menus' greyed DLSS points at Savage Wind Configuration.
@@ -1869,9 +1876,9 @@ settings file with `upscaler = fsr3` then loads as AMD FSR 1 with the same quali
 
 ## Frame generation (AMD FSR 3)
 
-Video > Frame generation (AMD FSR 3) (Off by default; `frame_generation = 0|1`; `SAVAGEWIND_FG=0|1` overrides it in
-tests) makes a frame between each two the game draws, with the frame interpolation and optical flow of AMD's
-FidelityFX SDK 1.1.4 (MIT, `third_party/FidelityFX`, see its README). Windows and Linux (Vulkan); no row on macOS.
+Video > Frame generation: AMD FSR 3 (Off by default; `frame_generation = 0|1|2`, 2 being NVIDIA DLSS, next section;
+`SAVAGEWIND_FG=0|1|2` or `off|fsr3|dlss` overrides it in tests) makes a frame between each two the game draws, with
+the frame interpolation and optical flow of AMD's FidelityFX SDK 1.1.4 (MIT, `third_party/FidelityFX`, see its README). Windows and Linux (Vulkan); no row on macOS.
 
 **Driving the SDK.** The SDK's own path is its frame interpolation swapchain: it replaces `vkCreateSwapchainKHR`,
 `vkAcquireNextImageKHR` and `vkQueuePresentKHR`, wants a present queue and an acquire queue the game never touches,
@@ -2003,6 +2010,71 @@ frame's PSNR against each is 1.5-2.5 dB over theirs against each other, so it li
   (VSync On / FIFO, VRR, HDR10 brightness): the shots are taken from the window image before the present. Not
   measured: the added latency. The Linux build of the SDK's sources (`ffx_compat.h` has what glibc lacks) isn't
   tried yet.
+
+## Frame generation (NVIDIA DLSS)
+
+Video > Frame generation: NVIDIA DLSS (`frame_generation = 2`; greyed where it can't run) makes the frames between each
+two with NVIDIA's DLSS Frame Generation on GeForce RTX 40 and later (Windows; NVIDIA's `nvngx_dlssg.dll`, which the
+setup downloads: "No SDK" below). Elsewhere, or when NGX can't make the feature, the choice runs AMD FSR 3.
+
+**Multi frame generation.** Video > Frame generation multiplier (`frame_generation_multiplier = 2|3|4`;
+`SAVAGEWIND_FG_MULT` in tests): with DLSS, the frames on screen for each the game draws. 3x and 4x make two or three
+frames between each two, where NGX makes that many (its MultiFrameCountMax: GeForce RTX 50; values above it are greyed
+and the most it makes below the setting runs). FSR 3 is always 2x. `vk_dlssg_dispatch` evaluates once per frame
+(multiFrameIndex 1..n of multiFrameCount n) into its own image (`fg_image` 2..4), all in the frame's command buffer;
+`vk_fg_generate` hands them to `present_locked` in order. The present thread presents the first once it is drawn and
+the others and the game's frame k / (n + 1) of the game's frame time after it (`present_wait_turn`; n = 1 is the half
+frame above); up to n + 1 of a group wait their turn (`present_wait_room`, a present queue of 8), the swapchain has
+one image more for each frame DLSS can make, and the game is paced at 1 / (n + 1) of Video > Frame rate
+(`framepace_period_ns`, `g_fg_active` = n). `SAVAGEWIND_FG_SHOT_AT` saves `_gen`, `_gen2`, `_gen3`.
+
+**Driving it.** NVIDIA's recommended path is Streamline, which takes over the swapchain's present and needs Reflex.
+Savage Wind uses NGX's own frame generation feature instead, with the parameters NVIDIA's SDK documents for it:
+`runtime/nvn/vulkan/dlss.c` `vk_dlssg_dispatch` records the interpolation into the frame's command buffer, in place
+of FSR 3's (`exec.c` `vk_fg_generate`), and everything around it stays as above: the same inputs (the final image, the
+HUD-less copy, the world camera's depth and motion vectors with Link's box), the present thread's pacing of the pair,
+the frame rate at half. The feature is made at the first generated frame and again when the final image's size or
+format or the depth's size changes; switching to FSR 3 or Off frees it (about 0.5 GB at 4K), and FSR 3's contexts
+when switching to DLSS. The device gets what NGX asks for frame generation besides its general list
+(`VK_KHR_buffer_device_address` in place of the EXT one, and bufferDeviceAddress).
+
+**No SDK.** As for Super Resolution (NVIDIA DLSS above): nothing of NVIDIA's SDK is compiled in, linked or shipped.
+The setup downloads NVIDIA's `nvngx_dlssg.dll` with `nvngx_dlss.dll` (same release, size and SHA-256 checked).
+
+**The camera.** Besides the vectors, NGX takes the camera's matrices (clip to the previous frame's clip and back, view
+to clip and back), row-major for a row vector times the matrix (D3D's way, as Streamline's), and its position, axes,
+near / far and vertical field of view. Savage Wind's are OpenGL's (column vectors, y up, z -1..1 with depth (z / w + 1)
+/ 2): `vk_dlssg_dispatch` takes them to D3D's clip space (uv.y down, depth z / w) and transposes them.
+
+**Tests.** `SAVAGEWIND_DLSSG_MTX=col` hands the matrices over untransposed, `SAVAGEWIND_DLSSG_MVSIGN=<x>,<y>` multiplies the vectors' signs, `SAVAGEWIND_DLSSG_MV_TEST=1` clears the
+vectors and says the camera's motion isn't in them (NGX then takes it from depth and the matrices alone).
+`SAVAGEWIND_FG_SHOT_AT` and `SAVAGEWIND_GPUPROF_AT` ("frame generation: DLSS") as for FSR 3.
+
+**Measured** (2026-10-28, RTX 5060 Ti, hidden 3840x2160 window, the 3D scene at 2560x1440 (DLSS Super Resolution
+Quality, PR #111), frame rate 60: 30 drawn + 30 generated; Riverside Stable, turning the camera; NGX's DLSS Frame Generation 310.9.16):
+
+- GPU time per generated frame: DLSS 3.7-4.1 ms, FSR 3 (optical flow + interpolation) 4.7-4.9 ms.
+- The generated frames lie between the game's (PSNR against each 1.8-2.1 dB over theirs against each other; FSR 3
+  1.7). PSNR can't rank them: a plain 50/50 blend scores 6.0 dB. The fine detail (Laplacian energy against the two
+  game frames') tells a blend apart: 0.5 for a blend, FSR 3 1.0 (it warps one frame), DLSS 0.57 with the vectors as
+  they are and lower with them wrong (0.37 with y flipped, 0.30 with x flipped, 0.31 without vectors), so the signs
+  are right; the trunk edges in a turn are where they belong, single and clean, the texture softer than the game's.
+  Untransposed matrices gave 0.49 against 0.57 (single runs).
+- Multi frame generation, frame rate No limit (same scene; the [fg] and [present] lines):
+
+  | Multiplier | Drawn | Presented | DLSS frame generation GPU time per drawn frame |
+  |---|---|---|---|
+  | 2x | ~50 | 97-104 | 3.7-4.1 ms |
+  | 3x | ~43 | 125-133 | 6.7-6.9 ms |
+  | 4x | ~36 | 136-152 | 9.6-9.9 ms |
+
+  Each frame more costs about 3 ms here (NVIDIA's table has the later ones cheaper), so on this GPU 4x adds little to
+  3x. The presents come every 7.0-7.9 ms with a standard deviation of 0.6-1.0 ms. At 4x the three generated frames go
+  from the earlier game frame to the later one in order (PSNR against the earlier 24.9, 23.0, 21.9 dB; against the
+  later 21.9, 22.9, 24.8).
+- Not looked at yet: NVIDIA's debug views (they need NGX's development DLL), latency, Link running, and the frames on
+  a real display. On a PC where the NVIDIA app's DLSS override is on, NGX loads the app's DLL
+  (`C:\ProgramData\NVIDIA\NGX\models\dlssg`) instead of the one next to the game.
 
 ## Colour grading (Options > Colour)
 

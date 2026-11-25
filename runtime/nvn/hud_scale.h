@@ -216,9 +216,15 @@ static inline void hud_scope_leave(HudScope *s) {
 
 // A window's local background capture samples the final image in console UV coordinates.
 // Reshape that source rectangle and move its center with the window, leaving the local mask alone.
+// A taller window's final image has more rows than the 16:9 band the window sits in (height x shape); a wider one's
+// more columns (width / shape: #1093, a 21:9 screen's conversation box showed the scene beside it).
 static inline bool hud_capture_crop(float *g, float shape, float dy) {
-    if (!(shape > 0 && shape < 1 && isfinite(g[22]) && isfinite(g[23]) &&
+    if (!(shape > 0 && shape != 1 && isfinite(g[22]) && isfinite(g[23]) &&
           isfinite(g[24]) && g[24] > 0 && isfinite(g[25]) && g[25] > 0 && isfinite(g[26]))) return false;
+    if (shape > 1) {
+        g[24] /= shape;
+        return true;
+    }
     g[25] *= shape;
     float shift = -dy / (2 * g[25]);
     g[22] += sinf(g[26]) * shift;

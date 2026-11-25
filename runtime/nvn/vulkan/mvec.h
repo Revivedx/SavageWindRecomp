@@ -25,7 +25,7 @@ typedef struct { uint64_t addr; uint32_t size; uint8_t slot, pad[3]; } MvecCb;  
 typedef struct { uint64_t addr, size; uint32_t stride, divisor, index, pad; } MvecInst;      // an instanced stream it reads
 typedef struct {
     uint8_t kind;    // (mvec.c: 0 a draw, 1 a new frame: inst, base_inst = its slot and the previous frame's)
-    uint8_t ncb, ninst, pad;
+    uint8_t ncb, ninst, flags;  // flags: MVEC_DRAWN_TEXTURE
     int32_t base_vertex;
     uint64_t gen;    // guest copy generation (exec.c gcopy_gen): equal ranges of one generation hold equal bytes
     uint64_t pkey;   // mvec_mix(vertex shader code address, fragment shader code address)
@@ -34,6 +34,8 @@ typedef struct {
     const void *vi;  // the vertex shader's ShaderInfo: the vec4s it reads of each buffer (cbuf_rows)
     uint32_t count, first, inst, base_inst;
 } MvecHead;
+// The vertex shader samples a texture the GPU draws into (exec.c draw_): what it read in the previous frame is gone
+enum { MVEC_DRAWN_TEXTURE = 1 };
 typedef struct { MvecHead h; MvecCb cb[16]; MvecInst in[MVEC_INST]; } MvecDrawIn;  // (cb: MVEC_CB used)
 _Static_assert(sizeof(MvecHead) == 64 && sizeof(MvecCb) == 16 && sizeof(MvecInst) == 32, "mvec ring cells");
 static inline uint64_t mvec_mix(uint64_t h, uint64_t v) {

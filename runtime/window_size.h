@@ -42,3 +42,10 @@ void windisplay_name(const WinDisplay *d, int n, const char *primary, char *buf,
 void winsize_refresh(void *sdl_window);
 void winsize_apply(void *sdl_window);
 unsigned winsize_start_display(void);
+
+// Savage Wind Configuration's window (runtime/ui/launcher.mm): while on, winsize_apply makes the window a window of
+// Configuration's size, never fullscreen, whatever Video says; off (Play), the next winsize_apply puts the game's back.
+// winsize_config_size: that size in points on a display (0: no display known), and the smallest it may be resized to.
+void winsize_config_mode(bool on);
+bool winsize_config_active(void);
+void winsize_config_size(unsigned display, int *w, int *h, int *min_w, int *min_h);

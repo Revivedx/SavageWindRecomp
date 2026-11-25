@@ -37,6 +37,8 @@
 #include "osk.h"
 #include "saves_tab.h"
 #include "splash.h"
+#include "ui_theme.h"
+#include "mods.h"
 #ifdef SW_METAL
 #include "imgui_impl_metal.h"
 #else
@@ -52,6 +54,10 @@ extern "C" {
 #include "paths.h"
 #include "gamebuild.h"
 #include "gamelib.h"
+// (runtime/gamelib.c; declared here, not in gamelib.h, which is part of the game code library's id)
+// True when game_dir's library has this build's id but its file can't be loaded: cut short or overwritten (an
+// interrupted build, a disk or a security program; #1084: error 193 at Play). gamelib_present is false for it.
+extern "C" bool gamelib_damaged(const char *game_dir);
 #include "game_versions.h"
 #include "dlc_check.h"
 #include "dlss_fetch.h"
@@ -66,6 +72,7 @@ extern "C" {
 #include "color_grade.h"
 #include "pc_cursor.h"
 #include "input_bind.h"
+#include "window_size.h"
 #ifndef SW_METAL
 #include "nvn/precompile.h"
 #endif
@@ -281,11 +288,18 @@ static void remove_old_image(const std::string &root) {
         fprintf(stderr, "[launcher] removed the old game data image (romfs.bin)\n");
 }
 
+// A RomFS with the DLC merged into it (#188, #242, #1070): some guides copy the DLC's RomFS over the game's. The game
+// then finds the DLC's versions of the main map and the events where it expects its own, with no DLC unlocked: the
+// Divine Beasts' loading screens never end. Savage Wind doesn't build the game code from such a copy and says why.
+static const char *const DLC_MERGED = "The DLC is merged into romfs";
+
 // "" = ready to play, else what is wrong
 static std::string check_game_files(const std::string &root) {
     std::string why = check_copied_files(root);
+    if (why.empty() && rt_romfs_dlc_merged((root + "/romfs").c_str())) return DLC_MERGED;
     if (why.empty() && !gamelib_present(root.c_str())) {  // (a library with another id: an update of Savage Wind, or
         if (!file_exists(root + "/" GAMELIB_NAME)) return "Game code not built yet";  // a PC with another kind of CPU)
+        if (gamelib_damaged(root.c_str())) return "Game code damaged";  // (#1084: error 193 at Play)
         return gamelib_other_cpu(root.c_str()) ? "Game code built for another CPU" : "Game code built for another version";
     }
     return why;
@@ -313,6 +327,7 @@ static std::string g_job;           // current setup step / result for the statu
 static std::string g_job_hint;      // a failure: what to do about it (shown under it)
 static bool g_busy, g_job_failed;
 static bool g_confirm_delete;       // game-files page: "Delete the game files?" shown
+static bool g_confirm_setup;        // game-files page: "Set up game files again?" shown (#1079)
 
 static void set_job(const std::string &s, bool failed = false, const std::string &hint = "") {
     if (failed) fprintf(stderr, "[launcher] FAILED: %s | %s\n", s.c_str(), hint.c_str());
@@ -321,6 +336,14 @@ static void set_job(const std::string &s, bool failed = false, const std::string
     g_job_failed = failed;
     g_job_hint = hint;
     pthread_mutex_unlock(&g_lock);
+}
+
+// (check_game_files' DLC_MERGED: what to do about it)
+static void set_dlc_merged_failure(void) {
+    set_job("The game files are set up wrong", true,
+            "The DLC is merged into the game's romfs folder, so Savage Wind doesn't build the game code from it: with "
+            "the DLC merged, the Divine Beasts' loading screens never end and the DLC isn't unlocked. Extract the base "
+            "game + update RomFS and the two DLC into separate folders, then choose Set up game files with them.");
 }
 
 // Setup failures: a short headline and what to do next (also SAVAGEWIND_LAUNCHER_SHOT=<f>:fail<1-9>, screenshots)
@@ -371,7 +394,9 @@ static int version_failure(const std::string &st) {
 // no game files yet: the page is the welcome then)
 static void explain_status(const std::string &st) {
     if (st.empty() || st == "No game files") return;
-    if (st == "Game code built for another version")
+    if (st == DLC_MERGED)
+        set_dlc_merged_failure();
+    else if (st == "Game code built for another version")
         set_job("The game code was built for another version of Savage Wind", true,
                 "Savage Wind was updated: choose Set up game files to build the game code again from your copy of the "
                 "game. This takes a few minutes.");
@@ -382,6 +407,10 @@ static void explain_status(const std::string &st) {
     else if (st == "Game code not built yet")
         set_job("The game code isn't built yet", true,
                 "Choose Set up game files to build it from your copy of the game. This takes a few minutes.");
+    else if (st == "Game code damaged")  // (gamelib_damaged)
+        set_job("The game code file is damaged", true,
+                "It can't be loaded: its building was interrupted, or a security program changed it. Choose Set up "
+                "game files to build it again from your copy of the game. This takes a few minutes.");
     else set_failure(st.find("NSO") != std::string::npos ? FAIL_VERSION
                      : version_failure(st) ? version_failure(st) : FAIL_MISSING);
 }
@@ -482,6 +511,11 @@ static bool room_for_build(void) {
 
 // Builds the game code from the copied files (a few minutes); false = failed (the job line says so)
 static bool build_game_code(void) {
+    if (rt_romfs_dlc_merged((g_root + "/romfs").c_str())) {
+        fprintf(stderr, "[launcher] game code not built: the DLC is merged into romfs\n");
+        set_dlc_merged_failure();
+        return false;
+    }
     int cores = SDL_GetNumLogicalCPUCores(), ram_gb = SDL_GetSystemRAM() / 1024;
     GameBuildOpts o = {build_progress, cores < ram_gb - 2 ? cores : ram_gb - 2 > 1 ? ram_gb - 2 : 1};
     char why[800] = "";
@@ -546,12 +580,13 @@ static std::string precompile_line(void) {
 static std::atomic<bool> g_stay_on_setup{false}, g_dlc_checking{false};
 
 // ------------------------------------------------------------------ NVIDIA DLSS (runtime/dlss_fetch.h)
-// NVIDIA's library for Video > Upscaler's NVIDIA DLSS, downloaded from NVIDIA's own repository after a setup when its
-// option is on (the setup page's DOWNLOAD NVIDIA DLSS, settings.dlss_download), or on its own from the game files
-// page. Not needed to play: a failed download leaves DLSS greyed out, nothing else.
-static const char k_dlss_text[] = "For NVIDIA DLSS in Video > Upscaler, on NVIDIA RTX graphics cards: downloads "
-                                   "NVIDIA's DLSS library (59 MB) from NVIDIA's own repository on GitHub. It is "
-                                   "NVIDIA's, under NVIDIA's licence, and not part of Savage Wind.";
+// NVIDIA's libraries for Video > Upscaler and Video > Frame generation's NVIDIA DLSS, downloaded from NVIDIA's own
+// repository after a setup when its option is on (the setup page's DOWNLOAD NVIDIA DLSS, settings.dlss_download), or
+// on their own from the game files page. Not needed to play: a failed download leaves DLSS greyed out, nothing else.
+static const char k_dlss_text[] = "For NVIDIA DLSS in Video > Upscaler and Video > Frame generation, on NVIDIA RTX "
+                                   "graphics cards: downloads NVIDIA's DLSS libraries (66 MB) from NVIDIA's own "
+                                   "repository on GitHub. They are NVIDIA's, under NVIDIA's licence, and not part of "
+                                   "Savage Wind.";
 static std::atomic<bool> g_dlss_fetching{false};
 static std::atomic<float> g_dlss_frac{0};
 static void dlss_progress(uint64_t done, uint64_t total) { g_dlss_frac = total ? (float)((double)done / (double)total) : 0; }
@@ -886,6 +921,11 @@ static void *extract_thread(void *) {
             set_failure(FAIL_MISSING);
             goto done;
         }
+        if (rt_romfs_dlc_merged(romfs.c_str())) {  // (before copying 15 GB)
+            fprintf(stderr, "[launcher] romfs: the DLC is merged into %s\n", romfs.c_str());
+            set_dlc_merged_failure();
+            goto done;
+        }
     }
     {
         // (the picked folder can't be inside Savage Wind's own copy: setting up again deletes that first)
@@ -1142,6 +1182,18 @@ static std::string trim_folder_path(const char *s) {
     return p;
 }
 
+// Changing the selected folder invalidates any result from the previous setup.
+static void select_game_folder(const std::string &path) {
+    pthread_mutex_lock(&g_lock);
+    g_src = path;
+    if (!g_busy) {
+        g_job.clear();
+        g_job_hint.clear();
+        g_job_failed = false;
+    }
+    pthread_mutex_unlock(&g_lock);
+}
+
 static void SDLCALL picked(void *, const char *const *files, int) {
     if (!files) {
         const char *err = SDL_GetError();
@@ -1150,9 +1202,7 @@ static void SDLCALL picked(void *, const char *const *files, int) {
         return;
     }
     if (!files[0]) return;
-    pthread_mutex_lock(&g_lock);
-    g_src = files[0];
-    pthread_mutex_unlock(&g_lock);
+    select_game_folder(files[0]);
 }
 
 // ------------------------------------------------------------------ the user's own Nintendo fonts (not shipped)
@@ -1215,14 +1265,492 @@ static void remove_fonts() {
 }
 
 // ------------------------------------------------------------------ screen
+// SWMM+'s layout and look (ui_theme.h): a header with the name, a sidebar of pages - Home, Game files, Saves, Mods, the
+// settings pages (runtime/ui/menu.mm draws those, as in the in-game menu), General at the bottom - the page, and a
+// status bar.
 static ImFont *g_font_title, *g_font_menu, *g_font_small;
-enum Page { MAIN, SETTINGS, SETUP };  // SETTINGS: the in-game menu's tabs (runtime/ui/menu.mm)
-static int g_refocus = MAIN;  // back on the main page: select the item of the page we came from (controllers)
+static UiFonts g_ui;           // (g_font_small: its body, g_font_menu: its semibold, g_font_title: its bold)
+static float g_layout_u = 2;   // the layout unit of the last frame (the fonts are built for it)
+static bool g_theme_fonts;     // the fonts are ui_theme.h's (else Fira Sans: never built again for another unit)
+enum Page { MAIN, SETTINGS, SETUP };  // the page's kind: Home, a settings page (runtime/ui/menu.mm), Game files
+enum { NAV_HOME = -10, NAV_FILES = -11, NAV_GENERAL = -12 };  // the start screen's own pages (settings pages: menu.mm's ids)
+static int g_refocus = MAIN;  // (unused since the sidebar: kept for the older pages' code)
 
 // A big menu line: gold + a marker when focused / hovered (keyboard, gamepad or mouse), grey when disabled
 static bool g_menu_small;  // sub pages: buttons in the small font
-void menu_tabs_draw(float scale, ImFont *font, ImFont *font_big, bool in_game, void (*prelaunch)(float));  // menu.mm
+int menu_settings_pages(UiNavPage *out, int max);                                                    // menu.mm
+void menu_page_draw(int id, float scale, ImFont *font, ImFont *font_big, ImFont *font_semi, bool enter,  // menu.mm
+                    void (*before)(int id, float scale));
 void menu_tabs_focus(bool first_tab);
+
+// SWMM+, the mod manager: found where its installers put it (an SWMM+ folder in the data folder or beside it - a portable copy;
+// Programs\SWMM for the user; Program Files\SWMM), or SAVAGEWIND_SWMM (test). Not found: Home offers its download page.
+#define SWMM_RELEASES_URL "https://github.com/Revivedx/SWMMPlus/releases"
+static std::string swmm_find(bool now_ = false) {
+    static uint64_t next;
+    static std::string found;
+    uint64_t now = SDL_GetTicks();
+    if (now < next && !now_) return found;  // (looked again every few seconds: installed while this screen is open)
+    next = now + 3000;
+    found.clear();
+    std::vector<std::string> c;
+    if (const char *e = getenv("SAVAGEWIND_SWMM")) c.push_back(e);
+    std::string root = rt_data_root();
+    // (a portable copy beside Savage Wind's own folder: <parent>/SWMM+ next to <parent>/Savage Wind)
+    std::string parent = root.substr(0, root.find_last_of("/\\") == std::string::npos ? 0 : root.find_last_of("/\\"));
+#ifdef _WIN32
+    c.push_back(root + "/SWMM+/swmm.exe");
+    if (!parent.empty()) c.push_back(parent + "/SWMM+/swmm.exe");
+    if (const char *la = getenv("LOCALAPPDATA")) c.push_back(std::string(la) + "/Programs/SWMM/swmm.exe");
+    if (const char *pf = getenv("ProgramFiles")) c.push_back(std::string(pf) + "/SWMM/swmm.exe");
+#else
+    c.push_back(root + "/SWMM+/swmm");
+    if (!parent.empty()) c.push_back(parent + "/SWMM+/swmm");
+    if (const char *h = getenv("HOME")) c.push_back(std::string(h) + "/.local/bin/swmm");
+    c.push_back("/usr/local/bin/swmm");
+    c.push_back("/usr/bin/swmm");
+#endif
+    for (const std::string &p : c)
+        if (file_exists(p)) { found = p; break; }
+    return found;
+}
+
+// Opens SWMM+ on its own (its Launch starts Savage Wind with the mods, straight into the game: runtime/main.c
+// SWMM_LAUNCHED): a program of its own that stays when Configuration closes (platform.h plat_start_program); a portable
+// copy (its config folder beside it) keeps its settings there. True when it started.
+static bool swmm_start(const std::string &exe) {
+    std::string dir = exe.substr(0, exe.find_last_of("/\\"));
+    bool portable = is_dir(dir + "/config");
+    const char *argv[] = {exe.c_str(), portable ? "--portable" : NULL, NULL};  // (i18n-skip: an argument)
+    bool ok = plat_start_program(argv);
+    fprintf(stderr, "[launcher] %s SWMM+ (%s)\n", ok ? "started" : "couldn't start", exe.c_str());
+    return ok;
+}
+
+// Going to SWMM+ closes Configuration (only one of the two edits the settings at a time; the mods deployed there load
+// with Play here, or with SWMM+'s own Launch): a SWMM+ button asks first. g_swmm_ask: the SWMM+ to open once the player says yes.
+static std::string g_swmm_ask, g_swmm_error;
+static void swmm_question(float s) {
+    if (g_swmm_ask.empty()) return;
+    if (!ImGui::IsPopupOpen("##to_swmm")) ImGui::OpenPopup("##to_swmm");
+    float u = s * 2;
+    ImVec2 ds = ImGui::GetIO().DisplaySize;
+    ImGui::SetNextWindowPos(ImVec2(ds.x * 0.5f, ds.y * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(fminf(ds.x * 0.8f, 440 * u), 0));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(22 * u, 18 * u));
+    ImGui::PushStyleColor(ImGuiCol_PopupBg, ImGui::ColorConvertU32ToFloat4(UI_RAISED));
+    bool open = ImGui::BeginPopupModal("##to_swmm", NULL, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+                                                          ImGuiWindowFlags_NoMove | ImGuiWindowFlags_AlwaysAutoResize);
+    ImGui::PopStyleColor();
+    ImGui::PopStyleVar();
+    if (!open) return;
+    ImGui::PushFont(g_ui.semibold);
+    ImGui::SetWindowFontScale(16.0f / 14);
+    ImGui::TextUnformatted(tr("Open SWMM+?"));
+    ImGui::SetWindowFontScale(1);
+    ImGui::PopFont();
+    ImGui::Dummy(ImVec2(0, 4 * u));
+    ImGui::PushTextWrapPos(0);
+    ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(UI_TEXT_DIM), "%s",
+                       tr("Savage Wind Configuration will close and SWMM+ will open. Add or change your mods there; Play "
+                          "here loads them."));
+    if (!g_swmm_error.empty()) ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(UI_RED), "%s", g_swmm_error.c_str());
+    ImGui::PopTextWrapPos();
+    ImGui::Dummy(ImVec2(0, 10 * u));
+    const char *yes = tr("Open SWMM+"), *no = tr("Cancel");
+    float bw_yes = ImGui::CalcTextSize(yes).x + 32 * u, bw_no = ImGui::CalcTextSize(no).x + 24 * u;
+    ImGui::SetCursorPosX(ImGui::GetWindowWidth() - ImGui::GetStyle().WindowPadding.x - bw_yes - bw_no - 8 * u);
+    bool cancel = ui_button(no, UI_BTN_SECONDARY, u, NULL, ImVec2(bw_no, 32 * u));
+    ImGui::SameLine(0, 8 * u);
+    if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+    bool go = ui_button(yes, UI_BTN_PRIMARY, u, ICON_EXTERNAL, ImVec2(bw_yes, 32 * u)) || getenv("SAVAGEWIND_LAUNCHER_SWMM_GO");
+    if (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) || ImGui::IsKeyPressed(ImGuiKey_Escape, false)) cancel = true;
+    if (go && !cancel) {
+        settings_save();
+        if (swmm_start(g_swmm_ask)) {
+            fprintf(stderr, "[launcher] Configuration closes for SWMM+\n");
+            exit(0);
+        }
+        g_swmm_error = tr("SWMM+ couldn't be started.");
+    }
+    if (cancel) g_swmm_ask.clear(), g_swmm_error.clear(), ImGui::CloseCurrentPopup();
+    ImGui::EndPopup();
+}
+
+// Install SWMM+ (Home, the Mods page): a question first - SWMM+ is a program of its own, by Savage Wind's creator, and
+// mods can break the game - then SWMM+'s own installer from its latest release (install.ps1: the user's Programs\SWMM;
+// install.sh: ~/.local/share/swmm, ~/.local/bin/swmm), run hidden while a dialog waits for it. Installed, SWMM+ is set up
+// for this folder - its settings.yml names this savagewind.exe, written only when it has none - and Configuration starts
+// again, which then finds it. macOS: its download page (the installer covers Windows and Linux). SAVAGEWIND_SWMM_INSTALL
+// (test): the installer's command line instead.
+#define SWMM_LATEST "https://github.com/Revivedx/SWMMPlus/releases/latest/download/"  // (i18n-skip: a URL)
+enum { SWMM_INSTALL_NONE, SWMM_INSTALL_ASK, SWMM_INSTALL_RUNNING, SWMM_INSTALL_FAILED };
+static int g_swmm_install;
+static PlatProc g_swmm_proc;
+static uint64_t g_swmm_started;
+
+// ---- SWMM+'s mods with Play
+// SWMM+ deploys the mods turned on in it into one merged folder (switch_config: deploy_config: output in its
+// settings.yml, laid out for Savage Wind) and names them in savagewind-mods.txt there (runtime/mods.c). Its Launch
+// starts Savage Wind with that folder as SAVAGEWIND_ROMFS_OVERLAY; Play does the same, so SWMM+ is opened only to add
+// or change mods. Mods turned off in SWMM+: its list names none, and Play loads none.
+static std::string swmm_settings_path(const std::string &exe) {
+    std::string dir = exe.substr(0, exe.find_last_of("/\\"));
+    if (is_dir(dir + "/config")) return dir + "/config/settings.yml";  // (a portable copy: its settings beside it)
+#ifdef _WIN32
+    const char *ad = getenv("APPDATA");
+    return ad && *ad ? std::string(ad) + "\\SWMM\\settings.yml" : "";  // (i18n-skip: a path)
+#else
+    const char *x = getenv("XDG_CONFIG_HOME"), *h = getenv("HOME");
+    if (x && *x) return std::string(x) + "/SWMM/settings.yml";  // (i18n-skip: a path)
+    return h && *h ? std::string(h) + "/.config/SWMM/settings.yml" : "";  // (i18n-skip: a path)
+#endif
+}
+
+// switch_config: deploy_config: output in SWMM+'s settings.yml ("" when unset), in the block layout SWMM+ writes
+static std::string swmm_deploy_dir(const std::string &file) {
+    FILE *f = file.empty() ? NULL : fopen(file.c_str(), "rb");
+    if (!f) return "";
+    char line[4096];
+    int depth = 0;  // 1: inside switch_config, 2: inside its deploy_config
+    std::string out;
+    while (fgets(line, sizeof line, f)) {
+        std::string l = line;
+        while (!l.empty() && (l.back() == '\n' || l.back() == '\r')) l.pop_back();
+        size_t ind = l.find_first_not_of(' ');
+        if (ind == std::string::npos || l[ind] == '#') continue;
+        std::string key = l.substr(ind);
+        if (ind == 0) depth = key == "switch_config:" ? 1 : 0;  // (i18n-skip: a key)
+        else if (depth >= 1 && ind == 2) depth = key == "deploy_config:" ? 2 : 1;  // (i18n-skip: a key)
+        else if (depth == 2 && ind == 4 && !key.compare(0, 7, "output:")) {  // (i18n-skip: a key)
+            std::string v = key.substr(7), s;
+            v.erase(0, v.find_first_not_of(' '));
+            if (v.size() >= 2 && v[0] == '\'' && v.back() == '\'') {  // ('' is one quote)
+                for (size_t i = 1; i + 1 < v.size(); i++) {
+                    s += v[i];
+                    if (v[i] == '\'' && v[i + 1] == '\'') i++;
+                }
+                v = s;
+            } else if (v.size() >= 2 && v[0] == '"' && v.back() == '"') {  // (\\ is one backslash)
+                for (size_t i = 1; i + 1 < v.size(); i++) {
+                    if (v[i] == '\\' && i + 2 < v.size()) i++;
+                    s += v[i];
+                }
+                v = s;
+            } else if (v == "null" || v == "~")  // (i18n-skip: YAML)
+                v.clear();
+            out = v;
+            break;
+        }
+    }
+    fclose(f);
+    return out;
+}
+
+// The mods SWMM+ deployed for this game: its folder and their names (none: no SWMM+, nothing deployed, or all off)
+struct SwmmMods {
+    std::string dir;
+    std::vector<std::string> names;
+};
+static SwmmMods swmm_mods_read(const std::string &exe) {
+    SwmmMods m;
+    std::string dir = exe.empty() ? "" : swmm_deploy_dir(swmm_settings_path(exe));
+    FILE *f = dir.empty() ? NULL : fopen((dir + "/savagewind-mods.txt").c_str(), "rb");  // (i18n-skip: a file)
+    if (!f) return m;
+    char line[1024];
+    while (fgets(line, sizeof line, f)) {
+        std::string l = line;
+        while (!l.empty() && isspace((unsigned char)l.back())) l.pop_back();
+        size_t a = l.find_first_not_of(' ');
+        if (a == std::string::npos || l[a] == '#') continue;
+        l = l.substr(a);
+        size_t cut = std::min(l.find(" ("), l.find(" ["));  // (its name and version: "Linkle Mod 1.0.1 (packaged) [...]")
+        if (cut != std::string::npos) l.resize(cut);
+        m.names.push_back(l);
+    }
+    fclose(f);
+    if (!m.names.empty()) m.dir = dir;
+    return m;
+}
+static const SwmmMods &swmm_mods(void) {  // (looked at again every few seconds: changed in SWMM+ while this is open)
+    static uint64_t next;
+    static SwmmMods m;
+    uint64_t now = SDL_GetTicks();
+    if (now >= next) next = now + 5000, m = swmm_mods_read(swmm_find());
+    return m;
+}
+
+// (runtime/ui/mods_tab.mm, Configuration's Mods page) the folder SWMM+ deployed its mods to, "" when none
+extern "C" const char *launcher_swmm_mods_dir(void) { return swmm_mods().dir.c_str(); }
+
+// (runtime/main.c, before each boot) the mods SWMM+ deployed, for this run, as its Launch gives them. A run SWMM+
+// started has them already, and an overlay set by hand stays.
+extern "C" void launcher_swmm_mods_apply(void) {
+    static bool ours;  // SAVAGEWIND_ROMFS_OVERLAY was set here, at an earlier boot of this process
+    const char *cur = getenv("SAVAGEWIND_ROMFS_OVERLAY");
+    if (cur && *cur && !ours) return;
+    SwmmMods m = g_settings.swmm_mods ? swmm_mods_read(swmm_find(true)) : SwmmMods();  // (off on the Mods page: none)
+    if (m.dir.empty()) {
+        if (ours) unsetenv("SAVAGEWIND_ROMFS_OVERLAY"), ours = false;
+        return;
+    }
+    ours = setenv("SAVAGEWIND_ROMFS_OVERLAY", m.dir.c_str(), 1) == 0;
+    fprintf(stderr, "[launcher] SWMM+'s mods with this run: %d (%s)\n", (int)m.names.size(), m.dir.c_str());
+}
+
+// This Savage Wind's program, as SWMM+ is to start it (a Linux AppImage: the AppImage, not its mounted inside)
+static std::string swmm_game_exe(void) {
+    if (const char *ai = getenv("APPIMAGE"); ai && *ai) return ai;
+    char exe[4096];
+    return plat_exe_path(exe, sizeof exe) ? exe : "";
+}
+
+// SWMM+'s settings (its config folder: %APPDATA%\SWMM on Windows, $XDG_CONFIG_HOME/SWMM or ~/.config/SWMM elsewhere)
+// name this Savage Wind (savage_wind.executable; SWMM+ fills in the rest itself on its first start, from the game files
+// beside it): a new file with that alone, or, in one SWMM+ already wrote, its empty "executable: null" filled in (or the
+// section added when it has none). A Savage Wind it already names stays.
+static void swmm_setup_folder(void) {
+    std::string dir;
+#ifdef _WIN32
+    const char *ad = getenv("APPDATA");
+    if (!ad || !*ad) return;
+    dir = std::string(ad) + "\\SWMM";  // (i18n-skip: a path)
+#else
+    const char *x = getenv("XDG_CONFIG_HOME"), *h = getenv("HOME");
+    if (x && *x) dir = std::string(x) + "/SWMM";
+    else if (h && *h) dir = std::string(h) + "/.config/SWMM";
+    else return;
+#endif
+    std::string file = dir + "/settings.yml", exe = swmm_game_exe();
+    if (exe.empty()) return;
+    std::string quoted;  // (YAML single quotes: backslashes as they are, a quote doubled)
+    for (char ch : exe) quoted += ch == '\'' ? std::string("''") : std::string(1, ch);
+    static const char null_exe[] = "\n  executable: null";  // (i18n-skip: what SWMM+ writes)
+    std::string line = "  executable: '" + quoted + "'", text;  // (i18n-skip: a file)
+    if (FILE *f = fopen(file.c_str(), "rb")) {
+        char buf[4096];
+        size_t n;
+        while ((n = fread(buf, 1, sizeof buf, f)) > 0) text.append(buf, n);
+        fclose(f);
+    }
+    size_t sw = text.compare(0, 12, "savage_wind:") ? text.find("\nsavage_wind:") : 0;  // (i18n-skip: a file)
+    std::string out;
+    if (sw == std::string::npos)  // (a new file, or one without the section)
+        out = text + (text.empty() || text.back() == '\n' ? "" : "\n") + "savage_wind:\n" + line + "\n";  // (i18n-skip)
+    else {
+        size_t at = text.find(null_exe, sw), end = text.find("\n", sw + 1);  // (end: the section's name line)
+        bool ours = at != std::string::npos && at == end;  // (its first entry: "executable: null")
+        if (!ours) {
+            fprintf(stderr, "[launcher] SWMM+ settings kept (they name a Savage Wind already): %s\n", file.c_str());
+            return;
+        }
+        out = text.substr(0, at + 1) + line + text.substr(at + sizeof null_exe - 1);
+    }
+    SDL_CreateDirectory(dir.c_str());
+    FILE *f = fopen(file.c_str(), "wb");
+    if (!f) { fprintf(stderr, "[launcher] couldn't write SWMM+'s settings: %s\n", file.c_str()); return; }
+    fwrite(out.data(), 1, out.size(), f);
+    fclose(f);
+    fprintf(stderr, "[launcher] SWMM+ set up for %s (%s)\n", exe.c_str(), file.c_str());
+}
+
+static bool swmm_install_start(void) {
+#if defined(__APPLE__)
+    return false;
+#else
+    std::string log = std::string(rt_data_root()) + "/swmm-install.log";  // (i18n-skip: a file)
+    const char *test = getenv("SAVAGEWIND_SWMM_INSTALL");
+#ifdef _WIN32
+    const char *sys = getenv("SystemRoot");
+    std::string ps = std::string(sys && *sys ? sys : "C:\\Windows") + "\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";  // (i18n-skip: a path)
+    std::string cmd = test ? test : "irm '" SWMM_LATEST "install.ps1' | iex";  // (i18n-skip: a command)
+    const char *argv[] = {ps.c_str(), "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", cmd.c_str(), NULL};  // (i18n-skip)
+#else
+    std::string cmd = test ? test : "u='" SWMM_LATEST "install.sh'; if command -v curl >/dev/null 2>&1; "  // (i18n-skip)
+                                    "then curl --proto '=https' -LsSf \"$u\"; else wget -qO- \"$u\"; fi | sh";  // (i18n-skip)
+    const char *argv[] = {"/bin/sh", "-c", cmd.c_str(), NULL};  // (i18n-skip: a command)
+#endif
+    g_swmm_proc = plat_spawn(argv, log.c_str(), false);
+    g_swmm_started = SDL_GetTicks();
+    fprintf(stderr, "[launcher] SWMM+ installer %s (log: %s)\n", g_swmm_proc ? "started" : "couldn't start", log.c_str());
+    return g_swmm_proc != 0;
+#endif
+}
+
+// Done: SWMM+ set up, and Configuration again (a program of its own, as SWMM+ is: platform.h plat_start_program)
+static void swmm_install_finish(void) {
+    swmm_setup_folder();
+    settings_save();
+    std::string exe = swmm_game_exe();
+    const char *argv[] = {exe.c_str(), "--config", NULL};  // (i18n-skip: an argument)
+    if (!exe.empty() && plat_start_program(argv)) {
+        fprintf(stderr, "[launcher] SWMM+ installed: Configuration starts again\n");
+        exit(0);
+    }
+    fprintf(stderr, "[launcher] SWMM+ installed; Configuration couldn't start again\n");
+    g_swmm_install = SWMM_INSTALL_NONE;  // (SWMM+ is found now: its buttons open it)
+}
+
+static void swmm_install_dialog(float s) {
+    if (g_swmm_install == SWMM_INSTALL_NONE) return;
+    if (!ImGui::IsPopupOpen("##swmm_install")) ImGui::OpenPopup("##swmm_install");
+    float u = s * 2;
+    ImVec2 ds = ImGui::GetIO().DisplaySize;
+    ImGui::SetNextWindowPos(ImVec2(ds.x * 0.5f, ds.y * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(fminf(ds.x * 0.85f, 520 * u), 0));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(22 * u, 18 * u));
+    ImGui::PushStyleColor(ImGuiCol_PopupBg, ImGui::ColorConvertU32ToFloat4(UI_RAISED));
+    bool open = ImGui::BeginPopupModal("##swmm_install", NULL, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+                                                               ImGuiWindowFlags_NoMove | ImGuiWindowFlags_AlwaysAutoResize);
+    ImGui::PopStyleColor();
+    ImGui::PopStyleVar();
+    if (!open) return;
+    if (g_swmm_install == SWMM_INSTALL_RUNNING) {  // (the installer's end: found where it puts SWMM+, or failed)
+        int rc = plat_proc_wait(g_swmm_proc, false);
+        if (rc >= 0) {
+            fprintf(stderr, "[launcher] SWMM+ installer ended (%d)\n", rc);
+            if (rc == 0 && !swmm_find(true).empty()) swmm_install_finish();
+            else g_swmm_install = SWMM_INSTALL_FAILED;
+        }
+    }
+    const char *title = g_swmm_install == SWMM_INSTALL_ASK ? tr("Install SWMM+?")
+                      : g_swmm_install == SWMM_INSTALL_RUNNING ? tr("Installing SWMM+...") : tr("SWMM+ couldn't be installed");
+    ImGui::PushFont(g_ui.semibold);
+    ImGui::SetWindowFontScale(16.0f / 14);
+    ImGui::TextUnformatted(title);
+    ImGui::SetWindowFontScale(1);
+    ImGui::PopFont();
+    ImGui::Dummy(ImVec2(0, 4 * u));
+    ImGui::PushTextWrapPos(0);
+    ImVec4 dim = ImGui::ColorConvertU32ToFloat4(UI_TEXT_DIM);
+    bool cancel = false, go = false, page = false;
+    if (g_swmm_install == SWMM_INSTALL_ASK) {
+        ImGui::TextColored(dim, "%s", tr("SWMM+ (Savage Wind Mod Manager) is a separate program, made by Savage Wind's "
+                                         "creator. It installs BNPs and GameBanana mods, converts Wii U mods and mods made "
+                                         "for other Switch versions, and starts the game with them."));
+        ImGui::Dummy(ImVec2(0, 4 * u));
+        ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(UI_YELLOW), "%s",
+                           tr("Mods change the game: they can break it, crash it or damage your saves. Back up your saves "
+                              "first. Before you report a bug, turn your mods off: if it still happens, report it to Savage "
+                              "Wind; if a mod causes it, report it on SWMM+'s GitHub page."));
+        ImGui::Dummy(ImVec2(0, 4 * u));
+        ImGui::TextColored(dim, "%s", tr("Savage Wind Configuration will download the latest SWMM+ from its GitHub page, "
+                                         "install it for your user, set it up for this Savage Wind folder, and then open "
+                                         "again."));
+    } else if (g_swmm_install == SWMM_INSTALL_RUNNING) {
+        ImGui::TextColored(dim, "%s", tr("Downloading and installing. Savage Wind Configuration opens again when it's done."));
+        ImGui::Dummy(ImVec2(0, 8 * u));
+        float t = (float)((SDL_GetTicks() - g_swmm_started) % 1600) / 1600.0f;  // (no size known: a sweep)
+        ui_progress(t, ImGui::GetContentRegionAvail().x, u);
+    } else {
+        ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(UI_RED), "%s",
+                           tr("Check your internet connection and try again, or download SWMM+ from its page. "
+                              "swmm-install.log in the Savage Wind folder says what went wrong."));
+    }
+    ImGui::PopTextWrapPos();
+    ImGui::Dummy(ImVec2(0, 10 * u));
+    if (g_swmm_install != SWMM_INSTALL_RUNNING) {
+        bool ask = g_swmm_install == SWMM_INSTALL_ASK;
+        const char *yes = ask ? tr("Install SWMM+") : tr("Download page"), *no = tr("Cancel");
+        float bw_yes = ImGui::CalcTextSize(yes).x + 44 * u, bw_no = ImGui::CalcTextSize(no).x + 24 * u;
+        ImGui::SetCursorPosX(ImGui::GetWindowWidth() - ImGui::GetStyle().WindowPadding.x - bw_yes - bw_no - 8 * u);
+        cancel = ui_button(no, UI_BTN_SECONDARY, u, NULL, ImVec2(bw_no, 32 * u));
+        ImGui::SameLine(0, 8 * u);
+        if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+        bool b = ui_button(yes, UI_BTN_PRIMARY, u, ask ? ICON_DOWNLOAD : ICON_EXTERNAL, ImVec2(bw_yes, 32 * u)) ||
+                 (ask && getenv("SAVAGEWIND_LAUNCHER_SWMM_GO"));
+        (ask ? go : page) = b;
+        if (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) || ImGui::IsKeyPressed(ImGuiKey_Escape, false)) cancel = true;
+    }
+    if (go && !cancel) {
+        settings_save();
+        g_swmm_install = swmm_install_start() ? SWMM_INSTALL_RUNNING : SWMM_INSTALL_FAILED;
+    }
+    if (page) SDL_OpenURL(SWMM_RELEASES_URL);
+    if (cancel || page) g_swmm_install = SWMM_INSTALL_NONE, ImGui::CloseCurrentPopup();
+    ImGui::EndPopup();
+}
+
+// The Install SWMM+ buttons: the question above (macOS: SWMM+'s download page)
+static void swmm_install_ask(void) {
+#if defined(__APPLE__)
+    SDL_OpenURL(SWMM_RELEASES_URL);
+#else
+    g_swmm_install = SWMM_INSTALL_ASK;
+#endif
+}
+
+// The Mods page's card about SWMM+ (start screen only): installed - open it; not installed - not needed (mods go in the
+// mods folder by hand), but recommended: it converts Wii U mods and mods made for other Switch versions, and installs
+// BNPs
+static void swmm_card(int id, float scale) {
+    if (id != 12) return;
+    float u = scale * 2;
+    std::string exe = swmm_find();
+    ui_card_begin("##swmm", u);
+    float inner = ImGui::GetContentRegionAvail().x;
+    ImVec2 p = ImGui::GetCursorScreenPos();
+    float box = 48 * u;
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    dl->AddRectFilled(p, ImVec2(p.x + box, p.y + box), exe.empty() ? IM_COL32(0x23, 0x26, 0x2B, 255) : IM_COL32(0x0F, 0x2A, 0x3D, 255),
+                      10 * u);
+    ImGui::PushFont(g_ui.body);
+    ImGui::SetWindowFontScale(1.6f);
+    ImVec2 is = ImGui::CalcTextSize(ICON_PUZZLE);
+    dl->AddText(ImGui::GetFont(), ImGui::GetFontSize(), ImVec2(p.x + (box - is.x) * 0.5f, p.y + (box - is.y) * 0.5f),
+                exe.empty() ? UI_TEXT_DIM : UI_ACCENT_LIGHT, ICON_PUZZLE);
+    ImGui::SetWindowFontScale(1);
+    ImGui::PopFont();
+    const char *btn = exe.empty() ? tr("Install SWMM+") : tr("Open SWMM+");
+    float bw = ImGui::CalcTextSize(btn).x + ImGui::CalcTextSize(ICON_DOWNLOAD).x + 44 * u;
+    ImGui::SetCursorScreenPos(ImVec2(p.x + box + 16 * u, p.y));
+    ImGui::BeginGroup();
+    ImGui::PushFont(g_ui.semibold);
+    ImGui::SetWindowFontScale(15.0f / 14);
+    ImGui::TextUnformatted("SWMM+");  // (i18n-skip: its name)
+    ImGui::SetWindowFontScale(1);
+    ImGui::PopFont();
+    ImGui::SameLine(0, 10 * u);
+    if (exe.empty()) {
+        ui_pill(tr("Not installed"), UI_TONE_GREY, u);
+        ImGui::SameLine(0, 6 * u);
+        ui_pill(tr("Recommended"), UI_TONE_BLUE, u);
+    } else ui_pill(tr("Installed"), UI_TONE_GREEN, u);
+    ImGui::PushTextWrapPos(p.x - ImGui::GetWindowPos().x + inner - bw - 16 * u);
+    ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(UI_TEXT_DIM), "%s",
+                       tr(exe.empty() ? "Not needed: you can put mods in the mods folder by hand. Recommended, because it "
+                                        "converts Wii U mods and mods made for other Switch versions, and installs BNPs."
+                                      : "Savage Wind Mod Manager: installs BNPs and GameBanana mods, merges them, and starts "
+                                        "the game with them."));
+    ImGui::PopTextWrapPos();
+    ImGui::EndGroup();
+    float bottom = fmaxf(ImGui::GetCursorScreenPos().y, p.y + box);
+    ImGui::SetCursorScreenPos(ImVec2(p.x + inner - bw, p.y + (fmaxf(box, bottom - p.y) - 32 * u) * 0.5f));
+    if (ui_button(btn, UI_BTN_PRIMARY, u, exe.empty() ? ICON_DOWNLOAD : ICON_EXTERNAL, ImVec2(bw, 32 * u))) {
+        if (exe.empty()) swmm_install_ask();
+        else g_swmm_ask = exe;  // (asked first: Configuration closes)
+    }
+    ImGui::SetCursorScreenPos(ImVec2(p.x, bottom));
+    ImGui::Dummy(ImVec2(0, 0));
+    ui_card_end();
+    ImGui::Dummy(ImVec2(0, 8 * u));
+}
+
+// The mods turned on in the Mods page (runtime/mods.h), counted again every few seconds
+static int mods_enabled_count(void) {
+    static uint64_t next;
+    static int count;
+    uint64_t now = SDL_GetTicks();
+    if (now < next) return count;
+    next = now + 5000;
+    ModList list;
+    count = 0;
+    if (mods_scan(NULL, &list, false)) {
+        count = list.enabled_count;
+        mods_list_free(&list);
+    }
+    return count;
+}
 extern int g_tab_request_ext;
 extern "C" void menu_apply_window_requests(void *sdl_window);
 static float g_menu_gap = 0.35f;  // space under each item, in line heights
@@ -1236,14 +1764,16 @@ static bool menu_tip(float s) {
     ImGui::SetNextWindowPos(ImVec2(ds.x * 0.5f, ds.y * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
     ImGui::SetNextWindowSize(ImVec2(fminf(ds.x * 0.8f, 760 * s), 0));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(36 * s, 28 * s));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 16 * s);
-    ImGui::PushStyleColor(ImGuiCol_PopupBg, ImVec4(0.03f, 0.04f, 0.05f, 0.94f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 20 * s);
+    ImGui::PushStyleColor(ImGuiCol_PopupBg, ImGui::ColorConvertU32ToFloat4(UI_RAISED));
     bool open = ImGui::BeginPopupModal("##menutip", NULL, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
                                        ImGuiWindowFlags_NoMove | ImGuiWindowFlags_AlwaysAutoResize);
     ImGui::PopStyleColor();
     ImGui::PopStyleVar(2);
     if (open) {
-        ImGui::SetWindowFontScale(1.25f);
+        // (not the A / Enter that pressed PLAY and opened the note, on its first frame, or that key held down after it)
+        bool keys = !ImGui::IsWindowAppearing();
+        ImGui::SetWindowFontScale(1.1f);
         ImGui::PushTextWrapPos(0);
         ImGui::TextUnformatted(tr("Savage Wind's video, audio and controls settings are in the game's own Options."));
         ImGui::Spacing();
@@ -1253,9 +1783,10 @@ static bool menu_tip(float s) {
         ImGui::PopTextWrapPos();
         ImGui::Dummy(ImVec2(0, 14 * s));
         ImGui::SetCursorPosX((ImGui::GetWindowWidth() - 180 * s) * 0.5f);
+        ImGui::SetWindowFontScale(1.0f);
         ImGui::SetItemDefaultFocus();
-        if (ImGui::Button(tr("OK"), ImVec2(180 * s, 44 * s)) || ImGui::IsKeyPressed(ImGuiKey_Enter) ||
-            ImGui::IsKeyPressed(ImGuiKey_GamepadFaceDown)) {
+        if (ui_button(tr("OK"), UI_BTN_PRIMARY, s * 2, NULL, ImVec2(180 * s, 44 * s)) ||
+            (keys && (ImGui::IsKeyPressed(ImGuiKey_Enter, false) || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceDown, false)))) {
             g_settings.menu_tip_seen = true;
             settings_save();
             ImGui::CloseCurrentPopup();
@@ -1453,11 +1984,14 @@ void reveal_folder(const std::string &dir) {
 
 static SDL_Window *g_launcher_win;
 static bool g_files_deleted;  // set here: the start screen goes back to setting the game files up
+// The General page (Configuration's own): the game files' folder, the problem report, the game's own fonts, launch options
 static void prelaunch_tab(float sc) {
-    const ImVec4 gold(0.93f, 0.76f, 0.33f, 1);
-    auto heading = [&](const char *t) {
-        ImGui::PushFont(g_font_menu);
-        ImGui::TextColored(gold, "%s", tr(t));
+    auto heading = [&](const char *t) {  // (a section: its name in the semibold, a line under it)
+        ImGui::Dummy(ImVec2(0, 4 * sc));
+        ImGui::PushFont(g_ui.semibold ? g_ui.semibold : g_font_menu);
+        ImGui::SetWindowFontScale(15.0f / 14);
+        ImGui::TextUnformatted(tr(t));
+        ImGui::SetWindowFontScale(1);
         ImGui::PopFont();
         ImGui::Separator();
         ImGui::Spacing();
@@ -1558,6 +2092,18 @@ static void launcher_fonts(void) {
     io.Fonts->Clear();
     g_fonts_lang = ui_lang_generation() * 10007 + ui_dynamic_generation();
     g_font_small = g_font_menu = g_font_title = NULL;
+    {   // SWMM+'s fonts and icons (ui_theme.h), built for the layout unit
+        static const ImWchar latin[] = {0x20, 0xFF, 0x0100, 0x017F, 0x2039, 0x203A, 0x2192, 0x2192, 0x2713, 0x2713, 0x25B8, 0x25B8, 0};
+        static const ImWchar cyrillic[] = {0x20, 0xFF, 0x0100, 0x017F, 0x400, 0x4FF, 0x2039, 0x203A, 0x2192, 0x2192, 0x2713,
+                                           0x2713, 0x25B8, 0x25B8, 0};
+        if (ui_theme_fonts(io.Fonts, &g_ui, !strcmp(ui_lang(), "ru") ? cyrillic : latin, ui_font_unit(g_layout_u))) {
+            g_font_small = g_ui.body, g_font_menu = g_ui.semibold, g_font_title = g_ui.bold;
+            g_theme_fonts = true;
+            return;
+        }
+        g_ui = UiFonts();
+        g_theme_fonts = false;
+    }
     // Fira Sans (OFL, shipped: third_party/fonts/FiraSans) - a clean humanist sans, like the game's own menu text:
     // SemiBold for the title and the menu, Medium for the rest. It has Cyrillic too (Russian menus).
     char semi[1024], med[1024];
@@ -1587,11 +2133,15 @@ static void launcher_fonts(void) {
         g_font_title = add(p, 92 * (fira ? 1.6f : 1), latin);
     }
     if (!g_font_menu) g_font_small = g_font_menu = g_font_title = io.Fonts->AddFontDefault();
+    g_ui.body = g_font_small, g_ui.semibold = g_font_menu, g_ui.bold = g_font_title, g_ui.unit = 2;  // (Fira: 2x sizes)
 }
 
 extern "C" void vk_imgui_fonts_changed(void);  // (runtime/nvn/vulkan/imgui_glue.cpp)
 static void launcher_fonts_follow_language(void) {
-    if (g_fonts_lang == ui_lang_generation() * 10007 + ui_dynamic_generation()) return;
+    // (another menu language, or a window size that wants fonts built for another unit: sharp text)
+    if (g_fonts_lang == ui_lang_generation() * 10007 + ui_dynamic_generation() &&
+        (!g_theme_fonts || ui_font_unit(g_layout_u) == g_ui.unit))
+        return;
     launcher_fonts();
 #ifdef SW_METAL
     ImGui_ImplMetal_DestroyFontsTexture();  // (NewFrame makes it again)
@@ -1634,7 +2184,7 @@ extern "C" void boot_splash_open(void) {
         g_boot_font = io.Fonts->AddFontFromFileTTF(semi, 92 * 1.6f);
     if (!g_boot_font) g_boot_font = io.Fonts->AddFontDefault();
     vk_imgui_backend_init();
-    splash_load();
+    splash_load_boot();
     g_boot_t0 = SDL_GetTicksNS(), g_boot_last = 0;
     ImGui::SetCurrentContext(prev);
 }
@@ -1660,13 +2210,35 @@ extern "C" void boot_splash_draw(void *cmd, uint32_t w, uint32_t h, float alpha)
     io.FontGlobalScale = s * 0.5f;
     ImDrawList *bg = ImGui::GetBackgroundDrawList();
     splash_draw(bg, ds, (float)((now - g_boot_t0) / 1e9));
-    left_shade(bg, ds);
-    // the name where the start screen has it, gold to orange, shadowed
-    ImGui::PushFont(g_boot_font);
-    float fs = ImGui::GetFontSize();
-    ImGui::PopFont();
-    text_fx(bg, g_boot_font, fs, ImVec2(90 * s, 120 * s), IM_COL32(255, 232, 120, 255), IM_COL32(255, 138, 48, 255),
-            "Savage Wind", 3 * s);
+    // the name in its title lettering, small at the bottom right corner, over a soft shade centred on that corner
+    UiImage wm = ui_image("wordmark_boot.png");
+    if (!wm.tex) wm = ui_wordmark();
+    if (wm.tex) {
+        ImVec2 c(ds.x, ds.y);
+        float rx = ds.x * 0.55f, ry = ds.y * 0.55f;
+        const int rings = 24;
+        for (int i = rings; i > 0; i--) {  // (darkest at the corner, gone at 55 % of the window out from it)
+            float f = (float)i / rings, a = powf(1 - f, 1.6f) * 150.0f / rings * 2.2f;
+            bg->PathEllipticalArcTo(c, ImVec2(rx * f, ry * f), 0, 3.14159265f, 1.5f * 3.14159265f, 24);
+            bg->PathLineTo(c);
+            bg->PathFillConvex(IM_COL32(4, 10, 6, (int)fminf(a, 255)));
+        }
+        float w = ds.x * 0.30f, h = w * wm.h / wm.w;
+        ImVec2 p(ds.x - w - ds.x * 0.025f, ds.y - h - ds.y * 0.04f);
+        for (int i = 0; i < 6; i++) {  // (its shadow, as ui_draw_wordmark's)
+            float a = (float)i / 6 * 6.2831853f, r = h * 0.05f;
+            ImVec2 o(p.x + cosf(a) * r + h * 0.03f, p.y + sinf(a) * r + h * 0.07f);
+            bg->AddImage(wm.tex, o, ImVec2(o.x + w, o.y + h), ImVec2(0, 0), ImVec2(1, 1), IM_COL32(0, 8, 4, 46));
+        }
+        bg->AddImage(wm.tex, p, ImVec2(p.x + w, p.y + h), ImVec2(0, 0), ImVec2(1, 1), IM_COL32(252, 244, 226, 255));
+    } else {  // (no pictures: the name where the start screen had it, gold to orange)
+        left_shade(bg, ds);
+        ImGui::PushFont(g_boot_font);
+        float fs = ImGui::GetFontSize();
+        ImGui::PopFont();
+        text_fx(bg, g_boot_font, fs, ImVec2(90 * s, 120 * s), IM_COL32(255, 232, 120, 255), IM_COL32(255, 138, 48, 255),
+                "Savage Wind", 3 * s);
+    }
     if (alpha < 1) {  // (all of it at once: every vertex's alpha)
         int a = (int)(alpha * 256);
         for (ImDrawVert &v : bg->VtxBuffer) {
@@ -1685,6 +2257,7 @@ extern "C" void boot_splash_close(void) {
     ImGuiContext *prev = ImGui::GetCurrentContext();
     ImGui::SetCurrentContext(g_boot_ctx);
     splash_unload();
+    ui_wordmark_free();  // (its wordmark pictures: a later context could get this one's address)
     vk_imgui_backend_shutdown();
     ImGui::DestroyContext(g_boot_ctx);
     ImGui::SetCurrentContext(prev == g_boot_ctx ? NULL : prev);
@@ -1734,10 +2307,18 @@ extern "C" void launcher_run(const char *root, int mode) {
     g_root = root;
     saves_tab_set_game_files(root);
     g_file_size.reset(g_root);
-    g_setup_only = mode == 0;
+    g_setup_only = mode == 0 || mode == 3;  // (runtime/main.c: LAUNCHER_SETUP; LAUNCHER_SHADERS, below)
+    // Configuration and the first setup: always a window of their own size, never fullscreen (runtime/window_size.h);
+    // the game's Video settings apply on Play. (LAUNCHER_SHADERS is the game starting: its window as the game's.)
+    bool own_window = mode != 3;
+    if (own_window) winsize_config_mode(true);
     ui_window_init();
+#ifndef SW_METAL
+    { extern void ui_window_show(void); ui_window_show(); }  // (made hidden for a start straight into the game)
+#endif
     SDL_Window *win = ui_window();
     g_launcher_win = win;
+    if (own_window) winsize_apply(win);  // (a window the game made before - back here from its title screen)
     SDL_SetWindowTitle(win, g_setup_only ? "Savage Wind" : "Savage Wind Configuration");
 #ifdef SW_METAL
     CAMetalLayer *layer = (__bridge CAMetalLayer *)ui_metal_layer();
@@ -1785,9 +2366,11 @@ extern "C" void launcher_run(const char *root, int mode) {
     bool test_setup =
         getenv("SAVAGEWIND_LAUNCHER_EXTRACT") || getenv("SAVAGEWIND_SETUP_FROM") || getenv("SAVAGEWIND_LAUNCHER_SETUP");
     bool auto_setup = post_update_shipped() && !getenv("SAVAGEWIND_LAUNCHER_SHOT") && !test_setup && check_copied_files(g_root).empty() &&
-                      (post_update_pending(SAVAGEWIND_VERSION) || !status.empty()) && !post_update_failed_before(SAVAGEWIND_VERSION);
+                      (post_update_pending(SAVAGEWIND_VERSION) || !status.empty()) && !post_update_failed_before(SAVAGEWIND_VERSION) &&
+                      status != DLC_MERGED;  // (nothing to set up from: the page says why)
     if (!auto_setup) explain_status(status);
     bool play = false;
+    bool play_selected = false;  // (Play selected on the first frame; again after a "Title screen" reboot)
     bool tip_then_play = false;  // (setup mode: the game files just got ready; the first-start note, then the game)
     if (auto_setup) {
         fprintf(stderr, "[launcher] setting up this version by itself (%s)\n", status.empty() ? "new version" : status.c_str());
@@ -1798,6 +2381,19 @@ extern "C" void launcher_run(const char *root, int mode) {
         pthread_create(&t, NULL, extract_thread, NULL);
         pthread_detach(t);
     }
+#ifndef SW_METAL
+    // (runtime/main.c, LAUNCHER_SHADERS) a plain start whose shaders aren't precompiled for this GPU and driver: they
+    // are now, on the overlay (Esc / B stops it: what is done stays), then on into the game as after a setup
+    if (mode == 3 && status.empty() && !auto_setup) {
+        fprintf(stderr, "[launcher] precompiling the shaders before the game\n");
+        page = SETUP;
+        g_file_size.set_suspended(true);
+        g_busy = true;
+        pthread_t t;
+        pthread_create(&t, NULL, precompile_thread, NULL);
+        pthread_detach(t);
+    }
+#endif
     if (g_settings.check_updates && !getenv("SAVAGEWIND_NO_UPDATE_CHECK")) update_check_start();
     // SAVAGEWIND_LAUNCHER_SHOT=<frame>[:<page>] (test): save build/launcher.png at that frame and exit; page: settings[:<tab>] / askdelete / setup
     long shot_at = getenv("SAVAGEWIND_LAUNCHER_SHOT") ? atol(getenv("SAVAGEWIND_LAUNCHER_SHOT")) : 0, frame = 0;
@@ -1807,6 +2403,10 @@ extern "C" void launcher_run(const char *root, int mode) {
 #endif
         const char *pg = strchr(getenv("SAVAGEWIND_LAUNCHER_SHOT"), ':');
         if (pg && (!strncmp(pg + 1, "settings", 8) || !strcmp(pg + 1, "askdelete"))) page = SETTINGS, menu_tabs_focus(true);
+        if (pg && !strcmp(pg + 1, "askdelete")) g_tab_request_ext = NAV_GENERAL;  // (the General page has its button)
+        if (pg && !strcmp(pg + 1, "general")) page = SETTINGS, g_tab_request_ext = NAV_GENERAL;
+        if (pg && !strcmp(pg + 1, "swmmask")) g_swmm_ask = swmm_find().empty() ? "(test)" : swmm_find();  // (SWMM+'s question)
+        if (pg && !strcmp(pg + 1, "swmminstall") && swmm_find().empty()) g_swmm_install = SWMM_INSTALL_ASK;  // (its question)
         if (pg && !strcmp(pg + 1, "setup")) page = SETUP;
         if (pg && !strncmp(pg + 1, "fail", 4)) {  // (the failure messages; FAIL_NOT_YET: a version not supported yet)
             for (const GameVersion &v : VERSIONS)
@@ -1924,90 +2524,259 @@ extern "C" void launcher_run(const char *root, int mode) {
             ImGui::NewFrame();
 
             ImVec2 ds = io.DisplaySize;
-            float s = ds.y / 720.0f;  // layout scale (fonts are built for ~2x)
-            ImGui::GetIO().FontGlobalScale = s * 0.5f;
-            ImDrawList *bg = ImGui::GetBackgroundDrawList();
-            splash_draw(bg, ds, (float)ImGui::GetTime());  // (the player's picture, or Savage Wind's own art)
-            {  // a shadow banner fading in from the left behind the menu, and one from the right behind the version
-                left_shade(bg, ds);
-                float y0 = ds.y - 190 * s, y1 = ds.y - 135 * s, y2 = ds.y - 40 * s, y3 = ds.y, x0r = ds.x * 0.5f;
-                ImU32 c0 = IM_COL32(6, 10, 34, 0), c1 = IM_COL32(6, 10, 34, 235);
-                bg->AddRectFilledMultiColor(ImVec2(x0r, y0), ImVec2(ds.x, y1), c0, c0, c1, c0);  // (feathered top)
-                bg->AddRectFilledMultiColor(ImVec2(x0r, y1), ImVec2(ds.x, y2), c0, c1, c1, c0);
-                bg->AddRectFilledMultiColor(ImVec2(x0r, y2), ImVec2(ds.x, y3), c0, c1, c0, c0);  // (feathered bottom)
+            // SWMM+'s layout (ui_theme.h): a header with the name, the sidebar, the page, a status bar. u: the layout
+            // unit; s / sc: the pages' own scale (1 at 1080 p, as the in-game menu's)
+            float u = ui_unit(ds.x, ds.y, g_settings.menu_text_size);
+            float s = u * 0.5f, sc = s;
+            g_layout_u = u;
+            ImGui::GetIO().FontGlobalScale = u / g_ui.unit;
+            {
+                static float style_u = -1;
+                if (fabsf(style_u - u) > 0.01f) ui_theme_style(ImGui::GetStyle(), u), style_u = u;
             }
-
-            ImGui::SetNextWindowPos(ImVec2(0, 0));
-            ImGui::SetNextWindowSize(ds);
-            ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0, 0, 0, 0));
-            ImGui::Begin("##launcher", NULL, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
-                                                 ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus);
-            ImGui::SetScrollX(0);  // (the start screen never scrolls; a stray nav move mustn't shift it)
-            ImGui::SetScrollY(0);
-            float x0 = 90 * s;
-            ImGui::SetCursorPos(ImVec2(x0, 120 * s));
-            ImGui::PushFont(g_font_title);
-            if (page == MAIN) {  // gold to orange, shadowed (not behind the Settings / Game Files windows)
-                const char *t = "Savage Wind";
-                ImVec2 p = ImGui::GetCursorScreenPos();
-                text_fx(ImGui::GetWindowDrawList(), ImGui::GetFont(), ImGui::GetFontSize(), p, IM_COL32(255, 232, 120, 255),
-                        IM_COL32(255, 138, 48, 255), t, 3 * s);
-                ImVec2 ts = ImGui::CalcTextSize(t);
-                ImGui::Dummy(ts);
-                // and what this screen is, under it in the ice blue of the art
-                std::string sub = tr_upper(tr("Configuration"));
-                ImGui::PushFont(g_font_small);
-                ImVec2 sp(p.x + 6 * s, p.y + ts.y * 0.98f);
-                text_fx(ImGui::GetWindowDrawList(), ImGui::GetFont(), ImGui::GetFontSize() * 1.15f, sp,
-                        IM_COL32(205, 232, 250, 255), IM_COL32(150, 200, 235, 255), sub.c_str(), 1.5f * s);
-                ImGui::PopFont();
-            }
-            ImGui::PopFont();
-            ImGui::SetCursorPos(ImVec2(x0, 285 * s));
             // typing in a text field / the on-screen keyboard (osk.h): B / Esc are for it, not "back" (from the frame
             // before too, so the Esc that ends the typing doesn't also leave the page)
             static bool typed_before;
             bool typing = typed_before || ui_text_busy();
-
             char update_version[64], update_msg[512];
             UpdateState update_st = update_check_state(update_version, sizeof update_version, update_msg, sizeof update_msg);
             static std::string update_error;  // (starting SW Update failed)
-            if (page == MAIN) {
-                {  // the four items close together, the block anchored where QUIT always was (the gap to the status
-                   // line stays)
-                    ImGui::PushFont(g_font_menu);
-                    float h = ImGui::CalcTextSize("A").y, sp = ImGui::GetStyle().ItemSpacing.y;
-                    ImGui::PopFont();
-                    auto pitch = [&](float gap) { return h + 6 + gap * h + (gap >= 0 ? 2 : 1) * sp; };
-                    g_menu_gap = -0.18f;
-                    ImGui::SetCursorPosY(285 * s + 3 * pitch(0.35f) - 3 * pitch(g_menu_gap) - (update_st == UPDATE_AVAILABLE ? pitch(g_menu_gap) : 0));
+
+            // the page: the sidebar's choice, or where the start screen's own logic sent it (page: MAIN, SETUP,
+            // SETTINGS - set up, a test hook, a finished job)
+            static int nav = NAV_HOME;
+            static Page last_page = (Page)-1;
+            int focus_side = -999;
+            bool enter = false;
+            if (page != last_page) {
+                if (page == MAIN) nav = NAV_HOME;
+                else if (page == SETUP) nav = NAV_FILES;
+                else if (nav == NAV_HOME || nav == NAV_FILES || nav == NAV_GENERAL) {
+                    // (settings: SAVAGEWIND_LAUNCHER_SHOT=:settings:<id>, :general)
+                    nav = g_tab_request_ext >= 0 || g_tab_request_ext == NAV_GENERAL ? g_tab_request_ext : 8;
+                    g_tab_request_ext = -1;
                 }
+                if (last_page != (Page)-1 || page != MAIN) focus_side = nav;
+                last_page = page;
+            }
+            if (busy || (g_setup_only && nav == NAV_HOME)) nav = NAV_FILES;  // (working: its progress is on Game files)
+            // (working, or the Saves page importing / backing up: the other pages wait)
+            bool lock = busy || (nav == 3 && saves_tab_busy());
+            UiNavPage pages[16];
+            int npages = 0;
+            pages[npages++] = {NAV_HOME, "Home", ICON_HOUSE, 0, !lock && !g_setup_only};
+            pages[npages++] = {NAV_FILES, "Game files", ICON_FOLDER, 0, !lock || nav == NAV_FILES};
+            pages[npages++] = {3, "Saves", ICON_FLOPPY, 0, !lock || nav == 3};
+            pages[npages++] = {12, "Mods", ICON_PUZZLE, 0, !lock};
+            int nset = menu_settings_pages(pages + npages, 8);
+            for (int i = 0; i < nset; i++) pages[npages + i].on = !lock;
+            npages += nset;
+            pages[npages++] = {NAV_GENERAL, "General", ICON_SLIDERS, 2, !lock};
+            bool popup_open = ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId);
+            if (!popup_open && !typing && !lock) {  // L / R (Q / E): the page before / after
+                int step = ImGui::IsKeyPressed(ImGuiKey_GamepadR1, false) || ImGui::IsKeyPressed(ImGuiKey_E, false) ? 1
+                         : ImGui::IsKeyPressed(ImGuiKey_GamepadL1, false) || ImGui::IsKeyPressed(ImGuiKey_Q, false) ? -1 : 0;
+                if (step) nav = ui_sidebar_step(pages, npages, nav, step), focus_side = nav;
+            }
+            static int focus_side_req = -999;
+            if (focus_side_req != -999) focus_side = focus_side_req, focus_side_req = -999;
+
+            ImGui::SetNextWindowPos(ImVec2(0, 0));
+            ImGui::SetNextWindowSize(ds);
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0);
+            ImGui::Begin("##launcher", NULL, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
+                                                 ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoScrollWithMouse);
+            ImGui::PopStyleVar(2);
+            ImGui::SetScrollX(0);  // (the frame never scrolls; a stray nav move mustn't shift it)
+            ImGui::SetScrollY(0);
+            ImDrawList *wdl = ImGui::GetWindowDrawList();
+            float head = 42 * u, foot = 28 * u, side = 188 * u, body_h = ds.y - head - foot;
+            wdl->AddRectFilled(ImVec2(0, 0), ImVec2(ds.x, head), UI_BASE);
+            wdl->AddRectFilled(ImVec2(0, ds.y - foot), ds, UI_BASE);
+            {   // header: the wordmark, "Configuration", Help and Quit on the right
+                float wm_h = 20 * u, x = 16 * u;
+                ImVec2 wm_at(x, (head - wm_h) * 0.5f);
+                ui_draw_wordmark(wdl, wm_at, wm_h, false);
+                // "Configuration" in the same lettering, smaller and dimmer (the program's name: not translated);
+                // the first setup's "Set up" in text
+                if (g_setup_only) ui_draw_subtitle(wdl, wm_at, wm_h, "", tr("Set up"), UI_MUTED);
+                else ui_draw_subtitle(wdl, wm_at, wm_h, "wordmark_config.png", "Configuration", UI_TEXT_DIM);  // (i18n-skip)
+                float bx = 46 * u;
+                ImGui::SetCursorScreenPos(ImVec2(ds.x - bx - 110 * u, (head - 30 * u) * 0.5f));
+                if (ui_button(tr("Help"), UI_BTN_SECONDARY, u, ICON_QUESTION, ImVec2(100 * u, 30 * u)))
+                    SDL_OpenURL("https://github.com/Revivedx/SavageWindRecomp/blob/main/docs/FAQ.md");  // (i18n-skip)
+                ImGui::SetCursorScreenPos(ImVec2(ds.x - bx, 0));
+                ImGui::PushStyleColor(ImGuiCol_NavCursor, ImVec4(0, 0, 0, 0));
+                bool quit = ImGui::InvisibleButton("##quit", ImVec2(bx, head), ImGuiButtonFlags_EnableNav);
+                ImGui::PopStyleColor();
+                bool hot = ImGui::IsItemHovered() || (ImGui::IsItemFocused() && ImGui::GetCurrentContext()->NavCursorVisible);
+                ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
+                if (hot) wdl->AddRectFilled(a, b, IM_COL32(0xC4, 0x2B, 0x1C, 255));
+                ImVec2 xs = ImGui::CalcTextSize(ICON_XMARK);
+                wdl->AddText(ImVec2((a.x + b.x - xs.x) * 0.5f, (a.y + b.y - xs.y) * 0.5f), UI_TEXT, ICON_XMARK);
+                if (quit && !busy) {
+                    settings_save();
+                    exit(0);
+                }
+            }
+            // the sidebar
+            ImGui::SetCursorScreenPos(ImVec2(0, head));
+            bool side_focus = false, activated = false;
+            int side_pick = ui_sidebar(pages, npages, nav, u, ImVec2(side, body_h), &side_focus, focus_side, &activated);
+            if (activated && ImGui::GetCurrentContext()->NavCursorVisible) enter = true;
+            if (side_pick != nav) {
+                if (nav == NAV_FILES) g_confirm_delete = g_confirm_setup = false;
+                if (nav >= 0 && side_pick < 0) bind_capture_cancel(), settings_save();  // (leaving a settings page)
+                nav = side_pick;
+                if (nav == NAV_FILES) refresh_dlc();
+            }
+            page = nav == NAV_HOME ? MAIN : nav == NAV_FILES ? SETUP : SETTINGS;
+            last_page = page;
+            // the page
+            ImGui::SetCursorScreenPos(ImVec2(side, head));
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(32 * u, 24 * u));
+            ImGui::BeginChild("##content", ImVec2(ds.x - side, body_h), ImGuiChildFlags_AlwaysUseWindowPadding,
+                              ImGuiWindowFlags_NavFlattened);
+            ImGui::PopStyleVar();
+            bool content_focus = false;
+            if (nav == NAV_HOME) {
+                // ---- Home: the banner, Play, and how things stand
+                float cw = ImGui::GetContentRegionAvail().x, w = fminf(cw, 760 * u), x0 = ImGui::GetCursorPosX() + (cw - w) * 0.5f;
                 ImGui::SetCursorPosX(x0);
-                static bool focused_once;
-                if (!focused_once) { ImGui::SetKeyboardFocusHere(); focused_once = true; }
-                ImVec2 play_at = ImGui::GetCursorScreenPos();
-                bool pressed = menu_item("PLAY", status.empty());
-                if (status.empty()) {  // PLAY twinkles now and then while the game is ready
-                    ImGui::PushFont(g_font_menu);
-                    float w = ImGui::CalcTextSize(tr("PLAY")).x, h = ImGui::CalcTextSize(tr("PLAY")).y;
-                    ImGui::PopFont();
-                    float t = (float)ImGui::GetTime(), ph = fmodf(t, 3.6f), ph2 = fmodf(t + 0.45f, 3.6f);
-                    float k1 = ph < 0.9f ? sinf(ph / 0.9f * 3.14159265f) : 0, k2 = ph2 < 0.7f ? sinf(ph2 / 0.7f * 3.14159265f) : 0;
-                    ImDrawList *dl = ImGui::GetWindowDrawList();
-                    sparkle(dl, ImVec2(play_at.x + w + h * 0.05f, play_at.y + h * 0.22f), h * 0.2f, k1, t * 0.6f);
-                    sparkle(dl, ImVec2(play_at.x + w - h * 0.32f, play_at.y + h * 0.08f), h * 0.11f, k2 * 0.8f, -t * 0.8f);
-                }
-                // first PLAY ever: how to reach our menu, then the game
-                if (pressed) {
+                ImVec2 hp = ImGui::GetCursorScreenPos();
+                float hh = fminf(w * 250 / 720, body_h * 0.3f);
+                splash_draw_rect(ImGui::GetWindowDrawList(), hp, ImVec2(w, hh), (float)ImGui::GetTime(), 10 * u, UI_PANEL);
+                float wmh = fminf(hh * 0.27f, 68 * u);
+                ui_draw_wordmark(ImGui::GetWindowDrawList(), ImVec2(hp.x + 22 * u, hp.y + hh - wmh - 16 * u), wmh, true);
+                ImGui::Dummy(ImVec2(w, hh));
+                ImGui::Dummy(ImVec2(0, 8 * u));
+                ImGui::SetCursorPosX(x0);
+                bool ready = status.empty() && !busy;
+                ImGui::PushFont(g_ui.semibold);
+                ImGui::SetWindowFontScale(16.0f / 14);
+                // (the controller's cursor starts on Play. SetKeyboardFocusHere alone leaves ImGui's nav cursor hidden, and
+                //  A / Enter press the selected item only while it shows: Play looked selected but did nothing until a
+                //  d-pad move)
+                if (!play_selected) ImGui::SetKeyboardFocusHere(), ImGui::SetNavCursorVisible(true), play_selected = true;
+                bool pressed = ui_button(tr("Play"), UI_BTN_PRIMARY, u, ICON_PLAY, ImVec2(0, 44 * u), ready);
+                ImGui::SetWindowFontScale(1);
+                ImGui::PopFont();
+                if (pressed) {  // first PLAY ever: how to reach our menu, then the game
                     if (!g_settings.menu_tip_seen) ImGui::OpenPopup("##menutip");
                     else play = true;
                 }
+                ImGui::SameLine(0, 10 * u);
+                std::string swmm = swmm_find();
+                if (!swmm.empty()) {
+                    if (ui_button(tr("Open SWMM+"), UI_BTN_SECONDARY, u, ICON_PUZZLE, ImVec2(0, 44 * u)))
+                        g_swmm_ask = swmm;  // (asked first: Configuration closes)
+                } else if (ui_button(tr("Install SWMM+"), UI_BTN_SECONDARY, u, ICON_DOWNLOAD, ImVec2(0, 44 * u)))
+                    swmm_install_ask();
+                {
+                    const char *note = tr("F1 in game opens the same settings");
+                    float nw = ImGui::CalcTextSize(note).x * 12 / 14;
+                    ImGui::SameLine(x0 + w - nw);
+                    ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 14 * u);
+                    ImGui::SetWindowFontScale(12.0f / 14);
+                    ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(UI_MUTED), "%s", note);
+                    ImGui::SetWindowFontScale(1);
+                }
+                ImGui::Dummy(ImVec2(0, 10 * u));
+                ImGui::SetCursorPosX(x0);
+                ui_card_begin("##state", u, w);
+                float inner = ImGui::GetContentRegionAvail().x;
+                int rows = 0;
+                // one line: an icon in its colour, the title and a muted line under it, a button on the right
+                auto state_row = [&](const char *icon, ImU32 icol, const std::string &title, const std::string &sub,
+                                     const char *btn, int kind) -> bool {
+                    if (rows++) {
+                        ImVec2 p = ImGui::GetCursorScreenPos();
+                        ImGui::GetWindowDrawList()->AddLine(ImVec2(p.x - 16 * u, p.y), ImVec2(p.x + inner + 16 * u, p.y), UI_BORDER);
+                        ImGui::Dummy(ImVec2(0, 8 * u));
+                    }
+                    ImGui::PushID(title.c_str());
+                    float y0 = ImGui::GetCursorPosY();
+                    ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(icol), "%s", icon);
+                    ImGui::SameLine(0, 12 * u);
+                    float bw = btn ? ImGui::CalcTextSize(tr(btn)).x + 30 * u : 0;
+                    ImGui::BeginGroup();
+                    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + inner - bw - 60 * u);
+                    ImGui::TextUnformatted(title.c_str());
+                    if (!sub.empty()) {
+                        ImGui::SetWindowFontScale(12.0f / 14);
+                        ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(UI_MUTED), "%s", sub.c_str());
+                        ImGui::SetWindowFontScale(1);
+                    }
+                    ImGui::PopTextWrapPos();
+                    ImGui::EndGroup();
+                    bool hit = false;
+                    if (btn) {
+                        float y1 = ImGui::GetCursorPosY();
+                        ImGui::SameLine(ImGui::GetStyle().WindowPadding.x + inner - bw);
+                        ImGui::SetCursorPosY(y0 + fmaxf(0, (y1 - y0 - 30 * u - ImGui::GetStyle().ItemSpacing.y) * 0.5f));
+                        hit = ui_button(tr(btn), kind, u, NULL, ImVec2(bw, 30 * u), !busy);
+                        ImGui::SetCursorPosY(fmaxf(y1, ImGui::GetCursorPosY()));
+                    }
+                    ImGui::Dummy(ImVec2(0, 2 * u));
+                    ImGui::PopID();
+                    return hit;
+                };
+                static std::string main_id;  // (read again after the game files change)
+                if (!status.empty()) main_id.clear();
+                if (status.empty()) {
+                    if (main_id.empty() && !nso_build_id(g_root + "/exefs/main", &main_id)) main_id = "?";
+                    std::string sub = trv("Version %s, with the update applied") + "  ·  " + main_id.substr(0, 16);
+                    if (gamelib_compat()) sub += std::string("  ·  ") + tr("compatible mode (slower)");
+                    if (state_row(ICON_CHECK, UI_GREEN, tr("Game files ready."), sub, "Game files", UI_BTN_SECONDARY))
+                        nav = NAV_FILES, refresh_dlc();
+                } else if (state_row(ICON_WARNING, UI_YELLOW, trv(busy ? "Setting up the game files..." : status),
+                                     tr("Set up the game files to play."), "Set up", UI_BTN_PRIMARY))
+                    nav = NAV_FILES, refresh_dlc();
+                if (status.empty()) {
+                    if (dlc_st.state == RT_DLC_READY) {
+                        char t[96];
+                        snprintf(t, sizeof t, tr("DLC %s ready."), dlc_st.version);
+                        state_row(ICON_CHECK, UI_GREEN, t, tr("The Master Trials and The Champions' Ballad"), NULL, 0);
+                    } else if (dlc_st.state == RT_DLC_NONE) {
+                        if (state_row(ICON_INFO, UI_MUTED, tr("No downloadable content is set up."), "", "Game files", UI_BTN_SECONDARY))
+                            nav = NAV_FILES, refresh_dlc();
+                    } else if (state_row(ICON_WARNING, UI_YELLOW, tr("DLC not ready: see Game Files."), "", "Game files", UI_BTN_SECONDARY))
+                        nav = NAV_FILES, refresh_dlc();
+#ifndef SW_METAL
+                    {   // the precompiled shaders were made by another translator or driver: the first play stutters until
+                        // they are made again. Asked once.
+                        static int stale = -1;
+                        if (stale < 0) {
+                            stale = shader_precompile_available() && shader_precompile_status(NULL, NULL, 0) == 2;
+                            if (stale) fprintf(stderr, "[launcher] the precompiled shaders are out of date (a new driver or translator)\n");
+                        }
+                        if (stale && state_row(ICON_WARNING, UI_YELLOW, tr("Shaders out of date"),
+                                               tr("This only needs to be done once and may take a while."), "Precompile",
+                                               UI_BTN_SECONDARY)) {
+                            stale = 0;
+                            nav = NAV_FILES;
+                            g_file_size.set_suspended(true);
+                            pthread_mutex_lock(&g_lock);
+                            g_busy = true;
+                            pthread_mutex_unlock(&g_lock);
+                            g_pc_only = true;
+                            pthread_t t;
+                            pthread_create(&t, NULL, precompile_thread, NULL);
+                            pthread_detach(t);
+                        }
+                    }
+#endif
+                }
                 if (update_st == UPDATE_AVAILABLE) {  // one click: SW Update takes over and this window goes away
-                    ImGui::SetCursorPosX(x0);
-                    if (menu_item("UPDATE", !busy) || (!busy && getenv("SAVAGEWIND_LAUNCHER_AUTOUPDATE"))) {  // (test: at once)
+                    char t[160];
+                    snprintf(t, sizeof t, tr("Version %s is available."), update_version);
+                    if (state_row(ICON_UPDATE, UI_BLUE, t, tr("Downloads, then sets up the new version by itself"), "Update",
+                                  UI_BTN_PRIMARY) ||
+                        (!busy && getenv("SAVAGEWIND_LAUNCHER_AUTOUPDATE"))) {  // (test: at once)
                         settings_save();
                         if (update_applies_here()) {
-                            page = SETUP;
+                            nav = NAV_FILES, page = SETUP;
                             set_job("");
                             g_file_size.set_suspended(true);
                             pthread_mutex_lock(&g_lock);
@@ -2019,116 +2788,56 @@ extern "C" void launcher_run(const char *root, int mode) {
                         } else if (update_apply_start()) exit(0);
                         else update_error = tr("SW Update could not be started. An antivirus may have removed it.");
                     }
+                } else if (update_st == UPDATE_ERROR || !update_error.empty()) {
+                    state_row(ICON_INFO, UI_MUTED, tr("Couldn't check for updates:"), update_error.empty() ? update_msg : update_error, NULL, 0);
                 }
-                ImGui::SetCursorPosX(x0);
-                if (g_refocus == SETTINGS) ImGui::SetKeyboardFocusHere(), g_refocus = MAIN;  // (back from Settings: it
-                if (menu_item("SETTINGS", true)) {                                             //  stays selected)
-                    static bool opened;
-                    menu_tabs_focus(!opened);  // (first time this session: Prelaunch; later: the selected tab)
-                    opened = true;
-                    page = SETTINGS;
+                {   // (the Mods page's, and what SWMM+ deployed: Play loads both)
+                    static const SwmmMods none;
+                    const SwmmMods &sm = g_settings.swmm_mods ? swmm_mods() : none;
+                    int on = mods_enabled_count() + (int)sm.names.size();
+                    char t[96];
+                    if (on) snprintf(t, sizeof t, tr(on == 1 ? "1 mod on" : "%d mods on"), on);
+                    std::string sub = tr("Mods from the Mods page, or BNPs through SWMM+");
+                    if (!sm.names.empty()) {
+                        std::string names;
+                        for (size_t i = 0; i < sm.names.size() && i < 3; i++) names += (i ? ", " : "") + sm.names[i];
+                        if (sm.names.size() > 3) names += " +" + std::to_string(sm.names.size() - 3);
+                        char b[600];
+                        snprintf(b, sizeof b, tr("From SWMM+: %s. Play loads them."), names.c_str());
+                        sub = b;
+                    }
+                    if (state_row(ICON_PUZZLE, UI_TEXT_DIM, on ? t : tr("No mods on"), sub.c_str(), "Mods", UI_BTN_SECONDARY))
+                        nav = 12;
                 }
-                ImGui::SetCursorPosX(x0);  // (set up, set up again, delete: the game files page)
-                if (g_refocus == SETUP) ImGui::SetKeyboardFocusHere(), g_refocus = MAIN;
-                if (menu_item(status.empty() ? "GAME FILES" : "SET UP GAME FILES", !busy)) refresh_dlc(), page = SETUP;
-                ImGui::SetCursorPosX(x0);
-                if (menu_item("QUIT", true)) exit(0);
-                g_menu_gap = 0.35f;
-            } else if (page == SETTINGS) {
-                // the in-game menu's tabs (runtime/ui/menu.mm), in a window like the in-game one; tabs that need a
-                // loaded game say so
-                float sc = ds.y / 1080.0f, w = fminf(ds.x * 0.9f, 1500 * sc), h = ds.y - 2 * 18 * sc;  // (all the height: a slim margin)
-                ImGui::GetWindowDrawList()->AddRectFilled(ImGui::GetWindowPos(), ImVec2(ImGui::GetWindowPos().x + ds.x,
-                                                          ImGui::GetWindowPos().y + ds.y), IM_COL32(0, 0, 0, 110));
-                ImVec2 wp = ImGui::GetWindowPos();
-                ImGui::SetCursorScreenPos(ImVec2(wp.x + (ds.x - w) * 0.5f, wp.y + (ds.y - h) * 0.5f));
-                ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.06f, 0.09f, 0.08f, 0.96f));
-                ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 14 * sc);
-                ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(28 * sc, 24 * sc));
-                ImGui::BeginChild("##settings", ImVec2(w, h), ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_NavFlattened);
-                ImGui::PopStyleVar(2);
-                ImGui::PopStyleColor();
-                ImGui::PushFont(g_font_small);
-                ImGui::PushFont(g_font_menu);
-                ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), "%s", tr("Settings"));
-                ImGui::PopFont();
-                bool back;
-                {  // close: a drawn X in the corner (B / Esc too)
-                    float bx = 44 * sc;
-                    ImGui::SameLine(ImGui::GetWindowWidth() - ImGui::GetStyle().WindowPadding.x - bx);
-                    ImVec2 p = ImGui::GetCursorScreenPos();
-                    ImGui::PushStyleColor(ImGuiCol_NavCursor, ImVec4(0, 0, 0, 0));
-                    back = ImGui::InvisibleButton("##close", ImVec2(bx, bx), ImGuiButtonFlags_EnableNav);
-                    ImGui::PopStyleColor();
-                    bool hot = ImGui::IsItemHovered() || ImGui::IsItemFocused();
-                    ImU32 col = hot ? IM_COL32(236, 194, 84, 255) : IM_COL32(220, 216, 205, 255);
-                    float m = bx * 0.3f, t = (hot ? 3.0f : 2.4f) * sc * 1.5f;
-                    ImDrawList *dl = ImGui::GetWindowDrawList();
-                    if (hot) dl->AddRectFilled(p, ImVec2(p.x + bx, p.y + bx), IM_COL32(255, 255, 255, 20), 8 * sc);
-                    dl->AddLine(ImVec2(p.x + m, p.y + m), ImVec2(p.x + bx - m, p.y + bx - m), col, t);
-                    dl->AddLine(ImVec2(p.x + bx - m, p.y + m), ImVec2(p.x + m, p.y + bx - m), col, t);
+                {   // Cheats: the developer launch option (SAVAGEWIND_DEV, as starting with -dev; launch_flags_ui.mm), so
+                    // the console's cheats and the Cheats and Teleport tabs of the Savage Wind menu, from the next Play
+                    bool cheats = launch_flags_dev();
+                    if (state_row(ICON_MAGIC, cheats ? UI_ACCENT_LIGHT : UI_TEXT_DIM, tr(cheats ? "Cheats on" : "Cheats off"),
+                                  tr("The console's cheats (give, tp, time, bloodmoon) and the Cheats and Teleport tabs of "
+                                     "the F1 menu, from the next Play. What they change is saved with your game."),
+                                  cheats ? "Disable cheats" : "Enable cheats", cheats ? UI_BTN_SECONDARY : UI_BTN_PRIMARY))
+                        launch_flags_set_dev(!cheats);
                 }
-                bool popup = ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId);  // (before the pages run, like the menu)
-                menu_tabs_draw(sc, g_font_small, g_font_menu, false, prelaunch_tab);
-                int cap_dev;
-                bind_capture_active(&cap_dev, NULL, NULL);
-                if (!popup && !typing && cap_dev < 0 && ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) &&
-                    (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) || ImGui::IsKeyPressed(ImGuiKey_Escape, false)))
-                    back = true;
-                ImGui::PopFont();
-                ImGui::EndChild();
-                if (back && !saves_tab_busy()) {  // (an import or a backup is running, or waiting for the player's yes)
-                    bind_capture_cancel();
-                    settings_save();
-                    page = MAIN, g_refocus = SETTINGS;
-                }
+                ui_card_end();
+                content_focus = ImGui::IsWindowFocused(ImGuiFocusedFlags_ChildWindows);
+            } else if (nav == NAV_GENERAL) {
+                ui_page_title(tr("General"), tr("The problem report, the game's own fonts and launch options"), u, g_ui);
+                prelaunch_tab(sc);
+                content_focus = ImGui::IsWindowFocused(ImGuiFocusedFlags_ChildWindows);
+            } else if (nav >= 0) {
+                menu_page_draw(nav, sc, g_ui.body, g_ui.bold, g_ui.semibold, enter, swmm_card);
+                content_focus = ImGui::IsWindowFocused(ImGuiFocusedFlags_ChildWindows);
             } else {
-                // SETUP: the game files, in a window like Settings (option rows: runtime/ui/option_rows.h) - choose the
-                // folder with the game files, set up; once set up, delete or set up again. Each row's explanation on
-                // the right. A card on the left: the background shows beside it. The first start's is the welcome.
-                float sc = ds.y / 1080.0f, w = fminf(ds.x * 0.66f, 1320 * sc), h = fminf(ds.y - 2 * 18 * sc, 820 * sc);
-                ImGui::GetWindowDrawList()->AddRectFilled(ImGui::GetWindowPos(), ImVec2(ImGui::GetWindowPos().x + ds.x,
-                                                          ImGui::GetWindowPos().y + ds.y), IM_COL32(0, 0, 0, 50));
-                ImVec2 wp = ImGui::GetWindowPos();
-                ImGui::SetCursorScreenPos(ImVec2(wp.x + fmaxf(18 * sc, fminf(ds.x * 0.05f, x0)), wp.y + (ds.y - h) * 0.5f));
-                ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.05f, 0.08f, 0.10f, 0.93f));
-                ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 14 * sc);
-                ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(28 * sc, 24 * sc));
-                ImGui::BeginChild("##setup", ImVec2(w, h), ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_NavFlattened);
-                ImGui::PopStyleVar(2);
-                ImGui::PopStyleColor();
+                // ---- Game files: choose the folder with the game files, set up; once set up, delete or set up
+                // again. The first start's is the welcome.
                 bool welcome = g_setup_only && status == "No game files";
-                ImGui::PushFont(g_font_small);
-                ImGui::PushFont(g_font_menu);
-                ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), "%s", tr(welcome ? "Welcome to Savage Wind" : "Game Files"));
-                ImGui::PopFont();
+                ui_page_title(tr(welcome ? "Welcome to Savage Wind" : "Game files"),
+                              welcome && !busy ? trv("Savage Wind needs your own copy of the game, version %s. Choose the folder "
+                                                     "with its extracted files and set them up: the game starts when it's done.")
+                                                     .c_str()
+                                               : tr("Savage Wind's own copy of the game, made once from your dump"),
+                              u, g_ui);
                 bool back = false;
-                if (!busy) {  // close: the drawn X in the corner, as Settings (B / Esc too; setup mode: the X quits)
-                    float bx = 44 * sc;
-                    ImGui::SameLine(ImGui::GetWindowWidth() - ImGui::GetStyle().WindowPadding.x - bx);
-                    ImVec2 p = ImGui::GetCursorScreenPos();
-                    ImGui::PushStyleColor(ImGuiCol_NavCursor, ImVec4(0, 0, 0, 0));
-                    back = ImGui::InvisibleButton("##close", ImVec2(bx, bx), ImGuiButtonFlags_EnableNav);
-                    ImGui::PopStyleColor();
-                    bool hot = ImGui::IsItemHovered() || ImGui::IsItemFocused();
-                    ImU32 col = hot ? IM_COL32(236, 194, 84, 255) : IM_COL32(220, 216, 205, 255);
-                    float m = bx * 0.3f, t = (hot ? 3.0f : 2.4f) * sc * 1.5f;
-                    ImDrawList *dl = ImGui::GetWindowDrawList();
-                    if (hot) dl->AddRectFilled(p, ImVec2(p.x + bx, p.y + bx), IM_COL32(255, 255, 255, 20), 8 * sc);
-                    dl->AddLine(ImVec2(p.x + m, p.y + m), ImVec2(p.x + bx - m, p.y + bx - m), col, t);
-                    dl->AddLine(ImVec2(p.x + bx - m, p.y + m), ImVec2(p.x + m, p.y + bx - m), col, t);
-                }
-                ImGui::Spacing();
-                if (welcome && !busy) {  // what this is about, the first time
-                    ImGui::PushTextWrapPos(0);
-                    ImGui::TextColored(ImVec4(0.86f, 0.85f, 0.80f, 1), "%s",
-                                       trv("Savage Wind needs your own copy of the game, version %s. Choose the folder "
-                                           "with its extracted files and set them up: the game starts when it's done.")
-                                           .c_str());
-                    ImGui::PopTextWrapPos();
-                    ImGui::Dummy(ImVec2(0, 10 * sc));
-                }
-
                 pthread_mutex_lock(&g_lock);
                 std::string src = g_src, job = g_job, job_hint = g_job_hint;
                 bool failed = g_job_failed;
@@ -2180,7 +2889,7 @@ extern "C" void launcher_run(const char *root, int mode) {
                         if (opt_action("Delete game files", gb, "Frees the space Savage Wind's copy of the game files takes. "
                                        "Saves and settings are kept, and your own game files aren't touched: you can "
                                        "set the game files up again from them.", true))
-                            g_confirm_delete = true;
+                            g_confirm_delete = true, g_confirm_setup = false;
                         first_row();
                     } else {
                         if (opt_action("Yes, delete them", gb, "Deletes the extracted game files now.", true)) {
@@ -2264,7 +2973,7 @@ extern "C" void launcher_run(const char *root, int mode) {
                         }
                     }
 #endif
-                    if (!g_confirm_delete && dlss_fetch_offered()) {  // NVIDIA's DLSS library, now (or again)
+                    if (!g_confirm_delete && dlss_fetch_offered()) {  // NVIDIA's DLSS libraries, now (or again)
                         bool have = dlss_fetch_present();
                         opt_section("NVIDIA DLSS");
                         if (have) opt_disable_next();
@@ -2308,9 +3017,7 @@ extern "C" void launcher_run(const char *root, int mode) {
                         if (opt_text("Folder path", path_buf, sizeof path_buf, "Type or paste path...",
                                      "Enter the path to your extracted game files folder directly if the system folder picker does not open.")) {
                             std::string p = trim_folder_path(path_buf);
-                            pthread_mutex_lock(&g_lock);
-                            g_src = p;
-                            pthread_mutex_unlock(&g_lock);
+                            select_game_folder(p);
                             last_synced_src = p;
                             snprintf(path_buf, sizeof path_buf, "%s", p.c_str());
                         }
@@ -2331,14 +3038,15 @@ extern "C" void launcher_run(const char *root, int mode) {
                                 settings_save();
                         }
                         if (opt_toggle("Precompile all shaders", &g_settings.precompile_shaders, true,
-                                       "After the setup, translates and compiles every shader of the game, so that none "
+                                       "After the setup, and at a start when they are missing or out of date (a new graphics "
+                                       "driver, another PC), translates and compiles every shader of the game, so that none "
                                        "stutters the first time it is drawn, also in places never visited. A few more "
                                        "minutes and about 1.5 GB of disk. It can be done later too, from the game "
                                        "files page of Savage Wind Configuration."))
                             settings_save();
                     }
 #endif
-                    if (dlss_fetch_offered() && !dlss_fetch_present()) {  // (an NVIDIA driver, NVIDIA's DLL not here)
+                    if (dlss_fetch_offered() && !dlss_fetch_present()) {  // (an NVIDIA driver, NVIDIA's DLLs not here)
                         if (busy) opt_disable_next();
                         if (opt_toggle("Download NVIDIA DLSS", &g_settings.dlss_download, true, k_dlss_text))
                             settings_save();
@@ -2408,9 +3116,21 @@ extern "C" void launcher_run(const char *root, int mode) {
                             pthread_detach(st);
                         }
                     }
-                    if (busy || (src.empty() && !check_copied_files(g_root).empty())) opt_disable_next();
-                    if (opt_action("Set up game files", busy ? tr("Working...") : "", ready ? again_d.c_str() : ex_d.c_str(),
-                                   true)) {
+                    // (set up already: asked first, a misclick would throw away the game code build and its shaders, #1079)
+                    bool start_setup = false;
+                    if (ready && g_confirm_setup && !busy) {
+                        if (opt_action("Yes, set up again", "", "Re-extracts and recompiles the game files now.", true))
+                            g_confirm_setup = false, start_setup = true;
+                        if (opt_action("Cancel", "", "Keeps the current game files.", true)) g_confirm_setup = false;
+                    } else {
+                        if (busy || (src.empty() && !check_copied_files(g_root).empty())) opt_disable_next();
+                        if (opt_action("Set up game files", busy ? tr("Working...") : "", ready ? again_d.c_str() : ex_d.c_str(),
+                                       true)) {
+                            if (ready) g_confirm_setup = true;
+                            else start_setup = true;
+                        }
+                    }
+                    if (start_setup) {
                         settings_save();  // (the colour look as chosen above)
                         g_file_size.set_suspended(true);
                         pthread_mutex_lock(&g_lock);
@@ -2455,26 +3175,15 @@ extern "C" void launcher_run(const char *root, int mode) {
                     ImGui::PopTextWrapPos();
                 }
                 opt_end();
-                if (g_confirm_delete && (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) ||
-                                         ImGui::IsKeyPressed(ImGuiKey_Escape, false)))
-                    g_confirm_delete = false;  // (B / Esc: back out of the question first)
-                else if (!busy && !typing && !g_setup_only && (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) ||
-                                                               ImGui::IsKeyPressed(ImGuiKey_Escape, false)))
-                    back = true;  // (setup mode has nothing to go back to: only its X closes it)
-                ImGui::PopFont();
-                ImGui::EndChild();
-                if (back && !busy) {
-                    settings_save();
-                    if (g_setup_only) exit(0);
-                    g_confirm_delete = false;
-                    refresh_dlc();
-                    page = MAIN, g_refocus = SETUP;
-                }
+                if ((g_confirm_delete || g_confirm_setup) && (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) ||
+                                                              ImGui::IsKeyPressed(ImGuiKey_Escape, false)))
+                    g_confirm_delete = g_confirm_setup = false, back = true;  // (B / Esc: back out of the question first)
+                content_focus = ImGui::IsWindowFocused(ImGuiFocusedFlags_ChildWindows);
                 static bool test_busy = getenv("SAVAGEWIND_LAUNCHER_SHOT") && strstr(getenv("SAVAGEWIND_LAUNCHER_SHOT"), ":extracting");
-                if (busy || test_busy) {  // extracting: everything dimmed, a progress bar in front (input waits)
+                if (busy || test_busy) {  // working: everything dimmed, a card with a progress bar in front (input waits)
                     ImDrawList *fg = ImGui::GetForegroundDrawList();
                     ImVec2 o = ImGui::GetMainViewport()->Pos;
-                    fg->AddRectFilled(o, ImVec2(o.x + ds.x, o.y + ds.y), IM_COL32(0, 0, 0, 170));
+                    fg->AddRectFilled(o, ImVec2(o.x + ds.x, o.y + ds.y), IM_COL32(0, 0, 0, 150));
                     float f = test_busy ? 0.42f : extract_progress();
                     // (while the game code is built: what's happening, on whose files - runtime/gamebuild.c)
                     bool recompiling = g_build_frac >= 0, dlc_check = g_dlc_checking;
@@ -2500,21 +3209,22 @@ extern "C" void launcher_run(const char *root, int mode) {
 #endif
                     if (g_dlss_fetching) f = g_dlss_frac, title = tr("Downloading NVIDIA DLSS"), nnotes = 0;
                     if (g_xess_fetching) f = g_xess_frac, title = tr("Downloading Intel XeSS"), nnotes = 0;
-                    float tfs = g_font_menu->FontSize * 0.75f, sfs = g_font_small->FontSize * 0.85f;
-                    ImVec2 ts = g_font_menu->CalcTextSizeA(tfs, FLT_MAX, 0, title);
-                    float line_h = g_font_small->CalcTextSizeA(sfs, FLT_MAX, 0, "A").y;
-                    float pw = fminf(ds.x * 0.6f, 900 * sc), bar_y = 36 * sc + ts.y + 30 * sc;
+                    ImFont *tf = g_ui.bold, *bf = g_ui.body;
+                    float tfs = 20 * u, sfs = 14 * u, nfs = 13 * u;
+                    ImVec2 ts = tf->CalcTextSizeA(tfs, FLT_MAX, 0, title);
+                    float line_h = bf->CalcTextSizeA(sfs, FLT_MAX, 0, "A").y;
+                    float pw = fminf(ds.x * 0.6f, 560 * u), bar_y = 28 * u + ts.y + 20 * u;
                     for (int i = 0; i < nnotes; i++)  // (wide enough for its text, within the window)
-                        pw = fmaxf(pw, g_font_small->CalcTextSizeA(sfs, FLT_MAX, 0, notes[i]).x + 96 * sc);
-                    pw = fminf(fmaxf(pw, ts.x + 96 * sc), ds.x - 32 * sc);
-                    float ph = bar_y + 24 * sc + 26 * sc + line_h + (nnotes ? 14 * sc + nnotes * line_h : 0) + 40 * sc;
+                        pw = fmaxf(pw, bf->CalcTextSizeA(nfs, FLT_MAX, 0, notes[i]).x + 64 * u);
+                    pw = fminf(fmaxf(pw, ts.x + 64 * u), ds.x - 32 * u);
+                    float ph = bar_y + 6 * u + 18 * u + line_h + (nnotes ? 10 * u + nnotes * line_h : 0) + 28 * u;
                     ImVec2 a(o.x + (ds.x - pw) * 0.5f, o.y + (ds.y - ph) * 0.5f), b(a.x + pw, a.y + ph);
-                    fg->AddRectFilled(a, b, IM_COL32(15, 23, 20, 250), 14 * sc);
-                    fg->AddRect(a, b, IM_COL32(236, 194, 84, 140), 14 * sc, 0, 1.5f * sc);
-                    fg->AddText(g_font_menu, tfs, ImVec2((a.x + b.x - ts.x) * 0.5f, a.y + 36 * sc), IM_COL32(236, 194, 84, 255), title);
-                    ImVec2 ba(a.x + 48 * sc, a.y + bar_y), bb(b.x - 48 * sc, a.y + bar_y + 24 * sc);
-                    fg->AddRectFilled(ba, bb, IM_COL32(255, 255, 255, 25), 12 * sc);
-                    if (f > 0) fg->AddRectFilled(ba, ImVec2(ba.x + (bb.x - ba.x) * f, bb.y), IM_COL32(236, 194, 84, 255), 12 * sc);
+                    fg->AddRectFilled(a, b, UI_RAISED, 10 * u);
+                    fg->AddRect(a, b, UI_BORDER, 10 * u, 0, 1.0f);
+                    fg->AddText(tf, tfs, ImVec2(a.x + 32 * u, a.y + 28 * u), UI_TEXT, title);
+                    ImVec2 ba(a.x + 32 * u, a.y + bar_y), bb(b.x - 32 * u, a.y + bar_y + 6 * u);
+                    fg->AddRectFilled(ba, bb, UI_TRACK, 3 * u);
+                    if (f > 0) fg->AddRectFilled(ba, ImVec2(ba.x + (bb.x - ba.x) * f, bb.y), UI_ACCENT, 3 * u);
                     char line[200];
 #ifndef SW_METAL
                     std::string step = shaders ? precompile_line() : tr(test_busy ? "Setting up the game files..." : job.c_str());
@@ -2523,99 +3233,63 @@ extern "C" void launcher_run(const char *root, int mode) {
 #endif
                     if (dlc_check) snprintf(line, sizeof line, "%s", step.c_str());
                     else snprintf(line, sizeof line, "%s   %d%%", step.c_str(), (int)(f * 100));
-                    ImVec2 ls = g_font_small->CalcTextSizeA(sfs, FLT_MAX, 0, line);
-                    fg->AddText(g_font_small, sfs, ImVec2((a.x + b.x - ls.x) * 0.5f, bb.y + 26 * sc), IM_COL32(220, 216, 205, 255), line);
-                    for (int i = 0; i < nnotes; i++) {
-                        ImVec2 ns = g_font_small->CalcTextSizeA(sfs, FLT_MAX, 0, notes[i]);
-                        fg->AddText(g_font_small, sfs, ImVec2((a.x + b.x - ns.x) * 0.5f, bb.y + 26 * sc + (i + 1) * line_h + 14 * sc),
-                                    IM_COL32(150, 148, 140, 255), notes[i]);
+                    fg->AddText(bf, sfs, ImVec2(a.x + 32 * u, bb.y + 18 * u), UI_TEXT_DIM, line);
+                    for (int i = 0; i < nnotes; i++)
+                        fg->AddText(bf, nfs, ImVec2(a.x + 32 * u, bb.y + 18 * u + (i + 1) * line_h + 10 * u), UI_MUTED, notes[i]);
+                }
+                if (back) content_focus = false;  // (that B was the question's)
+            }
+            ImGui::EndChild();
+            // B / Esc: in a page with the controller's cursor, back to its sidebar item; on the sidebar, back Home
+            {
+                int cap_dev;
+                bind_capture_active(&cap_dev, NULL, NULL);
+                bool b = ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) || ImGui::IsKeyPressed(ImGuiKey_Escape, false);
+                if (b && !popup_open && !typing && !busy && cap_dev < 0 && !saves_tab_busy() && !(nav == NAV_FILES && !content_focus && (g_confirm_delete || g_confirm_setup))) {
+                    if (content_focus && ImGui::GetCurrentContext()->NavCursorVisible) focus_side_req = nav;
+                    else if (side_focus && nav != NAV_HOME && !g_setup_only) {
+                        bind_capture_cancel();
+                        settings_save();
+                        nav = NAV_HOME, focus_side_req = NAV_HOME, page = MAIN, last_page = MAIN;
                     }
                 }
             }
+            {   // the status bar: how things stand on the left; the game, its DLC, mods and this version on the right
+                pthread_mutex_lock(&g_lock);
+                std::string job_now = g_job;
+                pthread_mutex_unlock(&g_lock);
+                ImFont *font = g_ui.body;
+                float fs = 12 * u, y = ds.y - foot + (foot - fs) * 0.5f;
+                const char *icon = ICON_CHECK;
+                ImU32 icol = UI_GREEN;
+                std::string text = tr("Ready");
+                if (busy) icon = ICON_ROTATE, icol = UI_BLUE, text = job_now.empty() ? tr("Working...") : trv(job_now);
+                else if (!status.empty()) icon = ICON_WARNING, icol = UI_YELLOW, text = trv(status);
+                wdl->AddText(font, fs, ImVec2(12 * u, y), icol, icon);
+                wdl->AddText(font, fs, ImVec2(12 * u + fs * 1.6f, y), UI_TEXT_DIM, text.c_str());
+                std::string right;
+                auto add = [&](const std::string &part) { right += (right.empty() ? "" : "   \xc2\xb7   ") + part; };  // (i18n-skip)
+                if (status.empty()) add(trv("Game %s"));
+                if (status.empty() && dlc_st.state == RT_DLC_READY) add(std::string("DLC ") + dlc_st.version);  // (i18n-skip)
+                {
+                    int on = mods_enabled_count() + (g_settings.swmm_mods ? (int)swmm_mods().names.size() : 0);
+                    char m[48];
+                    snprintf(m, sizeof m, tr(on == 1 ? "%d mod" : "%d mods"), on);
+                    add(m);
+                }
+                add(std::string("Savage Wind ") + SAVAGEWIND_VERSION);  // (i18n-skip)
+                float rw = font->CalcTextSizeA(fs, FLT_MAX, 0, right.c_str()).x;
+                wdl->AddText(font, fs, ImVec2(ds.x - 14 * u - rw, y), UI_TEXT_DIM, right.c_str());
+            }
 
-            // the first start's note on where the settings are: after PLAY, or in setup mode once the game files are
+            // the first start's note on where the settings are: after Play, or in setup mode once the game files are
             // ready; OK starts the game
             if (g_tip_test) ImGui::OpenPopup("##menutip"), g_tip_test = false;
             if (tip_then_play) ImGui::OpenPopup("##menutip"), tip_then_play = false;
             if (menu_tip(s)) play = true;
-
-            // status (lower left, main page) and version (lower right) - not under the Settings window
-            if (page != SETTINGS) {
-            ImGui::PushFont(g_font_small);
-            if (page == MAIN) {
-            ImGui::SetCursorPos(ImVec2(x0, ds.y - (status.empty() && dlc_st.state != RT_DLC_NONE ? 140 : 118) * s));
-            static std::string main_id;  // (read again after the game files change)
-            if (!status.empty()) main_id.clear();
-            auto draw_ready_mark = [&] {  // a drawn check mark (the Switch font has no ✓)
-                ImVec2 p = ImGui::GetCursorScreenPos();
-                float u = ImGui::GetTextLineHeight();
-                ImU32 g = IM_COL32(140, 230, 140, 255);
-                ImGui::GetWindowDrawList()->AddLine(ImVec2(p.x + u * 0.1f, p.y + u * 0.55f), ImVec2(p.x + u * 0.35f, p.y + u * 0.8f), g, u * 0.12f);
-                ImGui::GetWindowDrawList()->AddLine(ImVec2(p.x + u * 0.35f, p.y + u * 0.8f), ImVec2(p.x + u * 0.85f, p.y + u * 0.2f), g, u * 0.12f);
-                ImGui::SetCursorPosX(x0 + u * 1.3f);
-            };
-            if (status.empty()) {
-                draw_ready_mark();
-                ImGui::TextColored(ImVec4(0.45f, 0.95f, 0.55f, 1), "%s", tr("Game files ready."));
-                ImGui::SetCursorPosX(x0);
-                if (main_id.empty() && !nso_build_id(g_root + "/exefs/main", &main_id)) main_id = "?";
-                ImGui::TextColored(ImVec4(0.66f, 0.76f, 0.98f, 1), tr("main build id %s"), main_id.c_str());
-#ifndef SW_METAL
-                {   // the precompiled shaders were made by another translator or driver: the first play stutters until
-                    // they are made again (Game Files > Precompile shaders says so too, but only there). Asked once.
-                    static int stale = -1;
-                    if (stale < 0) {
-                        stale = shader_precompile_available() && shader_precompile_status(NULL, NULL, 0) == 2;
-                        if (stale) fprintf(stderr, "[launcher] the precompiled shaders are out of date (a new driver or translator)\n");
-                    }
-                    if (stale) {
-                        ImGui::SetCursorPosX(x0);
-                        ImGui::TextColored(ImVec4(1, 0.72f, 0.4f, 1), "%s", tr("Shaders out of date: see Game Files."));
-                    }
-                }
-#endif
-                if (dlc_st.state == RT_DLC_READY) {
-                    ImGui::SetCursorPosX(x0);
-                    draw_ready_mark();
-                    ImGui::TextColored(ImVec4(0.45f, 0.95f, 0.55f, 1), tr("DLC %s ready."), dlc_st.version);
-                } else if (dlc_st.state != RT_DLC_NONE) {
-                    ImGui::SetCursorPosX(x0);
-                    ImGui::TextColored(ImVec4(1, 0.72f, 0.4f, 1), "!  %s", tr("DLC not ready: see Game Files."));
-                }
-            } else {
-                ImGui::TextColored(ImVec4(1, 0.72f, 0.4f, 1), "!  %s", trv(busy ? "Setting up the game files..." : status).c_str());
-                ImGui::SetCursorPosX(x0);
-                ImGui::TextDisabled("%s", tr("Set up the game files to play."));
-            }
-            if (update_st == UPDATE_AVAILABLE) {
-                ImGui::SetCursorPosX(x0);
-                ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), tr("Version %s is available."), update_version);
-            } else if (update_st == UPDATE_ERROR || !update_error.empty()) {
-                ImGui::SetCursorPosX(x0);
-                ImGui::TextDisabled("%s %s", tr("Couldn't check for updates:"), update_error.empty() ? update_msg : update_error.c_str());
-            }
-            if (const char *f = getenv("SAVAGEWIND_LAUNCHER_FONT")) {  // (test) which typeface this window shows
-                const char *b = strrchr(f, '/');
-                ImGui::GetWindowDrawList()->AddText(ImVec2(ImGui::GetWindowPos().x + 20 * s, ImGui::GetWindowPos().y + 16 * s),
-                                                    IM_COL32(255, 255, 255, 255), b ? b + 1 : f);
-            }
-            }
-            {  // version (lower right), under a shadow banner from the right
-                ImDrawList *dl = ImGui::GetWindowDrawList();
-                ImFont *font = ImGui::GetFont();
-                float fs = ImGui::GetFontSize(), right = ImGui::GetWindowPos().x + ds.x - 60 * s;
-                char ver[64];
-                snprintf(ver, sizeof ver, tr("Version %s"), SAVAGEWIND_VERSION);
-                float vs = fs * 1.4f, y = ImGui::GetWindowPos().y + ds.y - 134 * s;
-                ImVec2 vsz = font->CalcTextSizeA(vs, FLT_MAX, 0, ver);
-                ImVec2 p(right - vsz.x, y);
-                for (float d : {2.5f, 1.5f, 0.8f}) dl->AddText(font, vs, ImVec2(p.x + d * s, p.y + d * s), IM_COL32(4, 8, 30, 150), ver);
-                dl->AddText(font, vs, p, IM_COL32(255, 255, 255, 255), ver);
-            }
-            ImGui::PopFont();
-            }
+            swmm_question(s);  // (an SWMM+ button: Configuration closes for it)
+            swmm_install_dialog(s);  // (Install SWMM+: asked, then installed and set up)
             ImGui::End();
-            ImGui::PopStyleColor();
             osk_draw(g_font_menu, s * 0.7f);  // (a text field activated with the controller)
             typed_before = ui_text_busy();
 
@@ -2660,10 +3334,12 @@ extern "C" void launcher_run(const char *root, int mode) {
     }
     // play: cancel the size traversal before handing the window to the game
     g_file_size.stop();
+    if (own_window) winsize_config_mode(false), winsize_apply(win);  // (the game's own Video settings: fullscreen...)
     settings_save();
     SDL_SetWindowTitle(win, "Savage Wind");
     splash_unload();
     saves_tab_unload();
+    ui_wordmark_free();  // (its texture is this context's renderer's)
 #ifdef SW_METAL
     ImGui_ImplMetal_Shutdown();
 #else

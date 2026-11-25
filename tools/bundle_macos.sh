@@ -48,6 +48,9 @@ cp third_party/fonts/NotoSansThai/NotoSansThai-Medium.ttf "$C/Resources/"  # (Th
 cp third_party/fonts/NotoSansThai/OFL.txt "$C/Resources/NotoSansThai-OFL.txt"
 cp third_party/fonts/NotoSansHebrew/NotoSansHebrew-Medium.ttf "$C/Resources/"  # (Hebrew menus; OFL)
 cp third_party/fonts/NotoSansHebrew/OFL.txt "$C/Resources/NotoSansHebrew-OFL.txt"
+cp third_party/fonts/FontAwesome/fa-solid-900.ttf "$C/Resources/"  # (the menus' icons; OFL)
+cp third_party/fonts/FontAwesome/LICENSE.txt "$C/Resources/FontAwesome-LICENSE.txt"
+cp docs/media/wordmark.png docs/media/wordmark_config.png docs/media/wordmark_boot.png docs/media/default_splash.jpg "$C/Resources/"  # (the name in the menus' header)
 
 # ---- dylibs: copy every non-system dependency, recursively; point all references at @rpath/<name>
 is_system() { case "$1" in /usr/lib/*|/System/*) return 0;; esac; return 1; }

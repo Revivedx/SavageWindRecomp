@@ -69,7 +69,7 @@ bool rt_ui_layout_pane_draw(Cpu *c, void (*native)(Cpu *)) {
     return false;
 #else
     uint64_t pane = c->x[0];
-    if (pane_draw_depth || !native || (!g_settings.hud_edges && g_settings.hud_size == 100) ||
+    if (pane_draw_depth || !native || (!g_settings.hud_edges && g_settings.hud_size == 100 && !g_settings.dynamic_hud) ||
         strcmp(g_game_version, "1.9.0") || !g_site.screen_mgr || !ui_range(pane, 0xf8)) return false;
     const char *name = (const char *)(uintptr_t)(pane + 0xb8);
     if ((layout_kind == UI_LAYOUT_HUD && ui_champion_row(name)) || (layout_kind == UI_LAYOUT_DIALOGUE && ui_dpad_guide(name)))
@@ -98,11 +98,20 @@ bool rt_ui_layout_pane_draw(Cpu *c, void (*native)(Cpu *)) {
 #endif
 }
 
+uint32_t rt_cjk_font_scale(void) {
+    const char *env = getenv("SAVAGEWIND_CJK_SCALE");
+    if (env && *env) {
+        int v = atoi(env);
+        if (v >= 1 && v <= 4) return (uint32_t)v;
+    }
+    return (g_settings.sharper_text >= 2) ? 2 : 1;
+}
+
 uint64_t ui_layout_begin(Cpu *c) {
 #ifdef SW_METAL
     return 0;
 #else
-    if ((!g_settings.hud_edges && g_settings.hud_size == 100) || !g_site.screen_mgr || strcmp(g_game_version, "1.9.0")) return 0;
+    if ((!g_settings.hud_edges && g_settings.hud_size == 100 && !g_settings.dynamic_hud) || !g_site.screen_mgr || strcmp(g_game_version, "1.9.0")) return 0;
     uint64_t manager = *(uint64_t *)(uintptr_t)g_site.screen_mgr;
     if (!ui_range(manager, 0x38)) return 0;
     uint32_t count = *(uint32_t *)(uintptr_t)(manager + 0x28);

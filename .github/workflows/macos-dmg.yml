@@ -34,7 +34,7 @@ jobs:
       - name: Build tools and MoltenVK
         run: brew install ninja molten-vk
       - name: Pinned dependencies (cached by their script)
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: build/deps
           key: macos-deps-${{ hashFiles('tools/build_deps_macos.sh') }}
@@ -51,7 +51,7 @@ jobs:
           cd build/dist
           for f in *.dmg; do shasum -a 256 "$f" > "$f.sha256"; done
           ls -l
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: savage-wind-macos-dmg
           path: |

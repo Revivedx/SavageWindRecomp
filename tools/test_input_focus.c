@@ -69,6 +69,7 @@ void control_fly_wheel(float notches) { (void)notches; unexpected_helper(); }
 bool freecam_active(void) { return false; }
 void freecam_toggle(void) { abort(); }
 void freecam_key(int scancode, bool down) { (void)scancode; (void)down; abort(); }
+void freecam_pad_buttons(uint32_t buttons) { (void)buttons; }  // (camera path keys: off with the free camera)
 void freecam_mouse(float dx, float dy) { (void)dx; (void)dy; abort(); }
 void freecam_pad(float lx, float ly, float rx, float ry, float up, float down, bool fast, bool slow) {
     (void)lx; (void)ly; (void)rx; (void)ry; (void)up; (void)down; (void)fast; (void)slow;
@@ -87,6 +88,7 @@ bool framepace_title_ui(void) { return false; }
 bool framepace_menu_ui(void) { return false; }
 bool framepace_in_event(void) { return false; }
 bool framepace_dialogue_ui(void) { return false; }
+bool game_options_hold_a(void) { return false; }  // (runtime/ui/game_options.mm: the Achievements page)
 
 static void focus(bool on) {
     SDL_Event e = {0};
@@ -282,5 +284,4 @@ int main(void) {
     puts("input focus checks passed");
 }
 
-void photo_pad(uint32_t buttons) { (void)buttons; }
 uint64_t quick_replace_buttons(uint64_t b) { return b; }

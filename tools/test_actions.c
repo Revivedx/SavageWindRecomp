@@ -671,6 +671,93 @@ static void a_moved_menu_input_leaves_its_actions(void) {
     act_reset();
 }
 
+// "Reset keyboard to defaults" then rebinding Guard: the reset must not leave the hidden lock-on check (29) a binding
+// of its own, or Guard's new key would stop moving it (#1016) and the old one would go on targeting (#1057).
+static void a_reset_leaves_the_hidden_lock_on_check_following_guard(void) {
+    act_reset();
+    bind_reset(BIND_DEV_KEY);
+    act_set(BIND_DEV_KEY, 13, SDL_SCANCODE_F);
+    host(0, 0, 0);
+    act_poll(true);
+    key_down[BIND_MOUSE + SDL_BUTTON_RIGHT] = 1;  // its factory-default input, now nobody's
+    host(0, 0, 0);
+    act_poll(true);
+    assert(hold(13) == 0 && hold(29) == 0);
+    key_down[BIND_MOUSE + SDL_BUTTON_RIGHT] = 0;
+    key_down[SDL_SCANCODE_F] = 1;
+    host(0, 0, 0);
+    act_poll(true);
+    assert(hold(13) == 1 && hold(29) == 1);
+    key_down[SDL_SCANCODE_F] = 0;
+    host(0, 0, 0);
+    act_poll(true);
+    assert(hold(13) == 0 && hold(29) == 0);
+    bind_reset(BIND_DEV_KEY);
+    act_reset();
+}
+
+// The player's report (#1057): Bow on the right mouse button and Guard / lock on on F, the other way round from the
+// factory defaults. The right mouse button must aim the bow only, and the hidden lock-on check (29) must follow
+// Guard's F, so pressing it must not target as well.
+static void bow_and_guard_swapped_on_mouse_and_key_leaves_lock_on_on_the_guard_key(void) {
+    act_reset();
+    host(0, 0, 0);
+    act_poll(true);
+    assert(g_act_key[18] == SDL_SCANCODE_F && g_act_key[13] == BIND_MOUSE + SDL_BUTTON_RIGHT);  // factory defaults
+    // The swap the Controls page makes: Bow takes the guard's right mouse button, Guard takes the bow's F.
+    act_set(BIND_DEV_KEY, 18, BIND_MOUSE + SDL_BUTTON_RIGHT);
+    act_set(BIND_DEV_KEY, 13, SDL_SCANCODE_F);
+    host(0, 0, 0);
+    act_poll(true);
+    assert(hold(13) == 0 && hold(18) == 0 && hold(29) == 0);
+    key_down[BIND_MOUSE + SDL_BUTTON_RIGHT] = 1;
+    host(0, 0, 0);
+    act_poll(true);
+    assert(hold(18) == 1 && trig(18) == 1);   // the bow aims
+    assert(hold(13) == 0 && hold(29) == 0);   // ...and nothing locks on
+    key_down[BIND_MOUSE + SDL_BUTTON_RIGHT] = 0;
+    key_down[SDL_SCANCODE_F] = 1;
+    host(0, 0, 0);
+    act_poll(true);
+    assert(hold(18) == 0);
+    assert(hold(13) == 1 && hold(29) == 1);  // Guard, and the hidden lock-on check with it
+    key_down[SDL_SCANCODE_F] = 0;
+    host(0, 0, 0);
+    act_poll(true);
+    assert(hold(13) == 0 && hold(29) == 0);
+    act_reset();
+}
+
+// #1103: Menu: previous tab 2 (ZL) on another key leaves Guard / lock on on its own in play, the game's raw ZL too
+static void a_moved_menu_tab_leaves_guard_in_play(void) {
+    act_reset();
+    bind_reset(BIND_DEV_KEY);
+    const int GUARD = 13, BOW = 18;
+    uint64_t zl = 1ull << BIND_ZL, zr = 1ull << BIND_ZR;
+    int guard_key = g_act_key[GUARD];
+    key_down[guard_key] = 1;  // factory defaults: the raw input as it comes
+    assert(act_gameplay_buttons(zl, held, 0) == zl);
+    key_down[guard_key] = 0;
+    bind_settings_load("act_schema", "2");
+    bind_settings_load("bind_key_zl", "G");
+    assert(g_bind_key[BIND_ZL] == SDL_SCANCODE_G && g_act_key[GUARD] == guard_key);
+    // the menu's key gives the raw ZL (key_buttons): in play it no longer reaches the game
+    key_down[SDL_SCANCODE_G] = 1;
+    assert(!(act_gameplay_buttons(zl, held, 0) & zl));
+    key_down[SDL_SCANCODE_G] = 0;
+    key_down[guard_key] = 1;
+    assert(act_gameplay_buttons(0, held, 0) & zl);
+    key_down[guard_key] = 0;
+    // Bow on another key: ZR in play from it, not from Menu: next tab 2's
+    act_set(BIND_DEV_KEY, BOW, SDL_SCANCODE_H);
+    key_down[SDL_SCANCODE_H] = 1;
+    assert(act_gameplay_buttons(0, held, 0) & zr);
+    key_down[SDL_SCANCODE_H] = 0;
+    assert(!(act_gameplay_buttons(zr, held, 0) & zr));
+    act_reset();
+    bind_reset(BIND_DEV_KEY);
+}
+
 int main(void) {
     static const uint32_t k_masks_190[ACT_COUNT] = {
         0x1, 0x2, 0x8, 0x10, 0x8, 0x1, 0x8, 0x2, 0x8, 0x2, 0x8, 0x8, 0x2, 0x4, 0x2, 0x40, 0x1, 0x80, 0x20, 0x8, 0x2,
@@ -697,7 +784,10 @@ int main(void) {
     names_and_groups();
     a_conversation_answer_does_not_jump();
     guard_rebind_updates_hidden_lock_on();
+    a_reset_leaves_the_hidden_lock_on_check_following_guard();
+    bow_and_guard_swapped_on_mouse_and_key_leaves_lock_on_on_the_guard_key();
     a_moved_menu_input_leaves_its_actions();
+    a_moved_menu_tab_leaves_guard_in_play();
     puts("action bindings: default fallthrough, custom host bindings, schema migration, held / pressed, menus, shared keys, pad capture, contexts, A / B swap, reset and ini passed");
     return 0;
 }

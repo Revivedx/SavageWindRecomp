@@ -19,7 +19,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <string>
@@ -32,6 +34,7 @@
 #include "binding_row_layout.h"
 
 extern "C" {
+#include "../achievements.h"
 #include "../input_bind.h"
 #include "../language.h"
 #include "../game_sites.h"
@@ -84,7 +87,7 @@ const uint32_t GAME_CAMERA_Y = 1, GAME_CAMERA_X = 2, GAME_GYRO = 4, GAME_CAMERA_
                GAME_VOICE_BUTTON = 11, GAME_VOICE_LEVEL = 12, GAME_VR = 13;
 const uint32_t MSG_BASE = 9000;  // this file's message ids: MSG_BASE + item * 256 + part (the game's are 0000-0100)
 enum { MSG_TITLE = 0, MSG_DESC = 1, MSG_BUTTON = 2, MSG_KEY = 3, MSG_PAD = 4, MSG_VALUE = 16 };
-enum { MSG_TITLE_QUIT = 1, MSG_QUIT_QUESTION, MSG_QUIT_DESKTOP, MSG_QUIT_START };  // (storage ids below MSG_BASE)
+enum { MSG_TITLE_QUIT = 1, MSG_QUIT_QUESTION, MSG_QUIT_DESKTOP, MSG_QUIT_START, MSG_PAUSE_ACH, MSG_ACH_TITLE };  // (storage ids below MSG_BASE)
 
 // Row object (0x98 bytes, FUN_7100d1d828): +0x00 screen, +0x50 entry, +0x54 on/off, +0x58 value, +0x5c max,
 // +0x60 min, +0x64 button state, +0x68 flag type
@@ -97,7 +100,8 @@ struct Entry {           // the game's option entry (0x30)
 static_assert(sizeof(Entry) == 0x30);
 enum { KIND_TOGGLE = 0, KIND_CHOICE = 1, KIND_BUTTON = 2 };
 
-enum Page { P_MAIN, P_GAMEPLAY, P_VIDEO, P_COLOUR, P_AUDIO, P_CONTROLS, P_BINDS, P_LANGUAGE, P_ACCESS, P_VIDEO_ADV, P_HDR, P_COUNT };
+enum Page { P_MAIN, P_GAMEPLAY, P_VIDEO, P_COLOUR, P_AUDIO, P_CONTROLS, P_BINDS, P_LANGUAGE, P_ACCESS, P_VIDEO_ADV, P_HDR,
+            P_ACHIEVEMENTS, P_COUNT };
 // A_FIXED: a greyed row for an input that can never be rebound (Item.arg: 0 Esc, 1 F2); A_BIND: Item.arg is a binding slot (an input, or BIND_ACTION + an action); the next key, mouse button or controller button binds it
 enum Action { A_NONE, A_PAGE, A_BIND, A_BINDS_HEADER, A_RESET_BINDS, A_RESTART, A_QUIT, A_SIZE_LIST, A_FIXED, A_REPORT, A_SAVE_HDR_LOOK };
 static char g_report_dir[64];  // Problem report: the zip made this run (its row's description names it)
@@ -127,6 +131,7 @@ uint64_t g_installed;              // address of g_entries while the game uses i
 int g_cur_page = P_MAIN, g_next_page = P_MAIN;
 bool g_reopen;                     // a page change closed the screen: open it again once it has gone
 bool g_switching;                  // ... and its next opening shows g_next_page (any other opening: the first page)
+bool g_ach_direct;                 // the screen was opened on Achievements by the pause menu's button: B closes it
 uint64_t g_quit_dialog;            // the quit question's dialog while it is up
 uint64_t g_quit_owner;             // ... and the screen it came from (title menu or Options; its input is off meanwhile)
 bool g_quit_texts;                 // ... and its texts are still to be given (its two-button layout comes next)
@@ -155,12 +160,17 @@ const int UPS_DEFAULT = 0;  // (UPSCALE_DEFAULT: Off, the window's resolution)
 #endif
 std::vector<int> g_shown;   // per item: the value shown instead of get(), one that can't be picked yet (-1: none)
 const char16_t GREY = 3;    // (the game's message colour for greyed values)
+const char16_t RED = 0, GREEN = 1;  // (the game's message colours: an achievement locked / unlocked)
 // (shown with Native first, largest to smallest: k_modes_order maps a row index to settings.h UPQ_*)
 const char *const k_modes[] = {"Ultra Quality", "Quality", "Balanced", "Performance", "Ultra Performance", "Native", "Dynamic"};
 const int k_modes_order[] = {UPQ_NATIVE, UPQ_ULTRA, UPQ_QUALITY, UPQ_BALANCED, UPQ_PERFORMANCE, UPQ_ULTRA_PERFORMANCE,
                              UPQ_DYNAMIC};
 int upscale_mode_base(void) {
-    return rt_fsr3() || rt_xess() ? 0 : 1;
+    return rt_temporal_upscaler() ? 0 : 1;
+}
+// a mode's name: Native is DLAA with DLSS (NVIDIA's name for its 1x)
+const char *upscale_mode_name(int q) {
+    return upscale_mode_is_dlaa(q) ? "DLAA" : k_modes[q];
 }
 // (the last one, Dynamic, is the dynamic resolution)
 int upscale_mode_count(void) { return (int)(sizeof k_modes_order / sizeof k_modes_order[0]); }
@@ -170,13 +180,14 @@ const char *const k_aa[] = {"Off", "SMAA"};
 const char *const k_aa[] = {"Off", "FXAA", "SMAA", "TAA"};  // (settings.h AA_ROW_*)
 #endif
 const char *const k_aniso[] = {"Off", "2x", "4x", "8x", "16x"};  // (settings anisotropy 0..4)
-const char *const k_tex_lod[] = {"Default", "Sharp", "Sharper"};  // (settings tex_lod_bias 0..2)
+const char *const k_tex_lod[] = {"Default", "Sharp", "Sharper", "Ultra"};  // (settings tex_lod_bias 0..3)
+const char *const k_grass_dist[] = {"Follow draw distance", "Potato", "Original", "Medium", "High"};
 // (shown with Potato first, the nearest: k_drawdist_order maps a row index to settings.h DRAWDIST_*)
 const char *const k_drawdist[] = {"Original", "High", "Savage", "Potato"};  // (settings.h DRAWDIST_*; the ini: medium, high)
 const int k_drawdist_order[] = {DRAWDIST_POTATO, DRAWDIST_ORIGINAL, DRAWDIST_MEDIUM, DRAWDIST_HIGH};
 constexpr int k_haze[] = HAZE_CHOICES;
 // Accessibility > Weapon wear: percent of the game's wear, a name and the factor shown beside it
-constexpr int k_wear[] = {0, 50, 100, 150, 200, 250, 300};
+constexpr int k_wear[] = {0, 12, 17, 20, 25, 33, 50, 100, 150, 200, 250, 300};
 // Accessibility > Colour vision (runtime/colour_vision.h): the type (settings.h COLOUR_VISION_*) and its strength, %
 const char *const k_cvd_name[COLOUR_VISION_COUNT] = {"Off", "Protanopia", "Deuteranopia", "Tritanopia"};
 const char *const k_cvd_desc[COLOUR_VISION_COUNT] = {
@@ -187,8 +198,8 @@ const char *const k_cvd_desc[COLOUR_VISION_COUNT] = {
 };
 constexpr int k_cvd_strength[] = {10, 20, 30, 40, 50, 60, 70, 80, 90, 100};
 static_assert(k_cvd_strength[9] == COLOUR_VISION_STRENGTH_DEFAULT);
-const char *const k_wear_name[] = {"Fairy", "Peter Pan", "Hylian", "Hero", "Master", "Legend", "Dude, are you ok?"};
-const char *const k_wear_times[] = {"0x", "0.5x", "1x", "1.5x", "2x", "2.5x", "3x"};  // percent (Video > Haze)
+const char *const k_wear_name[] = {"Fairy", NULL, NULL, NULL, NULL, NULL, "Peter Pan", "Hylian", "Hero", "Master", "Legend", "Dude, are you ok?"};
+const char *const k_wear_times[] = {"0x", "0.12x", "0.17x", "0.2x", "0.25x", "0.33x", "0.5x", "1x", "1.5x", "2x", "2.5x", "3x"};  // percent (Video > Haze)
 // (shown with Potato first, the smallest: k_shadow_order maps a row index to settings.h SHADOW_*)
 const char *const k_shadow[] = {"Console (896)", "High (2048)", "Ultra (4096)", "Savage (8192)", "Potato (448)"};  // (SHADOW_*)
 const int k_shadow_order[] = {SHADOW_POTATO, SHADOW_CONSOLE, SHADOW_HIGH, SHADOW_ULTRA, SHADOW_EXTREME};
@@ -494,6 +505,9 @@ void build_items(void) {
                        },
                        [](const Item &) { return nearest(k_hud_size, N(k_hud_size), (float)g_settings.hud_size); },
                        [](const Item &, int x) { g_settings.hud_size = k_hud_size[x]; }, HUD_SIZE_DEFAULT_INDEX));
+    v.push_back(toggle(P_GAMEPLAY, "Dynamic HUD", "Hides the HUD while exploring and shows it for 5 seconds when Link takes damage.",
+                       [](const Item &) { return (int)g_settings.dynamic_hud; },
+                       [](const Item &, int x) { g_settings.dynamic_hud = x; }, 0));
     v.push_back(choice(P_GAMEPLAY, "Menu cursor speed", "How fast the cursor and transitions move in menus, inventory, and the map.",
                        [](const Item &) { return N(k_menu_speed); },
                        [](const Item &, int x) {
@@ -756,8 +770,8 @@ void build_items(void) {
                        },
                        [](const Item &, int x) { g_settings.hdr_vanilla_saturation = x; }, 100));
     v.push_back(choice(P_HDR, "HDR bloom strength",
-                       "How much glow around bright objects is kept. 100% is the game's own bloom; 0% removes it.",
-                       [](const Item &) { return 101; },
+                       "How much glow around bright objects is kept. 100% is the game's own bloom; above it, stronger; 0% removes it.",
+                       [](const Item &) { return 201; },
                        [](const Item &, int x) {
                            static char buf[32];
                            snprintf(buf, sizeof buf, "%d %%", x);
@@ -765,7 +779,7 @@ void build_items(void) {
                        },
                        [](const Item &) {
                            int v = g_settings.hdr_bloom;
-                           return v >= 0 && v <= 100 ? v : 100;
+                           return v >= 0 && v <= 200 ? v : 100;
                        },
                        [](const Item &, int x) { g_settings.hdr_bloom = x; }, 100));
     v.push_back(choice(P_HDR, "HDR gamut clamp",
@@ -824,6 +838,23 @@ void build_items(void) {
 #else
                        [](const Item &) { return settings_aa_row(); },
                        [](const Item &, int x) { settings_aa_row_set(x); }, AA_ROW_FXAA));
+    // Under an upscaler that smooths edges itself (rt_temporal_upscaler) the row has one value, that upscaler, greyed; the
+    // choice made before stays stored and comes back without it.
+    v.back().count = [](const Item &) { return rt_temporal_upscaler() ? 1 : N(k_aa); };
+    v.back().label = [](const Item &, int x) {
+        const char *u = rt_temporal_upscaler_name();
+        return tr(u ? u : k_aa[x]);
+    };
+    v.back().get = [](const Item &) { return rt_temporal_upscaler() ? 0 : settings_aa_row(); };
+    v.back().set = [](const Item &, int x) {
+        if (!rt_temporal_upscaler()) settings_aa_row_set(x);
+    };
+    v.back().value_off = [](const Item &, int) { return rt_temporal_upscaler(); };
+    v.back().reset = [](const Item &) { settings_aa_row_set(AA_ROW_FXAA); };  // (also under the upscaler)
+    v.back().desc_fn = [](const Item &) {  // (one line)
+        return rt_temporal_upscaler() ? tr("The upscaler already smooths edges, so this is off.")
+                                : tr("Smooths jagged edges. Best at a lower resolution.");
+    };
 #endif
     v.push_back(choice(P_VIDEO_ADV, "Upscaler", "Off: full resolution. AMD FSR 1: renders smaller, then upscales.",
                        [](const Item &) { return N(k_ups_value); }, ups_label,
@@ -832,7 +863,11 @@ void build_items(void) {
                                if (k_ups_value[i] == g_settings.upscaler) return i;
                            return 0;
                        },
-                       [](const Item &, int x) { g_settings.upscaler = k_ups_value[x]; }, UPS_DEFAULT));
+                       [](const Item &, int x) {
+                           g_settings.upscaler = k_ups_value[x];
+                           render_scale_fit();  // (FSR 3 / 4, XeSS, DLSS: up to 100%)
+                       },
+                       UPS_DEFAULT));
     v.back().value_off = [](const Item &, int x) { return !upscaler_available(k_ups_value[x]); };
     v.back().desc_fn = [](const Item &) {  // (one line)
         return g_settings.upscaler == UPSCALE_FSR4 ? tr("AMD FSR 4: renders smaller, then rebuilds detail with machine learning.")
@@ -849,7 +884,7 @@ void build_items(void) {
                        },
                        [](const Item &, int x) {
                            if (g_settings.upscaler == UPSCALE_OFF) return tr("Off");
-                           const char *name = k_modes[k_modes_order[x + upscale_mode_base()]];
+                           const char *name = upscale_mode_name(k_modes_order[x + upscale_mode_base()]);
                            return upscale_modes_available() ? tr(name) : soon(name);
                        },
                        [](const Item &) {
@@ -864,7 +899,7 @@ void build_items(void) {
                        },
                        [](const Item &, int x) {
                            if (g_settings.upscaler != UPSCALE_OFF)
-                               g_settings.upscale_quality = k_modes_order[x + upscale_mode_base()];
+                               g_settings.upscale_quality = k_modes_order[x + upscale_mode_base()], render_scale_fit();
                        },
                        2);
     mode.value_off = [](const Item &, int x) {
@@ -886,21 +921,40 @@ void build_items(void) {
                            static const char *const r[] = {"50%", "75%", "100%", "125%", "150%", "200%"};
                            return r[x];
                        },
-                       [](const Item &) { return g_settings.render_scale; },
-                       [](const Item &, int x) { g_settings.render_scale = x; }, RSCALE_100));
+                       [](const Item &) {
+                           render_scale_fit();  // (a value stored before shows as the 100% it runs at)
+                           return g_settings.render_scale;
+                       },
+                       [](const Item &, int x) { g_settings.render_scale = x, render_scale_chosen(); }, RSCALE_100));
+    // (FSR 3 / 4, XeSS, DLSS: up to 100%, in Native and DLAA 100%)
+    v.back().value_off = [](const Item &, int x) { return !render_scale_offered(x); };
+    v.back().desc_fn = [](const Item &) {  // (one line)
+        return !rt_temporal_upscaler() ? tr("Below 100%: faster, blurrier. Above 100%: renders bigger, then shrinks to the window. Smoothest edges.")
+             : upscale_quality_now() == UPQ_NATIVE ? tr("Always 100% in Native and DLAA modes.")
+                                                   : tr("Up to 100% while FSR 3, FSR 4, XeSS or DLSS is on.");
+    };
 #ifndef SW_METAL
     // the game's own FXAA (vulkan/exec.c fxaa_patch)
     // the wet lighting passes' sun glare (maxwell/translate.c maxwell_wet_lighting): their translations, made at the start
     v.push_back(toggle(P_VIDEO_ADV, "Wet grass fix", "Tames the white glare on grass and roofs in rain with the sun out. From the next start.",
                        [](const Item &) { return (int)g_settings.wet_fix; },
                        [](const Item &, int x) { g_settings.wet_fix = x; }, 0));
+    // the night sky's stars (maxwell/translate.c maxwell_stars): their translations, made at the start
+    v.push_back(choice(P_VIDEO_ADV, "Stars", "How bright the night sky's stars are. Original: as the game draws them. From the next start.",
+                       [](const Item &) { return (int)STARS_COUNT; },
+                       [](const Item &, int x) {
+                           static const char *const stars[STARS_COUNT] = {"Original", "Bright", "Brighter", "Brightest"};
+                           return tr(stars[x >= 0 && x < STARS_COUNT ? x : 0]);
+                       },
+                       [](const Item &) { return g_settings.stars >= 0 && g_settings.stars < STARS_COUNT ? g_settings.stars : 0; },
+                       [](const Item &, int x) { g_settings.stars = x; }, STARS_BRIGHTEST));
     // Anisotropic filtering and sharpening (Vulkan: vulkan/textures.c sampler_aniso, vulkan/exec.c scene_post)
     v.push_back(choice(P_VIDEO_ADV, "Anisotropic filtering", "Sharper ground and paths at a distance. Off: as on the console.",
                        [](const Item &) { return N(k_aniso); },
                        [](const Item &, int x) { return x ? k_aniso[x] : tr("Off"); },
                        [](const Item &) { return g_settings.anisotropy; },
                        [](const Item &, int x) { g_settings.anisotropy = x; }, 1));
-    v.push_back(choice(P_VIDEO_ADV, "Texture sharpness", "Sharpens textures by biasing mipmap levels. Sharp (-0.5), Sharper (-1.0).",
+    v.push_back(choice(P_VIDEO_ADV, "Texture sharpness", "Sharpens textures by biasing mipmap levels. Sharp (-0.5), Sharper (-1.0), Ultra (-1.5).",
                        [](const Item &) { return N(k_tex_lod); },
                        [](const Item &, int x) { return tr(k_tex_lod[x]); },
                        [](const Item &) { return g_settings.tex_lod_bias; },
@@ -914,18 +968,38 @@ void build_items(void) {
                        },
                        [](const Item &) { return g_settings.sharpening; },
                        [](const Item &, int x) { g_settings.sharpening = x; }, 0));
-    // AMD FSR 3 frame generation (vulkan/framegen.cpp)
-    Item fg = toggle(P_VIDEO_ADV, "Frame generation (AMD FSR 3)", "Twice the frames on screen. Adds a little delay.",
-                     [](const Item &) { return (int)g_settings.frame_gen; },
-                     [](const Item &, int x) { g_settings.frame_gen = x; }, 0);
-    fg.desc_fn = [](const Item &) {
+    // Frame generation: AMD FSR 3 (vulkan/framegen.cpp) or NVIDIA DLSS (vulkan/dlss.c, greyed where it can't run)
+    v.push_back(choice(P_VIDEO_ADV, "Frame generation", "Twice the frames on screen. Adds a little delay.",
+                       [](const Item &) { return (int)FG_COUNT; },
+                       [](const Item &, int x) {
+                           static const char *const k_fg[FG_COUNT] = {"Off", "AMD FSR 3", "NVIDIA DLSS"};
+                           return tr(k_fg[x]);
+                       },
+                       [](const Item &) { return g_settings.frame_gen; },
+                       [](const Item &, int x) { g_settings.frame_gen = x; }, FG_OFF));
+    v.back().value_off = [](const Item &, int x) { return !frame_gen_available(x); };
+    v.back().desc_fn = [](const Item &) {
         if (dynamic_fg_no_gain())
             return tr("No net gain here: the upscaler's Dynamic mode would switch this off.");
         if (dynamic_fg_disabled())
             return tr("The upscaler's Dynamic mode switched this off: no net gain.");
         return tr("Twice the frames on screen. Adds a little delay.");
     };
-    v.push_back(fg);
+    // DLSS's multi frame generation (3x, 4x where the GPU makes that many)
+    v.push_back(choice(P_VIDEO_ADV, "Frame generation multiplier", "NVIDIA DLSS: frames on screen for each drawn.",
+                       [](const Item &) { return FG_MULT_MAX - FG_MULT_MIN + 1; },
+                       [](const Item &, int x) {
+                           static const char *const k_mult[] = {"2x", "3x", "4x"};
+                           return tr(k_mult[x]);
+                       },
+                       [](const Item &) {
+                           return (g_settings.frame_gen_mult >= FG_MULT_MIN ? g_settings.frame_gen_mult : FG_MULT_MIN) -
+                                  FG_MULT_MIN;
+                       },
+                       [](const Item &, int x) { g_settings.frame_gen_mult = FG_MULT_MIN + x; }, 0));
+    v.back().value_off = [](const Item &, int x) {
+        return g_settings.frame_gen != FG_DLSS ? x != 0 : !frame_gen_mult_available(FG_DLSS, FG_MULT_MIN + x);
+    };
 #endif
     v.push_back(toggle(P_VIDEO_ADV, "Asynchronous shaders", "On: no stutter, but some effects appear late.",
                        [](const Item &) { return (int)g_settings.async_shaders; },
@@ -949,6 +1023,10 @@ void build_items(void) {
     v.push_back(toggle(P_VIDEO_ADV, "Grass", "Grass blades and ground cover. Off: bare terrain, faster.",
                        [](const Item &) { return (int)g_settings.grass; },
                        [](const Item &, int x) { g_settings.grass = x; }, 1));
+    v.push_back(choice(P_VIDEO_ADV, "Grass distance", "How far out grass blades are drawn. High reaches about 2.45x independently of Draw distance.",
+                       [](const Item &) { return N(k_grass_dist); }, [](const Item &, int x) { return tr(k_grass_dist[x]); },
+                       [](const Item &) { return g_settings.grass_distance >= 0 && g_settings.grass_distance < GRASS_DIST_COUNT ? g_settings.grass_distance : 0; },
+                       [](const Item &, int x) { g_settings.grass_distance = x; }, 0));
     v.push_back(toggle(P_VIDEO_ADV, "Lens flare", "Sun glare and lens flare. Off: no sun flare.",
                        [](const Item &) { return (int)g_settings.lens_flare; },
                        [](const Item &, int x) { g_settings.lens_flare = x; }, 1));
@@ -964,7 +1042,7 @@ void build_items(void) {
                            [](const Item &) { return g_settings.scene_copies >= 0 && g_settings.scene_copies < SCENE_COPIES_COUNT ? g_settings.scene_copies : 0; },
                            [](const Item &, int x) { g_settings.scene_copies = x; }, SCENE_COPIES_AUTO));
 #endif
-    v.push_back(choice(P_VIDEO_ADV, "Haze", "How hazy the air is. Lower: clearer distances. From the next start.",
+    v.push_back(choice(P_VIDEO_ADV, "Haze", "How hazy the air is. Lower: clearer distances; above 100%: denser atmosphere. From the next start.",
                        [](const Item &) { return N(k_haze); },
                        [](const Item &, int x) {
                            static std::string s;
@@ -972,7 +1050,7 @@ void build_items(void) {
                            return s.c_str();
                        },
                        [](const Item &) { return nearest(k_haze, N(k_haze), (float)g_settings.haze); },
-                       [](const Item &, int x) { g_settings.haze = k_haze[x]; }, N(k_haze) - 1));
+                       [](const Item &, int x) { g_settings.haze = k_haze[x]; }, 2));
     v.push_back(button(P_VIDEO_ADV, "HDR options", "HDR on or off, brightness, the tone mapper, colour and presets.",
                        "Open", A_PAGE, P_HDR));
     // the game's font sheets enlarged (runtime/nvn/text_upscale.c): read when the game starts
@@ -1056,6 +1134,20 @@ void build_items(void) {
 #endif
 
     // Gameplay
+    v.push_back(toggle(P_GAMEPLAY, "Keep crouch after camera",
+                       "Return to crouching after closing the Camera rune if you were crouched when opening it.",
+                       [](const Item &) { return (int)g_settings.camera_keep_stealth; },
+                       [](const Item &, int x) { g_settings.camera_keep_stealth = x; }, 0));
+    v.push_back(choice(P_GAMEPLAY, "Day/night cycle length", "Real time for a full day and night while the in-game clock runs.",
+                       [](const Item &) -> int { return DAY_CYCLE_MAX; },
+                       [](const Item &, int x) {
+                           static char label[32];
+                           snprintf(label, sizeof label, tr("%d min"), 24 * (x + 1));
+                           return (const char *)label;
+                       },
+                       [](const Item &) { return g_settings.day_cycle_length - 1; },
+                       [](const Item &, int x) { g_settings.day_cycle_length = x + 1; }, DAY_CYCLE_DEFAULT - 1));
+
     v.push_back(toggle(P_GAMEPLAY, "Quick inventory sorting",
                        "Sort weapons, bows and shields in the quick selector. Requires game version 1.9.0.",
                        [](const Item &) { return (int)g_settings.quick_sort; },
@@ -1097,6 +1189,18 @@ void build_items(void) {
                        [](const Item &) { return (int)lroundf(g_settings.shrine_sensor_volume / 10.0f); },
                        [](const Item &, int x) {
                            g_settings.shrine_sensor_volume = x * 10;
+                       }, 10));
+    v.push_back(choice(P_AUDIO, "Music volume",
+                       "Volume of the game's music. Sound effects and voices keep their volume. 0% turns the music off.",
+                       [](const Item &) { return 11; },
+                       [](const Item &, int x) {
+                           static std::string s;
+                           s = x ? pct(x * 10) : std::string(tr("Off"));
+                           return s.c_str();
+                       },
+                       [](const Item &) { return (int)lroundf(g_settings.music_volume / 10.0f); },
+                       [](const Item &, int x) {
+                           g_settings.music_volume = x * 10;
                        }, 10));
     v.push_back(choice(P_AUDIO, "Audio output", "Stereo, 5.1 surround speakers, or 3D spatial sound for headphones. Surround 5.1 is untested on real 5.1 speakers.",
                        [](const Item &) { return (int)AUDIO_OUT_COUNT; },
@@ -1219,7 +1323,7 @@ void build_items(void) {
                        [](const Item &) { return (int)g_settings.pc_gyro; },
                        [](const Item &, int x) { g_settings.pc_gyro = x; }, 1));
     v.push_back(toggle(P_CONTROLS, "Shrine mouse drag",
-                       "At a shrine apparatus, hold left click and drag to rotate. Release to keep its orientation and re-grip.",
+                       "At a shrine apparatus, left-drag to rotate. Right-drag sideways to bank or vertically to tilt. Release to keep the pose.",
                        [](const Item &) { return (int)g_settings.gyro_scene; },
                        [](const Item &, int x) { g_settings.gyro_scene = x; }, 1));
     // motion controls (runtime/hle/motion.c; the game's own Motion Controls option turns motion aiming on and off)
@@ -1308,6 +1412,7 @@ void build_items(void) {
     // Esc and F2 are hard-wired (the game can always be paused, the cursor freed): shown greyed, never rebound
     v.push_back(button(P_BINDS, "Pause menu / back", "Fixed: this key always works.", "", A_FIXED, 0));
     v.push_back(button(P_BINDS, "Free mouse cursor", "Fixed: this key frees the mouse cursor.", "", A_FIXED, 1));
+    bind(BIND_CONSOLE, bind_input_name(BIND_CONSOLE));
     for (int sl = BIND_LS_UP; sl <= BIND_RS_RIGHT; sl++) bind(sl, bind_input_name(sl));
     bind(BIND_WALK, bind_input_name(BIND_WALK));
     bind(BIND_TILT, bind_input_name(BIND_TILT));
@@ -1334,6 +1439,40 @@ void build_items(void) {
                        [](const Item &, int x) { g_settings.voice_language = x; }, 0));
     v.push_back(button(P_LANGUAGE, "Restart now",
                        "Starts the game again with these languages. Unsaved progress is lost.", "Restart", A_RESTART, 0));
+
+    // Achievements (runtime/achievements.h): one row per achievement, its state where a button's text goes (Unlocked, or
+    // how far along it is, or Locked); the description line says what it takes, and when it was unlocked. A does nothing.
+    for (int i = 0; i < g_ach_count; i++) {
+        Item it = button(P_ACHIEVEMENTS, g_ach_defs[i].name, g_ach_defs[i].desc, nullptr, A_NONE, i);
+        it.label = [](const Item &row, int) -> const char * {
+            static char buf[48];
+            AchInfo in;
+            ach_info(row.arg, &in);
+            if (in.unlocked) return tr("Unlocked");
+            if (in.target <= 1) return tr("Locked");
+            snprintf(buf, sizeof buf, "%u / %u  (%u%%)", in.cur, in.target, in.cur * 100 / in.target);
+            return buf;
+        };
+        it.desc_fn = [](const Item &row) -> const char * {
+            static char buf[320];
+            AchInfo in;
+            ach_info(row.arg, &in);
+            if (!in.def) return "";
+            if (!in.unlocked || in.at <= 0) return tr(in.def->desc);
+            char when[32] = "";
+            time_t t = in.at;
+            struct tm tmv;
+#ifdef _WIN32
+            localtime_s(&tmv, &t);
+#else
+            localtime_r(&t, &tmv);
+#endif
+            strftime(when, sizeof when, "%Y-%m-%d", &tmv);
+            snprintf(buf, sizeof buf, tr("%s  Unlocked: %s"), tr(in.def->desc), when);
+            return buf;
+        };
+        v.push_back(it);
+    }
 
     // Accessibility > Colour vision first (runtime/colour_vision.h; applied at the present, at once), then the assists
     // (runtime/assists.c): applied at once, while playing
@@ -1389,7 +1528,8 @@ void build_items(void) {
                            static char buf[4][64];
                            static int k;
                            char *b = buf[k++ & 3];
-                           snprintf(b, sizeof buf[0], "%s (%s)", tr(k_wear_name[x]), k_wear_times[x]);
+                           if (k_wear_name[x]) snprintf(b, sizeof buf[0], "%s (%s)", tr(k_wear_name[x]), k_wear_times[x]);
+                           else snprintf(b, sizeof buf[0], "%s", k_wear_times[x]);
                            return (const char *)b;
                        },
                        [](const Item &) { return nearest(k_wear, N(k_wear), (float)g_settings.weapon_wear); },
@@ -1397,13 +1537,22 @@ void build_items(void) {
                            g_settings.weapon_wear = k_wear[x];
                            g_settings.no_weapon_wear = k_wear[x] == 0;
                        },
-                       2));
+                       7));
     v.push_back(toggle(P_ACCESS, "Infinite arrows", "Shooting a bow uses up no arrows. You still need one to shoot.",
                        [](const Item &) { return (int)g_settings.infinite_arrows; },
                        [](const Item &, int x) { g_settings.infinite_arrows = x; }, 0));
     v.push_back(toggle(P_ACCESS, "Infinite stamina", "The stamina wheel never runs out.",
                        [](const Item &) { return (int)g_settings.infinite_stamina; },
                        [](const Item &, int x) { g_settings.infinite_stamina = x; }, 0));
+    v.push_back(choice(P_ACCESS, "Stamina drain", "How fast stamina drains. 100% is the game's own.",
+                       [](const Item &) { return N(k_damage); },
+                       [](const Item &, int x) {
+                           static std::string s;
+                           s = pct(k_damage[x]);
+                           return s.c_str();
+                       },
+                       [](const Item &) { return nearest(k_damage, N(k_damage), g_settings.stamina_drain); },
+                       [](const Item &, int x) { g_settings.stamina_drain = k_damage[x]; }, DAMAGE_DEFAULT));
     v.push_back(toggle(P_ACCESS, "Toggle shield / focus (ZL)",
                        "Press ZL once in play to hold your shield or lock on; press ZL again to release.",
                        [](const Item &) { return (int)g_settings.toggle_zl; },
@@ -1424,6 +1573,10 @@ void build_items(void) {
                            [](const Item &) { return nearest(k_text_sizes, N(k_text_sizes), (float)g_settings.menu_text_size); },
                            [](const Item &, int x) { g_settings.menu_text_size = k_text_sizes[x]; }, 2));
     }
+    v.push_back(toggle(P_ACCESS, "Remember menu position",
+                       "Keep the selected option and scroll position when reopening this F1 overlay.",
+                       [](const Item &) { return (int)g_settings.menu_remember_pos; },
+                       [](const Item &, int x) { g_settings.menu_remember_pos = x; }, 0));
 
 }
 
@@ -1925,17 +2078,22 @@ std::u16string utf16(const char *s) {
     return o;
 }
 
-// A message for the game ({char16_t *, u32 length with the terminator} at out); id: its storage. grey: in the
-// game's grey (its message colour tag: 0x0e, group 0, tag 3, 2 bytes of colour; 0xffff back to the text's own).
+// A message for the game ({char16_t *, u32 length with the terminator} at out); id: its storage. colour: one of the
+// game's message colours (its colour tag: 0x0e, group 0, tag 3, 2 bytes of colour; 0xffff back to the text's own).
 // Right-to-left menus: the game draws text left to right, so it gets each line in visual order.
-void put_text(uint32_t id, const char *s, uint64_t out, bool grey = false) {
+void put_text_coloured(uint32_t id, const char *s, uint64_t out, char16_t colour) {
     std::u16string &t = g_text[id];
     std::u16string n = utf16(ui_visual_order(s).c_str());
     static const char16_t tag[] = {0x0e, 0, 3, 2};  // (then the colour)
-    if (grey) n = std::u16string(tag, 4) + GREY + n + std::u16string(tag, 4) + (char16_t)0xffff;
+    if (colour != 0xffff) n = std::u16string(tag, 4) + colour + n + std::u16string(tag, 4) + (char16_t)0xffff;
     if (t != n) t = n;
     wr64(out, (uint64_t)(uintptr_t)t.c_str());
     wr32(out + 8, (uint32_t)t.size() + 1);
+}
+
+// ... in the text's own colour, or the game's grey
+void put_text(uint32_t id, const char *s, uint64_t out, bool grey = false) {
+    put_text_coloured(id, s, out, grey ? GREY : 0xffff);
 }
 
 // The quit question's answer (title menu and Options updates)
@@ -1967,10 +2125,34 @@ void quit_poll(void) {
 
 }  // namespace
 
+// The game gets no A while the Achievements page is up (runtime/hle/input.c): A on a row would move the cursor onto
+// its button, and the achievements' rows only show what they say
+extern "C" bool game_options_hold_a(void) {
+    return g_installed && g_cur_page == P_ACHIEVEMENTS && options_screen();
+}
+
 // The game gets no input while a binding capture runs, and briefly after it (the pressed button is still down)
 extern "C" bool game_options_input_hold(void) {
     int d, s, ms;
     return bind_capture_active(&d, &s, &ms) || std::chrono::steady_clock::now() < g_hold_until;
+}
+
+// The Achievements page's rows as on Steam: the unlocked ones first (the latest on top), then the rest by how far
+// along they are; ties keep the table's order (easiest first)
+void ach_order(std::vector<uint32_t> &o) {
+    auto key = [](uint32_t e, AchInfo *in, double *frac) {
+        ach_info(g_items[e - GAME_ENTRIES].arg, in);
+        *frac = in->target ? (double)in->cur / in->target : 0;
+    };
+    std::sort(o.begin(), o.end());  // (the table's order first: entries are in it)
+    std::stable_sort(o.begin(), o.end(), [&](uint32_t a, uint32_t b) {
+        AchInfo ia, ib;
+        double fa, fb;
+        key(a, &ia, &fa), key(b, &ib, &fb);
+        if (ia.unlocked != ib.unlocked) return ia.unlocked;
+        if (ia.unlocked) return ia.at > ib.at;
+        return fa > fb;
+    });
 }
 
 // createRows: the row list of the page to show
@@ -1978,6 +2160,7 @@ extern "C" void rt_opt_rows(void) {
     if (!install()) return;
     int page = g_switching ? g_next_page : P_MAIN;
     g_switching = false;
+    if (page == P_ACHIEVEMENTS) ach_order(g_order[page]);
     std::vector<uint32_t> &o = g_order[page];
     g_shown.assign(g_items.size(), -1);
     if (page == P_COLOUR) g_nluts = color_lut_list();  // (files the player added since the last opening)
@@ -2121,7 +2304,9 @@ extern "C" int rt_opt_read(uint64_t row) {
     const Item *it = item_of_row(row);
     if (!it) return 0;
     if (it->kind == KIND_BUTTON) {
-        wr8(row + 0x64, 0);
+        // +0x64 not 0: the row's redraw (opt_row_redraw) turns its button off, as the game's own unavailable ones -
+        // the achievements' rows, which only show what they say: A on them does nothing (no sound, no press)
+        wr8(row + 0x64, it->action == A_NONE);
         return 1;
     }
     size_t idx = (size_t)(it - g_items.data());
@@ -2204,6 +2389,12 @@ extern "C" int rt_opt_msg(uint32_t id, uint64_t out) {
         s = tr(title);
     }
     else if (part == MSG_DESC) s = it->desc_fn ? it->desc_fn(*it) : tr(it->desc);
+    else if (part == MSG_BUTTON && it->page == P_ACHIEVEMENTS) {  // (an achievement's state: red until unlocked, then green)
+        AchInfo in;
+        ach_info(it->arg, &in);
+        put_text_coloured(id, it->label(*it, -1), out, in.unlocked ? GREEN : RED);
+        return 1;
+    }
     else if (part == MSG_KEY || part == MSG_PAD) {
         bool key = part == MSG_KEY;
         if (is_binds_header(it)) {
@@ -2330,11 +2521,14 @@ extern "C" uint64_t rt_opt_tick(uint64_t screen) {
 extern "C" void rt_opt_back(void) {
     bind_capture_cancel();
     g_cap_row = 0;
-    if (g_installed && g_cur_page != P_MAIN) {
+    bool direct = g_ach_direct && g_cur_page == P_ACHIEVEMENTS;
+    g_ach_direct = false;
+    if (g_installed && g_cur_page != P_MAIN && !direct) {
         g_next_page = g_cur_page == P_VIDEO_ADV ? P_VIDEO : g_cur_page == P_HDR ? P_VIDEO_ADV : P_MAIN;
         g_reopen = g_switching = true;
-    } else {
+    } else {  // (it closes: the next opening is on the first page, unless a button asks for another)
         g_reopen = g_switching = false;
+        g_cur_page = P_MAIN;
     }
 }
 
@@ -2415,9 +2609,91 @@ static void title_hide_dlc(uint64_t menu) {
     }
 }
 
+// ---- The title menu's Achievements button: runtime/services/fs.c adds an eighth button part to the menu's layout
+// (Pa_SaveFile_06, reading Achievements), and the game makes its button like the seven others' - with no id, as the
+// menu knows of seven (its id stays 0: an id the menu doesn't know of would take its cursor). It goes above Options:
+// each update moves its button before Options' in the menu's list (the cursor's order), puts it where Options is, and
+// Options and the buttons after it 40 lower (from their own places in the layout, kept the first time: which buttons
+// show depends on the saves, the downloadable content and the menu's variant). Pressed, it does what Options (0x6b)
+// does - the Options screen - with the Achievements page as the one the screen opens on; B from there goes straight
+// back to the menu.
+// The menu's buttons are a list (head at title_options_state + 0x22c; a button's node at +8: prev, next) of 0x68-byte
+// objects: +0x18 their pane's name, +0x44 the id. A pane (nn::ui2d::Pane) is found by its name, 0xb8 into it: from
+// there, -0xa0 its parent's pane, -0x84 its y in its parent, -0x60 its flags (bit 0: shown), -0x2c its y on the
+// screen.
+const uint32_t TITLE_OPTIONS_BUTTON = 0x6b, TITLE_ACH_BUTTON = 0;
+#define TITLE_ACH_PART "Pa_SaveFile_06"  // (runtime/services/fs.c)
+const float TITLE_BUTTON_STEP = 40;
+uint64_t g_title_ach;      // its Achievements button
+uint64_t g_title_pressed;  // ... while its id reads as Options for a press (given back at the next update)
+uint64_t g_title_head;     // the menu the places below are of
+struct { uint64_t name; float y; } g_title_place[16];  // the buttons' own places (y in their parents)
+int g_title_places;
+
+float rdf(uint64_t a) { float f; uint32_t v = rd32(a); memcpy(&f, &v, 4); return f; }
+void wrf(uint64_t a, float f) { uint32_t v; memcpy(&v, &f, 4); wr32(a, v); }
+
+bool pane_shown(uint64_t name) {  // (shown, and every pane it is in)
+    for (int depth = 0; name && depth < 16; depth++) {
+        if (!(rd32(name - 0x60) & 1)) return false;
+        uint64_t parent = rd64(name - 0xa0);
+        name = parent ? parent + 0xb8 : 0;
+    }
+    return true;
+}
+
+float own_place(uint64_t name) {  // (the y the layout and its animations give the pane)
+    for (int i = 0; i < g_title_places; i++)
+        if (g_title_place[i].name == name) return g_title_place[i].y;
+    float y = rdf(name - 0x84);
+    if (g_title_places < 16) g_title_place[g_title_places++] = {name, y};
+    return y;
+}
+
+bool is_ach(uint64_t b) {
+    uint64_t name = rd64(b + 0x18);
+    return name && !memcmp((const void *)(uintptr_t)name, TITLE_ACH_PART, sizeof TITLE_ACH_PART);
+}
+
+void title_ach_button(uint64_t menu) {
+    uint64_t head = menu + g_site.title_options_state + 0x22c, ach = 0, options = 0;
+    if (head != g_title_head) g_title_head = head, g_title_places = 0;
+    int n = 0;
+    for (uint64_t node = rd64(head + 8); node && node != head && n < 16; node = rd64(node + 8), n++) {
+        uint64_t b = node - 8;
+        if (is_ach(b)) ach = b;
+        else if (rd32(b + 0x44) == TITLE_OPTIONS_BUTTON && !options) options = b;
+    }
+    g_title_ach = ach;
+    if (!ach || !options) return;
+    if (rd64(ach + 0x10) != options + 8) {  // (before Options in the list: out of it, in again)
+        uint64_t prev = rd64(ach + 8), next = rd64(ach + 0x10);
+        wr64(prev + 8, next), wr64(next, prev);
+        prev = rd64(options + 8);
+        wr64(ach + 8, prev), wr64(ach + 0x10, options + 8);
+        wr64(prev + 8, ach + 8), wr64(options + 8, ach + 8);
+    }
+    // Options and what follows: 40 lower than their own places; the button: where Options' would be
+    bool after = false;
+    n = 0;
+    for (uint64_t node = rd64(head + 8); node && node != head && n < 16; node = rd64(node + 8), n++) {
+        uint64_t b = node - 8, name = rd64(b + 0x18);
+        if (b == ach) { after = true; continue; }
+        if (!name) continue;
+        wrf(name - 0x84, own_place(name) - (after ? TITLE_BUTTON_STEP : 0));
+    }
+    uint64_t name = rd64(ach + 0x18), parent = rd64(name - 0xa0), oname = rd64(options + 0x18);
+    if (!parent || !oname || !pane_shown(oname)) return;
+    float at = rdf(oname - 0x2c) - (rdf(oname - 0x84) - own_place(oname));  // (Options' place on the screen, unmoved)
+    wrf(name - 0x84, at - rdf(parent + 0xb8 - 0x2c));  // (its place is in its parent's)
+    wr32(name - 0x60, rd32(name - 0x60) | 1);
+}
+
 // The title menu's update (menu = the screen): 1 = open the Options screen again now (it has gone, a page is due).
 // The quit question's answer is read here too.
 extern "C" int rt_opt_title_tick(uint64_t menu) {
+    if (g_title_pressed) wr32(g_title_pressed + 0x44, TITLE_ACH_BUTTON), g_title_pressed = 0;
+    title_ach_button(menu);
     quit_poll();
     title_hide_dlc(menu);
     if (rd32(menu + g_site.title_options_state) != MENU_OPTIONS_ACTIVE) {  // (the Options button isn't active: next opening, first page)
@@ -2437,14 +2713,75 @@ extern "C" int rt_opt_pause_tick(void) {
     return 1;
 }
 
+// ---- The pause System page's Achievements button: the seventh button the page's setup adds when the Nintendo Switch 2
+// Edition upgrade is offered (0x53, Pa_Btn_06, in the gap the layout leaves under Load; tools/patches.py
+// _pause_upgrade has it added). Pressed, it does what Options (0x4f) does - the Options screen, which the System page
+// waits on in its Options state - with the Achievements page as the one the screen opens on; B from there goes
+// straight back to the System page.
+const uint32_t PAUSE_OPTIONS_BUTTON = 0x4f, PAUSE_ACH_BUTTON = 0x53;
+
+// The System page's setup: whether to add that button
+extern "C" int rt_pause_ach_button(void) { return 1; }
+
+// ... and its text: at str ({char16_t *, u32 length}) the setup has "Nintendo Switch 2 Edition", a string of its code
+extern "C" void rt_pause_ach_text(uint64_t str) {
+    if (!rt_pause_ach_button()) return;
+    std::u16string &t = g_text[MSG_PAUSE_ACH];
+    t = utf16(tr("Achievements"));
+    wr64(str, (uint64_t)(uintptr_t)t.c_str());
+    wr32(str + 8, (uint32_t)t.size());  // (as the game counts it: the characters, not the terminator)
+}
+
+// The System page's button handler (id = the button pressed): the id it goes on with
+extern "C" uint32_t rt_pause_button(uint32_t id) {
+    if (id != PAUSE_ACH_BUTTON) return id;
+    g_next_page = P_ACHIEVEMENTS;
+    g_switching = g_ach_direct = true;
+    return PAUSE_OPTIONS_BUTTON;
+}
+
+// A message file's search by label (label: a C string; out: {char16_t *, u32 length}): the Options screen's title (LayoutMsg/OptionWindow_00 "T_OptionTitle_00") while it shows the Achievements page (the
+// screen opens again on a page change, so the title is looked up once per page). SAVAGEWIND_LOG_PAUSE_MSG=1 logs the
+// System page's labels as they're looked up.
+extern "C" int rt_pause_msg(uint64_t label, uint64_t out) {
+    const char *l = (const char *)(uintptr_t)label;
+    if (!l) return 0;
+    if (!strcmp(l, "T_OptionTitle_00")) {  // (looked up as the screen opens: the page it opens on is the one due)
+        int page = g_switching ? g_next_page : g_cur_page;
+        if (page != P_ACHIEVEMENTS) return 0;
+        char title[96];
+        snprintf(title, sizeof title, "%s  %d / %d", tr("Achievements"), ach_unlocked_total(), g_ach_count);
+        put_text(MSG_ACH_TITLE, title, out);
+        return 1;
+    }
+    if (strncmp(l, "Pa_Save_00-", 11)) return 0;
+    static int log = -1;
+    if (log < 0) log = getenv("SAVAGEWIND_LOG_PAUSE_MSG") && strcmp(getenv("SAVAGEWIND_LOG_PAUSE_MSG"), "0");
+    if (log) fprintf(stderr, "[options] pause message %s\n", l);
+    return 0;
+}
+
 extern "C" uint64_t rt_opt_screen(void) { return options_screen(); }
+
+// (runtime/services/fs.c, which is C: the title menu's Achievements button text)
+extern "C" const char *rt_tr(const char *en) { return tr(en); }
 
 // ---- Quit: the game's two-button dialog (screen 0x39, type 7) asks: desktop (upper button) or the start screen
 // (lower). Its buttons write their answer to dialog_answer (1.8.2 0x7001c4b308; upper 0x5b: 0, lower 0x5a: 1;
 // FUN_7100d46598) and leave the dialog up; B closes it without an answer (rt_quit_dialog_back).
 
-// The title menu's amiibo settings button is Quit (the figure is chosen in the overlay's amiibo tab)
-extern "C" int rt_title_event(uint32_t id) { return id == TITLE_AMIIBO_BUTTON; }
+// The title menu's button handler (id: the button pressed's, read before the handler reads it). The amiibo settings
+// button is Quit: 1 (the figure is chosen in the overlay's amiibo tab). The Achievements button reads as Options for this press, with
+// its page due.
+extern "C" int rt_title_event(uint32_t id) {
+    if (id == TITLE_ACH_BUTTON && g_title_ach && rd32(g_title_ach + 0x44) == TITLE_ACH_BUTTON) {  // (the only one)
+        g_next_page = P_ACHIEVEMENTS;
+        g_switching = g_ach_direct = true;
+        wr32(g_title_ach + 0x44, TITLE_OPTIONS_BUTTON);
+        g_title_pressed = g_title_ach;
+    }
+    return id == TITLE_AMIIBO_BUTTON;
+}
 
 // LayoutMsg/Title_00 lookups: "0003" (the amiibo settings button) reads Quit
 extern "C" int rt_title_msg(uint64_t label, uint64_t out) {

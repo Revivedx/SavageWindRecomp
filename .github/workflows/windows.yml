@@ -39,3 +39,5 @@ jobs:
             mingw-w64-ucrt-x86_64-spirv-tools mingw-w64-ucrt-x86_64-pkgconf mingw-w64-ucrt-x86_64-nasm
       - name: Build
         run: make -j$(nproc) && ls -l build/savagewind.exe build/savagewind.dll.a
+      - name: CPU target checks (synthetic hardware)
+        run: make test-game-cpu

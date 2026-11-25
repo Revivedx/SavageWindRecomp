@@ -45,6 +45,9 @@ cp third_party/fonts/NotoSansThai/NotoSansThai-Medium.ttf "$APPDIR/usr/bin/"  # 
 cp third_party/fonts/NotoSansThai/OFL.txt "$APPDIR/usr/bin/NotoSansThai-OFL.txt"
 cp third_party/fonts/NotoSansHebrew/NotoSansHebrew-Medium.ttf "$APPDIR/usr/bin/"  # (Hebrew menus, OFL)
 cp third_party/fonts/NotoSansHebrew/OFL.txt "$APPDIR/usr/bin/NotoSansHebrew-OFL.txt"
+cp third_party/fonts/FontAwesome/fa-solid-900.ttf "$APPDIR/usr/bin/"  # (the menus' icons, as SWMM+'s: OFL)
+cp third_party/fonts/FontAwesome/LICENSE.txt "$APPDIR/usr/bin/FontAwesome-LICENSE.txt"
+cp docs/media/wordmark.png docs/media/wordmark_config.png docs/media/wordmark_boot.png docs/media/default_splash.jpg "$APPDIR/usr/bin/"  # (the name in the menus' header)
 cp third_party/FidelityFX/LICENSE.txt "$APPDIR/usr/bin/FidelityFX-LICENSE.txt"  # (AMD FidelityFX SDK, MIT: frame generation)
 mkdir "$APPDIR/usr/bin/colour-luts" && cp third_party/luts/*.cube third_party/luts/README.md "$APPDIR/usr/bin/colour-luts/"  # (CC0: Video > Colour)
 cp README.md LICENSE "$APPDIR/usr/bin/"  # (licenses and source links of the bundled components: README "License")

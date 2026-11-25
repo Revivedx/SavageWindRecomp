@@ -15,6 +15,11 @@ bool opt_toggle(const char *label, bool *v, bool def, const char *desc);
 bool opt_toggle_item(const char *label, bool *v, const char *value_override, const char *desc);
 // wrap: past the last value back to the first (and the other way); false: stops at the ends
 bool opt_choice(const char *label, int *v, const char *const *names, int n, int def, const char *desc, bool wrap = true);
+// an item in an order (a mod): the item switch, then arrows on the right to move it up (higher) or down (lower) -
+// clicked, or LB / RB on a controller and Page Up / Page Down while the row is selected. can_up / can_down: the ends.
+// Returns OPT_ORDER_TOGGLED (*v flipped), OPT_ORDER_UP, OPT_ORDER_DOWN or 0.
+enum { OPT_ORDER_TOGGLED = 1, OPT_ORDER_UP, OPT_ORDER_DOWN };
+int opt_order_item(const char *label, bool *v, const char *value_override, bool can_up, bool can_down, const char *desc);
 // item choice: values shown verbatim without tr() and label casing controlled by upper (default false)
 bool opt_choice_item(const char *label, int *v, const char *const *names, int n, int def, const char *desc,
                      bool wrap = true, bool upper = false);
@@ -23,9 +28,9 @@ bool opt_list(const char *label, int *v, const char *const *names, int n, int de
 // A dropdown: the value in a box with ▼; a click (A, Enter) opens the list, left / right don't step through it
 bool opt_dropdown(const char *label, int *v, const char *const *names, int n, int def, const char *desc);
 // a choice where some values can't be picked yet (avail[i] false: shown greyed when stepped onto, never stored): *v
-// keeps the last available value, *shown is the one on screen (-1: *v). True when *v changed.
+// keeps the last available value, *shown is the one on screen (-1: *v). True when *v changed. wrap: as opt_choice's
 bool opt_choice_avail(const char *label, int *v, int *shown, const char *const *names, const bool *avail, int n, int def,
-                      const char *desc);
+                      const char *desc, bool wrap = true);
 // steps of `step` between lo and hi; fmt formats the value (e.g. "%gx")
 bool opt_slider(const char *label, float *v, float lo, float hi, float step, float def, const char *fmt, const char *desc);
 // whole numbers lo..hi in steps of `step` (holding left / right speeds up); fmt formats it (e.g. "%d rupees"), lo_name
@@ -59,3 +64,5 @@ void ui_texture_free(unsigned long long tex);
 // the next page's first row takes the controller's cursor (Down on the tab bar: ImGui's own pick across the nested
 // panes was unreliable - some tabs went to a row further down, some nowhere). Cleared by the next opt_begin / call.
 void opt_focus_first(bool on);
+// restore focus to the page's last focused row (if any) instead of jumping to the first row
+void opt_restore_focus(bool on);

@@ -24,6 +24,18 @@ int main(int argc, char **argv) {
     assert(g_settings.sparse_heap == atoi(argv[4]));
     assert(g_settings.tex_lod_bias == atoi(argv[5]));
     assert(g_settings.audio_output == atoi(argv[4]));
+    // Video > Frame rate: 72 is offered (#1080), between 60 and 90, and the list stays ascending
+    {
+        const int *fps;
+        int n = fps_choices(&fps), at60 = -1, at72 = -1, at90 = -1;
+        for (int i = 0; i < n; i++) {
+            assert(i == 0 || fps[i] > fps[i - 1]);
+            if (fps[i] == 60) at60 = i;
+            if (fps[i] == 72) at72 = i;
+            if (fps[i] == 90) at90 = i;
+        }
+        assert(at72 == at60 + 1 && at90 == at72 + 1);
+    }
     g_settings.rumble = !g_settings.rumble;
     // UI changes must remain possible even when startup debug overrides were supplied.
     g_settings.pc_cursor = !g_settings.pc_cursor;
@@ -37,5 +49,5 @@ int main(int argc, char **argv) {
     assert(graphics_preset_current() == GPRESET_POTATO);
     graphics_preset_apply(GPRESET_HIGH);
     assert(g_settings.grass && g_settings.lens_flare && graphics_preset_current() == GPRESET_HIGH);
-    printf("PASS: load cursor=%s, toggle and save for next boot; Potato and High presets\n", argv[2]);
+    printf("PASS: load cursor=%s, toggle and save for next boot; Potato and High presets; 72 fps offered\n", argv[2]);
 }

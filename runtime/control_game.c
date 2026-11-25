@@ -473,6 +473,7 @@ void control_tp_init(void);        // runtime/control_tp.c
 void control_cells_init(void);     // runtime/control_cells.c
 void control_fly_init(void);       // runtime/control_fly.c
 void rupees_control_init(void);    // runtime/rupees.c (cheat)
+void collectibles_control_init(void);  // runtime/collectibles.c (cheat)
 void weather_control_init(void);   // runtime/weather.c (cheat)
 void control_items_init(void);     // runtime/items.c
 
@@ -504,5 +505,6 @@ void control_game_init(void) {
     control_items_init();
     control_tp_init();
     rupees_control_init();
+    collectibles_control_init();
     weather_control_init();
 }

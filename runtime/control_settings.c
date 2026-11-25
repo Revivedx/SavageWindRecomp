@@ -28,12 +28,13 @@ static const Setting settings[] = {
     B(fullscreen), I(window_w, 0, 16384, NULL), I(window_h, 0, 16384, NULL),
     I(upscaler, 0, UPSCALE_COUNT - 1, "off|metalfx|fsr1|fsr3|dlss|fsr4"),
     I(upscale_quality, 0, UPQ_COUNT - 1, "ultra_quality|quality|balanced|performance|ultra_performance|native|dynamic"),
-    I(antialias, 0, AA_TAA, "off|smaa|taa"), B(game_fxaa), B(wet_fix),
+    I(antialias, 0, AA_TAA, "off|smaa|taa"), B(game_fxaa), B(wet_fix), I(stars, 0, STARS_COUNT - 1, "original|bright|brighter|brightest"),
     I(render_scale, 0, RSCALE_COUNT - 1, "50|75|100|125|150|200"),
-    I(anisotropy, 0, 4, "game|2x|4x|8x|16x"), I(tex_lod_bias, 0, TEX_LOD_COUNT - 1, "default|sharp|sharper"), I(sharpening, 0, 10, NULL),
-    B(frame_gen), F(volume, 0, 2), I(audio_output, 0, AUDIO_OUT_COUNT - 1, "stereo|surround_51|headphones_3d"),
+    I(anisotropy, 0, 4, "game|2x|4x|8x|16x"), I(tex_lod_bias, 0, TEX_LOD_COUNT - 1, "default|sharp|sharper|ultra"), I(sharpening, 0, 10, NULL),
+    I(frame_gen, 0, FG_COUNT - 1, "off|fsr3|dlss"), I(frame_gen_mult, FG_MULT_MIN, FG_MULT_MAX, NULL),
+    F(volume, 0, 2), I(audio_output, 0, AUDIO_OUT_COUNT - 1, "stereo|surround_51|headphones_3d"),
     B(reverb), B(movie_audio), B(mute_unfocused),
-    I(shrine_sensor_volume, 0, 100, NULL), B(amiibo_random_uid),
+    I(shrine_sensor_volume, 0, 100, NULL), I(music_volume, 0, 100, NULL), B(amiibo_random_uid),
     I(perf_overlay, 0, PERF_FULL, "off|fps|full"), I(fps_limit, 0, 360, NULL), B(fps_display),
     I(vsync, 0, VSYNC_COUNT - 1, "on|fast|adaptive|off"), B(dpad_move), B(menu_wrap), B(freecam_sticks),
     B(prompts_follow), B(rumble), I(rumble_strength, RUMBLE_STRENGTH_MIN, RUMBLE_STRENGTH_MAX, NULL),
@@ -44,29 +45,32 @@ static const Setting settings[] = {
     I(button_icons, 0, ICONS_COUNT - 1, "auto|keyboard|xbox|playstation|nintendo|steamdeck"),
     I(button_layout, 0, BUTTON_LAYOUT_COUNT - 1, "auto|nintendo|swap_ab|xbox|swap_xy|gamecube"),
     B(async_shaders), B(precompile_shaders), B(dlss_download), B(xess_download), B(quick_sort), B(quick_drop), B(quick_replace), B(discord_rpc),
+    I(day_cycle_length, DAY_CYCLE_DEFAULT, DAY_CYCLE_MAX, NULL),
     I(shadow_res, 0, SHADOW_COUNT - 1, "console|high|ultra|extreme|potato"), B(wide_view), B(hud_edges),
     I(hdr, 0, HDR_COUNT - 1, "auto|on|off"), I(hdr_white, 0, 1000, NULL),
     I(hdr_peak_nits, 0, 10000, NULL), I(hdr_game_nits, 0, 1000, NULL), I(hdr_hue, 0, 100, NULL),
     I(hdr_blowout, 0, 100, NULL), I(hdr_sdr_blend, 0, 60, NULL), I(hdr_vanilla_saturation, 0, 100, NULL),
-    I(hdr_bloom, 0, 100, NULL), I(hdr_clamp, 0, 1, "bt709|bt2020"),
+    I(hdr_bloom, 0, 200, NULL), I(hdr_clamp, 0, 1, "bt709|bt2020"),
     I(hdr_tonemapper, 0, 1, "vanilla|renodx"), I(hdr_exposure, 50, 200, NULL),
     I(hdr_highlights, 0, 100, NULL), I(hdr_shadows, 0, 100, NULL), I(hdr_contrast, 0, 100, NULL),
     I(hdr_saturation, 0, 100, NULL), I(hdr_highlight_saturation, 0, 100, NULL), I(hdr_flare, 0, 100, NULL),
     I(hdr_gamma, 0, 2, "none|2.2|bt1886"),
     I(hdr_ui_nits, 0, 1000, NULL),
-    I(fov, 50, 200, NULL), I(hud_size, 0, 150, NULL), I(menu_speed, 70, 300, NULL), B(bloom), B(depth_of_field),
-    B(grass), B(lens_flare), B(fast_fma),I(color_exposure, -20, 20, NULL), I(color_contrast, -50, 50, NULL),
+    I(fov, 50, 200, NULL), I(hud_size, 0, 150, NULL), B(dynamic_hud), I(menu_speed, 70, 300, NULL), B(bloom), B(depth_of_field),
+    B(grass), I(grass_distance, 0, GRASS_DIST_COUNT - 1, "auto|potato|original|medium|high"), B(lens_flare), B(fast_fma),I(color_exposure, -20, 20, NULL), I(color_contrast, -50, 50, NULL),
     I(color_saturation, -100, 100, NULL), I(color_temperature, -100, 100, NULL),
     I(color_tint, -100, 100, NULL),
     {"color_lut", g_settings.color_lut, TEXT, 0, 0, NULL},
     I(color_lut_strength, 0, 100, NULL), B(color_lut_set), B(no_weapon_wear),
     I(weapon_wear, WEAPON_WEAR_MIN, WEAPON_WEAR_MAX, NULL), B(infinite_arrows),
-    B(infinite_stamina), B(infinite_rupees), I(item_multiplier, 1, 8, NULL), B(free_sprint), B(sure_footed), I(weather, 0, WEATHER_COUNT - 1,
+    B(infinite_stamina), B(infinite_rupees), I(item_multiplier, 1, 8, NULL), B(free_sprint), B(sure_footed), B(collectibles_map), B(show_all_places), I(weather, 0, WEATHER_COUNT - 1,
                            "game|no_rain|no_storms|clear|cloudy|rain|heavy_rain|snow|heavy_snow|thunderstorm|thunder_rain|sun_shower"),
-    B(god_mode), B(one_hit_kill), I(damage_taken, 25, 400, NULL), I(damage_dealt, 25, 400, NULL),
+    B(god_mode), B(one_hit_kill), B(silent_link), B(hero_soul_wind), B(hero_soul_electric), B(hero_soul_fire),
+    B(hero_soul_water), I(damage_taken, 25, 400, NULL), I(damage_dealt, 25, 400, NULL),
+    I(stamina_drain, 25, 400, NULL),
     I(text_language, 0, 0, NULL), I(voice_language, 0, 0, NULL), B(save_backups), B(stick_cam_on), I(stick_cam_x, STICK_CAM_MIN, STICK_CAM_MAX, NULL),
     I(stick_cam_y, STICK_CAM_MIN, STICK_CAM_MAX, NULL), B(toggle_zl), B(toggle_zr), I(menu_text_size, 80, 150, NULL),
-    B(auto_continue), B(menu_tip_seen),
+    B(menu_remember_pos), B(auto_continue), B(menu_tip_seen), B(camera_keep_stealth),
 };
 #undef B
 #undef I
@@ -172,7 +176,7 @@ static void cmd_set(int argc, char **argv, ControlReply *r) {
         control_fail(r, "%s is read-only", s->key); return;
     }
 #ifdef SW_METAL
-    if (is(s, "anisotropy") || is(s, "sharpening") || is(s, "frame_gen") || is(s, "game_fxaa") ||
+    if (is(s, "anisotropy") || is(s, "sharpening") || is(s, "frame_gen") || is(s, "frame_gen_mult") || is(s, "game_fxaa") ||
         !strncmp(s->key, "color_", 6) || is(s, "hdr") || is(s, "hdr_white") || is(s, "vsync")) {
         control_fail(r, "%s is not supported by this backend", s->key); return;
     }
