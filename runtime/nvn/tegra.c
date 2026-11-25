@@ -112,12 +112,28 @@ static void copy_surface(const uint8_t *src, uint8_t *dst, uint32_t wb, uint32_t
         for (uint32_t y = 0; y < hb; y++) {
             uint8_t *lin = dst + ((uint64_t)z * hb + y) * row_bytes;
             const uint8_t *lin_src = src + ((uint64_t)z * hb + y) * row_bytes;
-            // 16-byte runs are contiguous in both layouts
-            for (uint32_t x = 0; x < row_bytes; x += 16) {
+            // A complete 64-byte row of a GOB is four sectors at fixed offsets.
+            uint32_t x = 0;
+            for (; row_bytes - x >= 64; x += 64) {
+                uint64_t o = gob_offset(x, y, z, width_gobs, bh_log2, bd_log2, blocks_rows);
+                if (to_linear) {
+                    memcpy(lin + x, src + o, 16);
+                    memcpy(lin + x + 16, src + o + 32, 16);
+                    memcpy(lin + x + 32, src + o + 256, 16);
+                    memcpy(lin + x + 48, src + o + 288, 16);
+                } else {
+                    memcpy(dst + o, lin_src + x, 16);
+                    memcpy(dst + o + 32, lin_src + x + 16, 16);
+                    memcpy(dst + o + 256, lin_src + x + 32, 16);
+                    memcpy(dst + o + 288, lin_src + x + 48, 16);
+                }
+            }
+            while (x < row_bytes) {
                 uint32_t n = row_bytes - x < 16 ? row_bytes - x : 16;
                 uint64_t o = gob_offset(x, y, z, width_gobs, bh_log2, bd_log2, blocks_rows);
                 if (to_linear) memcpy(lin + x, src + o, n);
                 else memcpy(dst + o, lin_src + x, n);
+                x += n;
             }
         }
     }
