@@ -141,6 +141,7 @@ const LfInfo LF_TABLE[] = {
     {"SAVAGEWIND_FSR3_VIEW", LF_KIND_TEXT, LF_GROUP_DEV, "", ""},
     {"SAVAGEWIND_FSR4_LINEAR", LF_KIND_TEXT, LF_GROUP_OTHER, "", ""},
     {"SAVAGEWIND_GAME_LIB", LF_KIND_TEXT, LF_GROUP_OTHER, "", ""},
+    {"SAVAGEWIND_GAME_MEMORY_MB", LF_KIND_TEXT, LF_GROUP_OTHER, "", ""},
     {"SAVAGEWIND_GEN", LF_KIND_TEXT, LF_GROUP_BUILD, "", "The program that builds the game code."},
     {"SAVAGEWIND_GLYPH_DUMP", LF_KIND_SWITCH, LF_GROUP_DEV, "", ""},
     {"SAVAGEWIND_GPU", LF_KIND_TEXT, LF_GROUP_PLAY, "auto", "Which graphics card to use: a number, part of its name, or auto."},
@@ -556,4 +557,4 @@ const LfInfo LF_TABLE[] = {
     {"SAVAGEWIND_XLATE_VERIFY", LF_KIND_TEXT, LF_GROUP_DEV, "", ""},
     {"SAVAGEWIND_YAZ0", LF_KIND_NUMBER, LF_GROUP_OTHER, "", ""},
 };
-const int LF_TABLE_N = 552;
+const int LF_TABLE_N = 553;

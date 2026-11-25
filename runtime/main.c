@@ -457,6 +457,11 @@ int main(int argc, char **argv) {
     if (from_swmm) LOG("[launcher] started by SWMM+: straight into the game%s\n", config ? " (--config: Configuration)" : "");
     // Savage Wind Configuration's Companion apps switch: the read-only companion socket (runtime/control.h)
     if (g_settings.companion_apps) control_companion_start(CONTROL_COMPANION_PORT);
+    {   // (before the renderer: it sizes its view of the heap by HEAP_MAX). SAVAGEWIND_GAME_MEMORY_MB=<MB> overrides
+        // game_memory_mb for one run (a launcher starting the game with an HD texture pack)
+        const char *e = getenv("SAVAGEWIND_GAME_MEMORY_MB");
+        kernel_memory_setup(e && *e ? atoi(e) : g_settings.game_memory_mb);
+    }
     static const char *const sparse_heap_modes[SPARSE_HEAP_COUNT] = {"auto", "on", "off"};
     int sparse_heap = g_settings.sparse_heap;
     if (sparse_heap < 0 || sparse_heap >= SPARSE_HEAP_COUNT) sparse_heap = SPARSE_HEAP_AUTO;

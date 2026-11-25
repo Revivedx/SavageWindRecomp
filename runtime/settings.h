@@ -178,6 +178,8 @@ typedef struct {
     bool check_updates;       // Savage Wind Configuration asks SW Update if there is a new version
     bool companion_apps;      // the read-only companion socket for map and tracker apps (control_companion_start); off
     bool swmm_mods;           // Play loads the mods SWMM+ deployed (runtime/ui/launcher.mm); on
+    int game_memory_mb;  // the game's heap in MB, for HD texture packs (0: the game's own 3120; up to 6144), read at
+                         // start (runtime/kernel.c kernel_memory_setup)
     int shadow_res;      // SHADOW_*: shadow maps at the console's size, bigger, or (Potato) smaller
     int sharper_menus;   // the menus' one-channel textures enlarged this many times (2 or 4; 0: off), runtime/nvn/text_upscale.c
     int sharper_text;    // the game's font sheets enlarged this many times (2 or 4; 0: off), runtime/nvn/text_upscale.c

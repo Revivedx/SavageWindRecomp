@@ -760,11 +760,16 @@ void vk_translator_setup(void) {
     VkPhysicalDeviceFeatures2 f = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &f12};
     vkGetPhysicalDeviceFeatures2(g_vk.phys, &f);
     bool can_bda = f12.bufferDeviceAddress && f.features.shaderInt64;
-    maxwell_gmem_bda = can_bda && (bda ? atoi(bda) != 0 : drv.driverID == VK_DRIVER_ID_MESA_TURNIP &&
-                                                             (lim < GMEM_SPLIT || HEAP_MAX - GMEM_SPLIT > lim));
+    // A heap bigger than the game's own (game_memory_mb) past the limit: two bindings, or its address where even the
+    // second binding would be past it (a 6 GB heap on NVIDIA's 4 GB limit)
+    bool big = HEAP_MAX > HEAP_MAX_CONSOLE && HEAP_MAX > lim;
+    bool past = lim < GMEM_SPLIT || HEAP_MAX - GMEM_SPLIT > lim;
+    maxwell_gmem_bda = can_bda && (bda ? atoi(bda) != 0 : (drv.driverID == VK_DRIVER_ID_MESA_TURNIP || big) && past);
     if (bda && atoi(bda) && !can_bda) LOG("[vk] SAVAGEWIND_VK_GMEM_BDA=1: the driver lacks bufferDeviceAddress or shaderInt64\n");
+    if (big && past && !maxwell_gmem_bda) LOG("[vk] the game's memory (%llu MB) is past what the shaders can read here\n",
+                                              (unsigned long long)(HEAP_MAX >> 20));
     maxwell_gmem_split = maxwell_gmem_bda ? false : split ? atoi(split) != 0 : (g_vk.is_mali && HEAP_MAX > g_vk.props.limits.maxStorageBufferRange) ||
-                                                    drv.driverID == VK_DRIVER_ID_AMD_PROPRIETARY;
+                                                    drv.driverID == VK_DRIVER_ID_AMD_PROPRIETARY || big;
     maxwell_gmem_snap = gsnap_mode() != 0;
     // (the heap window too, from here on: translate_program and the precompile set it before translating, but the
     // pre-warm's loads of cached translations read the variant before any translation - with 0+0 there, the global
@@ -5663,7 +5668,7 @@ static bool gmem_sparse;
 #define GMEM_SPARSE_PAGE_SIZE 0x10000ull
 #define GMEM_SPARSE_CHUNK_SIZE (1ull << 16)
 #define GMEM_SPARSE_CHUNK_PAGES (GMEM_SPARSE_CHUNK_SIZE / GMEM_SPARSE_PAGE_SIZE)
-#define GMEM_SPARSE_PAGE_COUNT ((HEAP_MAX + GMEM_SPARSE_PAGE_SIZE - 1) / GMEM_SPARSE_PAGE_SIZE)
+#define GMEM_SPARSE_PAGE_COUNT ((HEAP_MAX_LARGEST + GMEM_SPARSE_PAGE_SIZE - 1) / GMEM_SPARSE_PAGE_SIZE)  // (room for the largest heap)
 #define GMEM_SPARSE_MEM_COUNT GMEM_SPARSE_PAGE_COUNT
 static uint8_t gmem_sparse_bound_pages[GMEM_SPARSE_PAGE_COUNT];
 static uint64_t gmem_sparse_generation;
@@ -7108,9 +7113,9 @@ static void hc_list_begin(void) {
 #define VDYN_HITS 3
 #define VDYN_COPY_MAX (64u << 10)
 static int vdyn_mode = -1;
-static _Atomic uint8_t vdyn[HEAP_MAX >> VDYN_SHIFT];  // (a region: 1 once marked, see above)
-static uint8_t vdyn_hits[HEAP_MAX >> VDYN_SHIFT];       // (vdyn_lock: frames it changed in, in a row)
-static uint64_t vdyn_last[HEAP_MAX >> VDYN_SHIFT];      // (vdyn_lock: the frame of the last change)
+static _Atomic uint8_t vdyn[HEAP_MAX_LARGEST >> VDYN_SHIFT];  // (a region: 1 once marked, see above)
+static uint8_t vdyn_hits[HEAP_MAX_LARGEST >> VDYN_SHIFT];       // (vdyn_lock: frames it changed in, in a row)
+static uint64_t vdyn_last[HEAP_MAX_LARGEST >> VDYN_SHIFT];      // (vdyn_lock: the frame of the last change)
 static struct { uint64_t addr, size, hash, seq; } vdyn_chk[VDYN_N];
 static _Atomic uint64_t vdyn_w, vdyn_r;  // (written by the render thread / read by a waiting thread)
 static uint64_t vdyn_tick;

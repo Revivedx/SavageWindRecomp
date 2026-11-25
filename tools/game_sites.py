@@ -549,6 +549,31 @@ SITES = [
     # Cheats > Map hooks the read (patches.py _place_icon) and clears the bit for places that were never visited,
     # so they keep the normal look while staying travel destinations.
     Site('place_icon', 'code', 'b9403e68 7217011f f9406121 a9414ff4 1e200c20 a8c27bfd d61f0020 a9414ff4', 0),
+    # The game's memory (tools/patches.py _game_heap_size; runtime/kernel.c kernel_memory_setup): the size nninitStartup
+    # asks SetMemoryHeapSize for (mov w0, #0xc3000000, then the 32 MB block malloc keeps), and the root heap's size
+    # main hands sead's heap manager (mov w8, #0xc1000000: the heap less those 32 MB)
+    Site('game_heap_size', 'code', '52b86000 94000000/fc000000 910023e0 52a04001 94000000/fc000000 f94007e0 52a04001 '
+         '94000000/fc000000', 0),
+    Site('game_root_heap_size', 'code', '52b82008 52800020 a9027fe8 94000000/fc000000 52800020 94000000/fc000000 '
+         '52800020 94000000/fc000000', 0),
+    # ... and the resource system's FixedHeap (mov w0, #0x17600000) and the TexArcWork heap made inside it
+    # (mov w0, #0xc000000), where texture archives are tried first
+    Site('game_fixed_heap_size', 'code', '52a2ec00 94000000/fc000000 f9001a60 b5000000/ff00001f a9434ff4 f94013f5 '
+         'a9417bfd 910103ff', 0),
+    Site('game_texarc_heap_size', 'code', '52a18000 52800103 52800024 52800025 91004108 a90027e8 94000000/fc000000 '
+         'f9009260', 0),
+    # ... and the GPU memory pool the models' textures load into: 500 MB (mov w9, #0x1f400000), or 400 MB in the
+    # other mode the csel after them picks (mov w11, #0x19000000)
+    Site('game_texture_pool', 'code', '52a3e809 f9000feb 52a3200b f9000914 b94003e8 3941427b b940d156 7100091f', 0),
+    Site('game_texture_pool_b', 'code', '52a3200b f9000914 b94003e8 3941427b b940d156 7100091f 39414668 9a89017a', 0),
+    # ... and the resource manager's ForResourceS / ForResourceL heaps, whose sizes it reads from its settings
+    # (ldr w8, [x20, #0xcc] / [x20, #0xc8]): StarterPackMgr, where the resident packs load (Pack/TitleBG.pack), takes
+    # what ForResourceL has left
+    Site('game_resource_s', 'code', 'b940ce88 a904e3fa a93f27ba 290523f9 94000000/fc000000 b980ae68 9102227c 52a8141b', 0),
+    Site('game_resource_l', 'code', 'b940ca88 90000009/9f00001f 91000129/ffc003ff d10043a1 aa1503e0 b90023f6 79004bf7 '
+         '39009bf7', 0),
+    # ... and StarterPackMgr's heap inside ForResourceL: 225 MB (mov w8, #0xe100000; 20 MB in the mode the csel picks)
+    Site('game_starter_pack', 'code', '52a1c208 52a02809 9a881120 94000000/fc000000 aa0003e1 f9012e60 52802000 52800102', 0),
     Site('main_data', 'data', '', 0),
     Site('main_end', 'end', '', 0),
 ]
@@ -624,6 +649,10 @@ OPTIONAL_GROUPS = [
     ('actor_create', 'actor_creator', 'actor_create_heap', 'inst_params_vt', 'inst_params_init', 'inst_params_add',
      'inst_params_add_string'),  # (reward chests: without them a reward waits for room in the pouch)
     ('horse_cam_lr',),
+    ('game_heap_size', 'game_root_heap_size'),  # (both or neither: the root heap must fit in the heap)
+    ('game_fixed_heap_size', 'game_texarc_heap_size'),  # (both or neither: TexArcWork is made inside FixedHeap)
+    ('game_texture_pool', 'game_texture_pool_b'),
+    ('game_resource_s', 'game_resource_l', 'game_starter_pack'),  # (StarterPackMgr grows inside ForResourceL)
 ]
 OPTIONAL = {n for g in OPTIONAL_GROUPS for n in g}
 
@@ -844,6 +873,15 @@ KNOWN = {
         'grass_blade_lateral_near': 0x70013a8f0c,
         'grass_blade_lateral_far': 0x70013a8f20,
         'tree_ranges': 0x70013c94ac,
+        'game_heap_size': 0x700000071c,
+        'game_root_heap_size': 0x7000c617c0,
+        'game_fixed_heap_size': 0x700131aef8,
+        'game_texarc_heap_size': 0x700131b49c,
+        'game_texture_pool': 0x700127b6e0,
+        'game_texture_pool_b': 0x700127b6e8,
+        'game_resource_s': 0x700155fda4,
+        'game_resource_l': 0x700155fde0,
+        'game_starter_pack': 0x7001209a8c,
         'act_hold': 0x7000d16f0c,
         'act_trig': 0x7000d16f74,
         'act_masks': 0x70016d89b4,

@@ -1065,6 +1065,64 @@ def _grass_blade_lateral(gen, a):
             f'  /* {a:#x}: fcmp s0, s{n} (grass blades: a cell inside the region\'s width) */')
 
 
+# The game's memory (game_memory_mb, runtime/kernel.c kernel_memory_setup). nninitStartup asks SetMemoryHeapSize for
+# 3120 MB (1.9.0 0x700000071c) and main gives sead's root heap that less the 32 MB malloc keeps (0x7000c617c0); the
+# resource heap takes what the root heap has left. Both sizes come from the runtime: the game's own unless the
+# setting asks for more.
+
+def _game_heap_size(gen, a):
+    assert _word(gen, a) == 0x52b86000, hex(_word(gen, a))  # mov w0, #0xc3000000
+    return ('{ extern uint64_t rt_game_heap_size(void); c->x[0] = rt_game_heap_size(); }'
+            f'  /* {a:#x}: mov w0, #0xc3000000 (SetMemoryHeapSize) */')
+
+
+def _game_root_heap_size(gen, a):
+    assert _word(gen, a) == 0x52b82008, hex(_word(gen, a))  # mov w8, #0xc1000000
+    return ('{ extern uint64_t rt_game_heap_size(void); c->x[8] = rt_game_heap_size() - 0x2000000; }'
+            f'  /* {a:#x}: mov w8, #0xc1000000 (the root heap: the heap less malloc\'s 32 MB) */')
+
+
+# The resource system's FixedHeap (374 MB, 1.9.0 0x700131aef8) and the TexArcWork heap it makes inside itself (192 MB,
+# 0x700131b49c), where texture archives are tried first: with an HD texture pack those tries fail more often and fall
+# back. Both grow by the same amount with game_memory_mb (runtime/kernel.c rt_game_heap_grow; nothing without it).
+
+def _game_heap_grow(word, reg, size, fn='rt_game_heap_grow'):
+    def patch(gen, a):
+        assert _word(gen, a) == word, hex(_word(gen, a))
+        return (f'{{ extern uint64_t {fn}(uint64_t); c->x[{reg}] = {fn}({size:#x}); }}'
+                f'  /* {a:#x}: mov w{reg}, #{size:#x} */')
+    return patch
+
+
+# The resource manager's ForResourceS / ForResourceL heaps (1.9.0 0x700155fda4 / 0x700155fde0), sized from its
+# settings: StarterPackMgr, where the resident packs load, takes what ForResourceL (694 MB) has left, and an HD
+# Pack/TitleBG.pack (363 MB) does not fit (crash at the title). The size read grows with game_memory_mb
+# (runtime/kernel.c rt_game_resource_heap; nothing without it).
+
+def _game_resource_heap(word, off, which):
+    def patch(gen, a):
+        assert _word(gen, a) == word, hex(_word(gen, a))
+        return ('{ extern uint64_t rt_game_resource_heap(uint32_t, int); '
+                f'c->x[8] = rt_game_resource_heap(LD32(c->x[20] + {off:#x}), {which}); }}'
+                f'  /* {a:#x}: ldr w8, [x20, #{off:#x}] */')
+    return patch
+
+
+# ... and StarterPackMgr's own heap inside ForResourceL (225 MB, 1.9.0 0x7001209a8c; 20 MB in the mode the csel after
+# it picks), which the resident packs load into: it grows by what ForResourceL grows by.
+
+def _game_starter_pack(gen, a):
+    assert _word(gen, a) == 0x52a1c208, hex(_word(gen, a))  # mov w8, #0xe100000
+    return ('{ extern uint64_t rt_game_resource_heap(uint32_t, int); c->x[8] = rt_game_resource_heap(0xe100000, 2); }'
+            f'  /* {a:#x}: mov w8, #0xe100000 (StarterPackMgr) */')
+
+
+# The GPU memory pool the models' textures load into (1.9.0 0x700127b6e0: 500 MB, or 400 MB in the mode the csel
+# after it picks). It is made at boot and never grows: with an HD texture pack it runs out and models whose textures
+# do not fit are left out (the Shrine of Resurrection without walls). It grows with game_memory_mb
+# (runtime/kernel.c rt_game_texture_pool; nothing without it).
+
+
 # The terrain's distant trees (tera::Core::Tree, 1.9.0 0x70013c94ac, 1.8.2 0x70012b55cc: its per-frame shader setup).
 # The trees past the actor trees are drawn by the terrain, from where it fades them in (+0x14cb0, 100 m; +0x14cb4 the
 # fade, 100 m) out to +0x14cb8 (4000 m, fading over the last +0x14cbc, 500 m; +0x14cc0, 4000 m, where its blocks
@@ -1532,6 +1590,15 @@ PATCHES = {
     'grass_blade_lateral_near': _grass_blade_lateral,
     'grass_blade_lateral_far': _grass_blade_lateral,
     'tree_ranges': _tree_ranges,
+    'game_heap_size': _game_heap_size,
+    'game_root_heap_size': _game_root_heap_size,
+    'game_fixed_heap_size': _game_heap_grow(0x52a2ec00, 0, 0x17600000),   # mov w0, #0x17600000
+    'game_texarc_heap_size': _game_heap_grow(0x52a18000, 0, 0xc000000),   # mov w0, #0xc000000
+    'game_texture_pool': _game_heap_grow(0x52a3e809, 9, 0x1f400000, 'rt_game_texture_pool'),    # mov w9, #0x1f400000
+    'game_texture_pool_b': _game_heap_grow(0x52a3200b, 11, 0x19000000, 'rt_game_texture_pool'),  # mov w11, #0x19000000
+    'game_resource_s': _game_resource_heap(0xb940ce88, 0xcc, 0),   # ldr w8, [x20, #0xcc]
+    'game_resource_l': _game_resource_heap(0xb940ca88, 0xc8, 1),   # ldr w8, [x20, #0xc8]
+    'game_starter_pack': _game_starter_pack,
     'menu_wrap': _menu_wrap,
     'act_hold': _act_query(0),
     'act_trig': _act_query(1),

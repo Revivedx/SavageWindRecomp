@@ -31,7 +31,7 @@ __declspec(dllexport) int AmdPowerXpressRequestHighPerformance = 1;
 // does not fault: such buffers must be inside committed regions.
 static uint64_t g_lo, g_hi;
 #define COMMIT_CHUNK 0x10000ull
-#define SPARSE_HEAP_MAX_PAGES (4ull * 1024 * 1024 * 1024 / COMMIT_CHUNK)
+#define SPARSE_HEAP_MAX_PAGES (0x0190000000ull / COMMIT_CHUNK)  // (the heap at its largest: HEAP_MAX_LARGEST, rt.h)
 #define SPARSE_HEAP_BITMAP_WORDS ((SPARSE_HEAP_MAX_PAGES + 63) / 64)
 static atomic_uint_fast64_t guest_commit_gen;
 static uint64_t sparse_heap_base, sparse_heap_size;
