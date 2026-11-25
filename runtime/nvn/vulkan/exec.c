@@ -125,6 +125,7 @@ int no_dyn_cache = -1;
 ExecDrawCache dc;
 ExecPass ps = {.sx = 1, .sy = 1, .samples = 1, .mvec = -1};
 ExecFeedback fbk;
+ExecBarrier barr = {.other = true, .vtx_hazard = true};
 void vk_dyn_forget(void) { dyn_epoch++; }
 // Bumped by every command that changes what goes into the program and pipeline keys (exec_list) and by passes
 // (begin_pass): while it stays, a draw takes the last draw's program and pipeline without building and comparing the
@@ -159,8 +160,6 @@ static uint64_t gmem_sparse_bind_seq;
 static uint64_t deferred_seq;  // (seq_lock; renderer_wait_seq, GPU_OVERLAP) a fence the game was told is done whose
                                // submission wasn't waited for
 static uint64_t oneshot_seq;   // (seq_lock) the latest submission with a one-off readback: a wait on it is never deferred
-static uint32_t chunk_draws;  // draws and dispatches recorded since the last submission
-static bool chunk_hold;       // a shader that stores to guest memory was recorded since the last submission
 
 static pthread_mutex_t gpu_mutex;
 static pthread_once_t gpu_mutex_once = PTHREAD_ONCE_INIT;
@@ -268,26 +267,20 @@ VkCommandBuffer vk_upload_cmd(void) {
 }
 
 // Since the last full barrier only render passes wrote (copies, dispatches, uploads and guest memory stores come
-// after a full barrier, which sets bar_other), and these were their targets. The next pass's barrier then names
+// after a full barrier, which sets barr.other), and these were their targets. The next pass's barrier then names
 // those images instead of all memory: on AMD a global barrier after attachment writes also writes back and
 // invalidates the whole L2, as the driver can't tell the writes were coherent with it (RADV: radv_src_access_flush
 // adds AC_BARRIER_INV_L2 without an image), an image barrier doesn't (radv_image_is_l2_coherent).
 // SAVAGEWIND_VK_FULL_PASS_BARRIER=1: a full barrier before every pass, as before.
-static bool bar_other = true;
-static VkImage bar_img[64];
-static VkImageAspectFlags bar_aspect[64];
-static int bar_n;
 
-void vk_pass_barrier_forget(void) { bar_other = true; }
+void vk_pass_barrier_forget(void) { barr.other = true; }
 
 // Pass barriers (begin_pass, SAVAGEWIND_VK_BARRIER_FRAG): GPU work outside passes (copies, dispatches, clears; each
 // preceded by a full barrier, below) or a draw that stores to memory may have written what a later pass's vertex stage
 // reads (vertex data, instance data a compute shader culled): the next pass begins behind a full barrier then.
-static bool vtx_hazard = true;
-static bool after_dispatch;  // nothing recorded since the last dispatch but its own commands (dispatch_compute)
 void vk_full_barrier(VkCommandBuffer cb) {
-    vtx_hazard = true;  // (begin_pass clears it after its own)
-    after_dispatch = false;
+    barr.vtx_hazard = true;  // (begin_pass clears it after its own)
+    barr.after_dispatch = false;
     VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2, .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                            .srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT, .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                            .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT};
@@ -296,21 +289,21 @@ void vk_full_barrier(VkCommandBuffer cb) {
     // fsr3_run and XeSS's xess_run reach this through the libraries they dispatch)
     if (rec_on_recorder()) vkCmdPipelineBarrier2(cb, &di);
     else rec_CmdPipelineBarrier2(cb, &di);
-    bar_other = true;  // (what follows may write anything)
-    bar_n = 0;
+    barr.other = true;  // (what follows may write anything)
+    barr.n = 0;
 }
 
 static void pass_barrier(VkCommandBuffer cb) {
     static int full = -1;
     if (full < 0) full = getenv("SAVAGEWIND_VK_FULL_PASS_BARRIER") != NULL;
-    if (full || bar_other) {
+    if (full || barr.other) {
         vk_full_barrier(cb);
-        bar_other = false;  // (a pass follows)
+        barr.other = false;  // (a pass follows)
         return;
     }
     VkImageMemoryBarrier2 ib[64];
-    for (int i = 0; i < bar_n; i++) {
-        bool ds = bar_aspect[i] & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT);
+    for (int i = 0; i < barr.n; i++) {
+        bool ds = barr.aspect[i] & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT);
         ib[i] = (VkImageMemoryBarrier2){.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
                                         .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                                         .srcAccessMask = ds ? VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT : VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
@@ -318,23 +311,23 @@ static void pass_barrier(VkCommandBuffer cb) {
                                         .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
                                         .oldLayout = VK_IMAGE_LAYOUT_GENERAL, .newLayout = VK_IMAGE_LAYOUT_GENERAL,
                                         .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                                        .image = bar_img[i],
-                                        .subresourceRange = {bar_aspect[i], 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS}};
+                                        .image = barr.img[i],
+                                        .subresourceRange = {barr.aspect[i], 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS}};
     }
     VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2, .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                            .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT};  // (execution only: reads before writes)
     VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &mb,
-                           .imageMemoryBarrierCount = (uint32_t)bar_n, .pImageMemoryBarriers = ib};
+                           .imageMemoryBarrierCount = (uint32_t)barr.n, .pImageMemoryBarriers = ib};
     rec_CmdPipelineBarrier2(cb, &di);
-    bar_n = 0;
+    barr.n = 0;
 }
 
 static void pass_barrier_note(TexBackend *b) {  // a target of the pass begun
     if (!b || !b->image) return;
-    for (int i = 0; i < bar_n; i++) if (bar_img[i] == b->image) return;
-    if (bar_n == 64) { bar_other = true; return; }
-    bar_img[bar_n] = b->image;
-    bar_aspect[bar_n++] = b->aspect ? b->aspect : VK_IMAGE_ASPECT_COLOR_BIT;
+    for (int i = 0; i < barr.n; i++) if (barr.img[i] == b->image) return;
+    if (barr.n == 64) { barr.other = true; return; }
+    barr.img[barr.n] = b->image;
+    barr.aspect[barr.n++] = b->aspect ? b->aspect : VK_IMAGE_ASPECT_COLOR_BIT;
 }
 
 static void ring_retire(void);
@@ -670,8 +663,8 @@ void vk_submit_extra(VkSemaphore wait, VkSemaphore signal, VkCommandBuffer extra
     cur_sub = (cur_sub + 1) % SUBS;
     stat_flushes++;
     cum_submits++;
-    chunk_draws = 0;
-    chunk_hold = false;
+    barr.chunk_draws = 0;
+    barr.chunk_hold = false;
     ring_retire();
     vk_collect_dead();
 }
@@ -2150,7 +2143,7 @@ static void vk_end_pass_at(int line) {
     for (int i = 0; i < ps.nblock; i++) vk_block_flush(vk_cmd(), ps.block[i]);
     ps.nblock = 0;
     depth_twin_after_pass(vk_cmd());  // (the shadow copy just drawn: its depth twin)
-    if (ps.nlinear) bar_other = true;  // (copies to memory)
+    if (ps.nlinear) barr.other = true;  // (copies to memory)
     for (int i = 0; i < ps.nlinear; i++) readback_schedule(vk_cmd(), ps.linear[i], &ps.linear_view[i], ps.linear_has_view[i]);
     ps.nlinear = 0;
     // (debug frame) what the pass drew: its targets, as begin_pass recorded them (st.rt may name the next pass's)
@@ -2184,7 +2177,7 @@ uint32_t level_extent(uint32_t v, uint32_t lv) { v >>= lv; return v ? v : 1; }
 
 static VkRect2D scissor_rect(void);
 static void begin_pass(void) {
-    after_dispatch = false;  // (dispatch_compute: a pass in between)
+    barr.after_dispatch = false;  // (dispatch_compute: a pass in between)
     if (ps.open && !st.rt_dirty) return;
     uint64_t new_key = det_on() ? det_key() : 0;  // (the hash of st.rt: only where targets are left out, Mali)
     uint8_t new_detached = det_predict(new_key);
@@ -2225,7 +2218,7 @@ static void begin_pass(void) {
     // the piece instead cost more: the GPU is ~13 ms behind the translation at that point of BOTW's frame.)
     static int no_hold = -1;  // (debugging) SAVAGEWIND_VK_NO_HOLD=1: pieces go on after such a shader too
     if (no_hold < 0) no_hold = getenv("SAVAGEWIND_VK_NO_HOLD") != NULL;
-    if (submit_draws > 0 && chunk_draws >= (uint32_t)submit_draws && (!chunk_hold || no_hold))
+    if (submit_draws > 0 && barr.chunk_draws >= (uint32_t)submit_draws && (!barr.chunk_hold || no_hold))
         vk_submit_extra(VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE);
     st.rt_dirty = false;
     for (int i = 0; i < st.rt.ncolor && i < 8; i++)  // (before the pass's command buffer is taken: a flush ends it)
@@ -2243,7 +2236,7 @@ static void begin_pass(void) {
         bfrag = e ? atoi(e) != 0 : g_vk.is_mali;
         LOG("[vk] pass barriers hold back only fragment work where they can: %s\n", bfrag ? "on" : "off");
     }
-    bool frag_only = bfrag && !vtx_hazard && !ps.vs_reads_next;
+    bool frag_only = bfrag && !barr.vtx_hazard && !ps.vs_reads_next;
     ps.frag_only = frag_only;
     ps.vs_reads_next = false;
     if (frag_only) {
@@ -2257,7 +2250,7 @@ static void begin_pass(void) {
         rec_CmdPipelineBarrier2(cb, &di);
     } else {
         pass_barrier(cb);  // passes, copies and dispatches see each other's results
-        vtx_hazard = false;
+        barr.vtx_hazard = false;
     }
     {
         NvnTexture *t0n = st.rt.ncolor ? st.rt.color[0] : NULL;
@@ -6404,10 +6397,10 @@ static bool gw_add(uint64_t lo, uint64_t hi) {  // false: no room
 static void gsnap_gpu_note(int stage);
 static void gw_note(int stage) {  // a shader of this stage that stores to global memory was recorded
     if (gsnap_mode()) gsnap_gpu_note(stage);  // (the GPU data list is read only by the copies: gsnap on)
-    vtx_hazard = true;  // (the next pass's vertex stage may read it)
+    barr.vtx_hazard = true;  // (the next pass's vertex stage may read it)
     static int hold = -1;
     if (hold < 0) hold = getenv("SAVAGEWIND_VK_GMEM_HOLD") != NULL;
-    if (chunk_hold) return;  // (the rest of the list goes in one piece anyway)
+    if (barr.chunk_hold) return;  // (the rest of the list goes in one piece anyway)
     bool ok = !hold;
     int n = 0;
     for (int i = 0; i < 16 && ok; i++) {
@@ -6416,7 +6409,7 @@ static void gw_note(int stage) {  // a shader of this stage that stores to globa
         ok = gw_add(r.addr, r.addr + r.size);
         n++;
     }
-    if (!ok || !n) { chunk_hold = true; hc_all_stale = true; stat_gw_holds++; }
+    if (!ok || !n) { barr.chunk_hold = true; hc_all_stale = true; stat_gw_holds++; }
 }
 
 // A constant buffer bound in place (in the set, in the heap, aligned for a uniform buffer descriptor), or false.
@@ -7239,13 +7232,13 @@ static void vdyn_reset(void) {  // (vk_exec_reset, the GPU idle: another boot, o
 
 // A vertex or index fetch: from the copy if it holds [addr, addr + size) as it is now - within one live chunk - else
 // in place from the import (guest_direct), its pages then geometry for the next list's copy (and its chunk wanted).
-// While a storing shader whose stores aren't known holds the list (chunk_hold), in place.
+// While a storing shader whose stores aren't known holds the list (barr.chunk_hold), in place.
 static bool guest_fetch(uint64_t addr, uint64_t size, VkBuffer *buf, VkDeviceSize *off) {
     if (gsnap_verts() && size && size <= gsnap_verts_max() && !gw_overlaps(addr, addr + size)) return false;  // (copied)
     if (!vdyn_fetch(addr, size)) return false;  // (copied)
     if (!guest_direct(addr, size, buf, off)) return false;
     if (!hc_nch) return true;
-    if (chunk_hold || !size || addr + size > HEAP_BASE + hc_size || gw_overlaps(addr, addr + size)) {
+    if (barr.chunk_hold || !size || addr + size > HEAP_BASE + hc_size || gw_overlaps(addr, addr + size)) {
         hc_stat_inplace++;
         return true;
     }
@@ -8790,7 +8783,7 @@ static void dispatch_compute(uint32_t gx, uint32_t gy, uint32_t gz) {
     // the full barrier.
     static int chain = -1;
     if (chain < 0) chain = !getenv("SAVAGEWIND_VK_DISPATCH_CHAIN") || atoi(getenv("SAVAGEWIND_VK_DISPATCH_CHAIN"));
-    if (chain && after_dispatch) {
+    if (chain && barr.after_dispatch) {
         VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2, .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                                .srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT, .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                                .dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_UNIFORM_READ_BIT};
@@ -8817,8 +8810,8 @@ static void dispatch_compute(uint32_t gx, uint32_t gy, uint32_t gz) {
     rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, cp->p.layout, 0, 1, &ds, 0, NULL);
     rec_CmdDispatch(cb, gx, gy, gz);
     stat_dispatches++;
-    after_dispatch = true;
-    chunk_draws++;
+    barr.after_dispatch = true;
+    barr.chunk_draws++;
     if (cp->si->writes_gmem) {
         if (ENV_ONCE("SAVAGEWIND_LOG_HOLD")) {
             LOG("[hold] frame %llu draw %llu: cs %llx sbuf:", (unsigned long long)renderer_present_count(),
@@ -9983,9 +9976,9 @@ have_pipe:
     if (oq >= 0) rec_CmdEndQuery(cb, oq_pool, (uint32_t)oq);
     stat_draws++;
     draws_total++;
-    chunk_draws++;
+    barr.chunk_draws++;
     if (pr->vi->writes_gmem || pr->fi->writes_gmem) {
-        bar_other = true;
+        barr.other = true;
         if (pr->vi->writes_gmem) gw_note(0);
         if (pr->fi->writes_gmem) gw_note(1);
         if (ENV_ONCE("SAVAGEWIND_LOG_HOLD")) LOG("[hold] frame %llu draw %llu: vs %llx (%d) fs %llx (%d) fs hash %016llx\n",

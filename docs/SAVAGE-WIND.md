@@ -1174,7 +1174,7 @@ Pendiente:
      (`radv_src_access_flush` añade `AC_BARRIER_INV_L2`); con barreras por imagen no (`radv_image_is_l2_coherent`).
      Si desde la última barrera completa solo hubo pases (ni copias, ni dispatch, ni subidas, ni escrituras a la
      memoria del juego, ni lecturas de targets lineales: todo eso va tras una barrera completa, que marca
-     `bar_other`), la barrera del pase siguiente nombra las imágenes de esos pases (las de sus vistas de attachment,
+     `barr.other`), la barrera del pase siguiente nombra las imágenes de esos pases (las de sus vistas de attachment,
      tras `vk_view`) más una dependencia de ejecución para lo demás; una imagen diferida fuerza la completa.
      `SAVAGEWIND_VK_FULL_PASS_BARRIER=1` vuelve a la barrera completa. La validación de sincronización
      (`VK_LAYER_VALIDATE_SYNC=1` con `VK_LAYER_SYNCVAL_SHADER_ACCESSES_HEURISTIC=1`, mensajes con

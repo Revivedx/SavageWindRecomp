@@ -109,6 +109,19 @@ typedef struct {
     uint8_t det_draw;        // (during resolve_feedback) the slots the draw's pass leaves out: not attachments then
 } ExecFeedback;
 
+// What the next pass barrier must cover, and the submission in progress: what was recorded since the last barrier
+// and since the last submit.
+typedef struct {
+    bool other;
+    VkImage img[64];
+    VkImageAspectFlags aspect[64];
+    int n;
+    bool vtx_hazard;
+    bool after_dispatch;        // nothing recorded since the last dispatch but its own commands (dispatch_compute)
+    uint32_t chunk_draws;       // draws and dispatches recorded since the last submission
+    bool chunk_hold;            // a shader that stores to guest memory was recorded since the last submission
+} ExecBarrier;
+
 // Command buffer state a draw recorded last, so a draw records only what differs (see dyn_check).
 typedef struct {
     uint64_t epoch;
@@ -132,6 +145,7 @@ extern ExecState st;
 extern ExecDrawCache dc;
 extern ExecPass ps;
 extern ExecFeedback fbk;
+extern ExecBarrier barr;
 
 // Generations that invalidate cached command-buffer state.
 extern uint64_t dyn_epoch;
