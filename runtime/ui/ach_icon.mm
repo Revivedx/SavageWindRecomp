@@ -1,7 +1,7 @@
 // Achievement pictures: achievements/<id>.png (or .jpg) in the data root, else the game's own icon for it from the
 // player's RomFS (g_ach_game_icons), loaded the first time one is needed. Same texture paths as the start screen's
-// picture (splash.mm): Metal on macOS, Vulkan elsewhere.
-#ifdef __APPLE__
+// picture (splash.mm): Metal with the macOS Metal renderer (SW_METAL), Vulkan elsewhere (macOS too, through MoltenVK).
+#ifdef SW_METAL
 #import <Metal/Metal.h>
 #endif
 #include <stdint.h>
@@ -18,7 +18,7 @@ extern "C" {
 #include "paths.h"
 #include "nvn/tegra.h"
 #include "achievements.h"
-#ifdef __APPLE__
+#ifdef SW_METAL
 void *ui_metal_device(void);
 #else
 uint64_t vk_imgui_texture_rgba(const void *rgba, int w, int h);  // runtime/nvn/vulkan/imgui_glue.cpp
@@ -28,14 +28,14 @@ void vk_imgui_texture_free(uint64_t tex);
 
 namespace {
 std::unordered_map<std::string, ImTextureID> g_icons;  // (0 = looked for, not there)
-#ifdef __APPLE__
+#ifdef SW_METAL
 std::vector<id<MTLTexture>> g_mtl;  // (ImGui only holds the pointer)
 #endif
 
 // The texture of RGBA pixels (w x h), 0 if it couldn't be made
 ImTextureID texture(const unsigned char *px, int w, int h) {
     ImTextureID tex = 0;
-#ifdef __APPLE__
+#ifdef SW_METAL
     id<MTLDevice> dev = (__bridge id<MTLDevice>)ui_metal_device();
     MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
                                                                                    width:w height:h mipmapped:NO];
@@ -177,7 +177,7 @@ ImTextureID ach_icon(const char *id) {
 }
 
 void ach_icons_free(void) {
-#ifdef __APPLE__
+#ifdef SW_METAL
     g_mtl.clear();
 #else
     for (auto &kv : g_icons)
