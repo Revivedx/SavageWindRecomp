@@ -75,7 +75,6 @@ static bool clear_fold_on(void) {  // SAVAGEWIND_VK_NO_CLEAR_FOLD=1: every clear
     if (v < 0) { v = getenv("SAVAGEWIND_VK_NO_CLEAR_FOLD") == NULL; LOG("[vk] clears folded into the load op: %s\n", v ? "on" : "off"); }
     return v;
 }
-static bool draw_feedback;           // the current draw samples a target it writes (its pipeline allows the loop)
 static uint64_t stat_upload_bytes;
 // PC_UPLOAD_BYTES not added to perfcount yet: added once a frame (vk_prof_frame), not for each span. A locked add on x86
 // waits for the stores before it to drain, the write-combined copy into the ring just made among them, so the add in
@@ -125,6 +124,7 @@ uint64_t dyn_epoch = 1;
 int no_dyn_cache = -1;
 ExecDrawCache dc;
 ExecPass ps = {.sx = 1, .sy = 1, .samples = 1, .mvec = -1};
+ExecFeedback fbk;
 void vk_dyn_forget(void) { dyn_epoch++; }
 // Bumped by every command that changes what goes into the program and pipeline keys (exec_list) and by passes
 // (begin_pass): while it stays, a draw takes the last draw's program and pipeline without building and comparing the
@@ -2090,9 +2090,6 @@ static VkImageView depth_twin_sample(TexBackend *b, int textype, bool update) {
 // as the texture it then is (no snapshot copy).
 #define DET_TAB 8192
 static struct { uint64_t key; uint8_t written; bool used; } det_tab[DET_TAB];
-static bool det_no_next;  // (a clear begins this pass: everything attached)
-static uint8_t det_written;  // color slots the open pass drew into or cleared
-static uint8_t det_draw;     // (during resolve_feedback) the slots the draw's pass leaves out: not attachments then
 static uint64_t stat_det_miss;
 static uint64_t stat_frag_barriers, stat_frag_restarts;
 static int det_on(void) {
@@ -2111,7 +2108,7 @@ static uint64_t det_key(void) {
     return (h ^ g_cur_fs_hash) * 0x9E3779B97F4A7C15ull | 1;
 }
 static uint8_t det_predict(uint64_t key) {  // the color slots to leave out of a pass with this key
-    if (!det_on() || det_no_next) return 0;
+    if (!det_on() || fbk.det_no_next) return 0;
     uint32_t slot = (uint32_t)(key >> 40) & (DET_TAB - 1);
     if (!det_tab[slot].used || det_tab[slot].key != key) return 0;
     uint8_t present = 0;
@@ -2147,7 +2144,7 @@ static void vk_end_pass_at(int line) {
     if (!ps.void_) rec_CmdEndRendering(vk_cmd());
     ps.open = false;
     ps.void_ = false;
-    if (det_on()) det_note(ps.key, det_written);
+    if (det_on()) det_note(ps.key, fbk.det_written);
     for (int i = 0; i < ps.nfbl; i++) feedback_layout_move(vk_cmd(), ps.fbl[i], false);
     ps.nfbl = 0;
     for (int i = 0; i < ps.nblock; i++) vk_block_flush(vk_cmd(), ps.block[i]);
@@ -2191,7 +2188,7 @@ static void begin_pass(void) {
     if (ps.open && !st.rt_dirty) return;
     uint64_t new_key = det_on() ? det_key() : 0;  // (the hash of st.rt: only where targets are left out, Mali)
     uint8_t new_detached = det_predict(new_key);
-    det_no_next = false;
+    fbk.det_no_next = false;
     vk_end_pass();  // (notes what the pass that ends wrote under its own key)
     ps.key = new_key;
     ps.detached = new_detached;
@@ -2212,7 +2209,7 @@ static void begin_pass(void) {
     }
     ps.ds_written = false;
     ps.color_written = ps.color_unsynced = ps.feedback = 0;
-    det_written = 0;
+    fbk.det_written = 0;
     if (dl_on == 2) renderer_flush();  // (SAVAGEWIND_VK_DEVLOST_TRACE=2: each pass its own submission)
     // BOTW records a whole frame into one command list. Submitted only at its end, the GPU sat idle while the list was
     // translated (~13 ms in the open world) and only then rendered it, and the game waits for the GPU to finish a frame
@@ -2849,7 +2846,7 @@ static void clear(int index, int kind, const void *color, uint32_t mask, bool de
             det_note(ps.key, (uint8_t)(1u << index));
             st.rt_dirty = true;
         }
-        if (!ps.open || st.rt_dirty) det_no_next = true;
+        if (!ps.open || st.rt_dirty) fbk.det_no_next = true;
     }
     clear_fold.c = clear_fold.d = clear_fold.s = false;
     // (only a clear that begins a pass can fold: after a draw, the clear must keep its place among the commands)
@@ -2861,7 +2858,7 @@ static void clear(int index, int kind, const void *color, uint32_t mask, bool de
     }
     begin_pass();
     clear_fold.want = false;
-    if (index >= 0 && index < 8) det_written |= (uint8_t)(1u << index);
+    if (index >= 0 && index < 8) fbk.det_written |= (uint8_t)(1u << index);
     if (ps.void_) return;
     VkCommandBuffer cb = vk_cmd();
     vp_sx = ps.sx; vp_sy = ps.sy; vp_ox = 0; vp_oy = 0;
@@ -4433,39 +4430,28 @@ static void build_pipeline(void *arg) {
 }
 
 // ================================================================== feedback snapshots (renderer.m resolve_feedback)
-static NvnTexture *feedback_tex[4];
-static VkImageView feedback_view[4];
-static bool feedback_any_type[4];  // the view fits every lookup type (a restricted view of the image itself)
-static int nfeedback;
 static uint64_t g_cur_fs_hash;
-static NvnTexture *snap_tex[8];
-static TexBackend *snap_be[8];  // (the image snap_tex had when the snapshot was taken: compared, never followed)
-static bool snap_ok[8];
-static const char *snap_why[8];
 const char *snap_reason = "?";
 // A snapshot of texture object t, or of its image through another object (BOTW reaches some targets through more than
 // one), is stale once t is written. SAVAGEWIND_VK_SNAP_BY_OBJECT=1: by object only, as before.
-static uint64_t snap_wpass[8];  // (the pass the latest write into the slot's target was in, since its snapshot; 0: none)
-static uint8_t snap_mask;
 static uint64_t snap_pass_now(void);
 void snapshots_invalidate(NvnTexture *t) {
-    if (!snap_mask) return;
+    if (!fbk.snap_mask) return;
     static int by_obj = -1;
     if (by_obj < 0) by_obj = getenv("SAVAGEWIND_VK_SNAP_BY_OBJECT") ? atoi(getenv("SAVAGEWIND_VK_SNAP_BY_OBJECT")) != 0 : !g_vk.is_mali;
     TexBackend *be = t && !by_obj ? (TexBackend *)t->backend : NULL;
-    for (uint32_t m = snap_mask; m; m &= m - 1) {
+    for (uint32_t m = fbk.snap_mask; m; m &= m - 1) {
         int i = __builtin_ctz(m);
-        if (!(!t || snap_tex[i] == t || (be && snap_be[i] == be))) continue;
-        if (t) snap_wpass[i] = snap_pass_now();
-        if (snap_ok[i]) { snap_ok[i] = false; snap_why[i] = snap_reason; }
+        if (!(!t || fbk.snap_tex[i] == t || (be && fbk.snap_be[i] == be))) continue;
+        if (t) fbk.snap_wpass[i] = snap_pass_now();
+        if (fbk.snap_ok[i]) { fbk.snap_ok[i] = false; fbk.snap_why[i] = snap_reason; }
     }
 }
 static uint64_t snap_pass_now(void) { return ps.open && !st.rt_dirty ? ps.serial : ps.serial + 1; }  // (the pass a write now is in)
-static bool snap_cleared[8];  // (the slot's target itself was cleared since its snapshot: its contents are another thing's)
 static void snapshots_invalidate_clear(NvnTexture *t) {  // (clear(), defined before this)
     TexBackend *be = t ? (TexBackend *)t->backend : NULL;
     for (int i = 0; i < 8; i++)
-        if (t && (snap_tex[i] == t || (be && snap_be[i] == be))) snap_cleared[i] = true;
+        if (t && (fbk.snap_tex[i] == t || (be && fbk.snap_be[i] == be))) fbk.snap_cleared[i] = true;
     snap_reason = "clear";
     snapshots_invalidate(t);
 }
@@ -4665,8 +4651,8 @@ static bool depth_read_only(void) {
 static long logfb = -1, fbskip;  // (SAVAGEWIND_LOG_FEEDBACK)
 static unsigned fb_draws;
 static void resolve_feedback(Prog *pr) {
-    nfeedback = 0;
-    draw_feedback = false;
+    fbk.n = 0;
+    fbk.draw = false;
     static int off = -1;
     if (off < 0) off = getenv("SAVAGEWIND_NO_FEEDBACK") != NULL;
     if (off) return;
@@ -4678,14 +4664,14 @@ static void resolve_feedback(Prog *pr) {
     for (int sg = 0; sg < 2; sg++)
         for (int i = 0; i < infos[sg]->ntex; i++) {
             NvnTexture *t = shader_texture_object(sg, &infos[sg]->tex[i]);
-            if (!feedback_is_attachment(t, det_draw)) continue;
+            if (!feedback_is_attachment(t, fbk.det_draw)) continue;
             bool have = false;
-            for (int k = 0; k < nfeedback; k++) have |= feedback_tex[k] == t;
-            if (have || nfeedback == 4) continue;
+            for (int k = 0; k < fbk.n; k++) have |= fbk.tex[k] == t;
+            if (have || fbk.n == 4) continue;
             static int nosnap = -1;
             if (nosnap < 0) nosnap = getenv("SAVAGEWIND_NO_SNAPSHOT_REUSE") != NULL;
             int si = -1;
-            for (int k = 0; k < 8; k++) if (snap_tex[k] == t) si = k;
+            for (int k = 0; k < 8; k++) if (fbk.snap_tex[k] == t) si = k;
             bool is_depth = feedback_same_image(t, st.rt.depth);  // (this object, or another of the bound depth image)
             bool self_write = is_depth && st.ds[0] && st.ds[1];
             TexBackend *src = vk_tex(t, true);
@@ -4714,9 +4700,9 @@ static void resolve_feedback(Prog *pr) {
             if (!nolive && !snap_depth && is_depth && depth_read_only()) {
                 if (ps.ds_written) { vk_end_pass(); st.rt_dirty = true; }
                 stat_feedback_live++;
-                feedback_tex[nfeedback] = t;
-                feedback_any_type[nfeedback] = false;
-                feedback_view[nfeedback++] = vk_image_view(src, VK_IMAGE_VIEW_TYPE_2D, src->format, 0, 1, 0, 1, id, sa);
+                fbk.tex[fbk.n] = t;
+                fbk.any_type[fbk.n] = false;
+                fbk.view[fbk.n++] = vk_image_view(src, VK_IMAGE_VIEW_TYPE_2D, src->format, 0, 1, 0, 1, id, sa);
                 continue;
             }
             // A color target sampled at other mip levels: BOTW builds mip chains by rendering level n from level n-1
@@ -4764,9 +4750,9 @@ static void resolve_feedback(Prog *pr) {
                     VkImageView view = vk_view(t, &v, true, false, infos[sg]->tex[i].type);
                     if (view) {
                         stat_feedback_live++;
-                        feedback_tex[nfeedback] = t;
-                        feedback_any_type[nfeedback] = true;
-                        feedback_view[nfeedback++] = view;
+                        fbk.tex[fbk.n] = t;
+                        fbk.any_type[fbk.n] = true;
+                        fbk.view[fbk.n++] = view;
                         continue;
                     }
                 }
@@ -4787,9 +4773,9 @@ static void resolve_feedback(Prog *pr) {
                     VkImageView view = vk_view(t, &v, true, false, infos[sg]->tex[i].type);
                     if (view) {
                         stat_feedback_live++;
-                        feedback_tex[nfeedback] = t;
-                        feedback_any_type[nfeedback] = true;
-                        feedback_view[nfeedback++] = view;
+                        fbk.tex[fbk.n] = t;
+                        fbk.any_type[fbk.n] = true;
+                        fbk.view[fbk.n++] = view;
                         continue;
                     }
                 }
@@ -4834,7 +4820,7 @@ static void resolve_feedback(Prog *pr) {
                         vk_end_pass();
                         st.rt_dirty = true;
                     }
-                    draw_feedback = true;
+                    fbk.draw = true;
                     stat_feedback_loops++;
                     continue;
                 }
@@ -4856,7 +4842,7 @@ static void resolve_feedback(Prog *pr) {
             // (once: reused past draws into the target since - that is its point, a pass break and a copy saved each
             // time, ~450 a frame in the open world: refusing every one took Mali-G610 from 30 to 7 FPS. But not for
             // targets of the formats in SAVAGEWIND_VK_ONCE_STRICT_FMT (NVN format codes, default 0xa,0x25: R32F and
-            // RGBA16F), nor past a clear of the target (snap_cleared): every few seconds BOTW makes ~155
+            // RGBA16F), nor past a clear of the target (fbk.snap_cleared): every few seconds BOTW makes ~155
             // more draws with a shader that samples its bound 1600x900 R32F target, drawn into since its snapshot - the
             // frames where the water lost its sky reflection - and waterfall base refraction samples the RGBA16F
             // target after earlier passes drew into it (#848). SAVAGEWIND_VK_ONCE_STRICT=1: not past any write; =0: past
@@ -4893,8 +4879,8 @@ static void resolve_feedback(Prog *pr) {
                     q = *end == ',' ? end + 1 : end;
                 }
             }
-            bool fresh = si >= 0 && (snap_ok[si] || self_write);
-            bool cleared = si >= 0 && !fresh && snap_cleared[si];
+            bool fresh = si >= 0 && (fbk.snap_ok[si] || self_write);
+            bool cleared = si >= 0 && !fresh && fbk.snap_cleared[si];
             bool fmt_frame = false, fmt_strict = false;  // (Exact: the frame formats are strict ones, as in #848)
             if (once && g_settings.scene_copies != SCENE_COPIES_EXACT)
                 for (int k = 0; k < nff; k++) fmt_frame |= t->format == ffmt[k];
@@ -4903,7 +4889,7 @@ static void resolve_feedback(Prog *pr) {
             // (strict formats: still reused past writes in the pass the snapshot was taken for - BOTW draws into its
             // R32F target and reads it back within one pass ~34 times a frame, and a new copy each time cost half the
             // frame rate - but not past a write in a later pass: the copy then predates a whole pass of drawing)
-            bool later = si >= 0 && !fresh && snap_wpass[si] > snap_pass[si];
+            bool later = si >= 0 && !fresh && fbk.snap_wpass[si] > snap_pass[si];
             // ... and, within one pass, a new copy when a shader that hasn't read the target for a while (the last
             // SAVAGEWIND_VK_ONCE_NEW_FRAMES frames, 60) reads it stale; its later reads take that copy. The ~155 extra
             // draws of the frames the water lost its sky reflection are one such shader, run every ~10 s: one copy more
@@ -4939,8 +4925,8 @@ static void resolve_feedback(Prog *pr) {
                 if (fresh) n_fresh++;
                 else {
                     if (cleared) n_clear++;
-                    else if (snap_why[si] && !strncmp(snap_why[si], "draw", 4)) n_draw++;
-                    else { n_other++; why_other = snap_why[si]; }
+                    else if (fbk.snap_why[si] && !strncmp(fbk.snap_why[si], "draw", 4)) n_draw++;
+                    else { n_other++; why_other = fbk.snap_why[si]; }
                     int k = 0;
                     while (k < 15 && byf[k].n && byf[k].fmt != t->format) k++;
                     byf[k].fmt = t->format, byf[k].n++;
@@ -4966,8 +4952,8 @@ static void resolve_feedback(Prog *pr) {
                 }
             }
             if (!nosnap && once && si >= 0 && once_ok && existing && snap_frame[si] == renderer_present_count() + 1) {
-                feedback_tex[nfeedback] = t;
-                feedback_view[nfeedback++] = vk_image_view(&existing->copy, VK_IMAGE_VIEW_TYPE_2D, src->format, 0, 1, 0, 1, id, sa);
+                fbk.tex[fbk.n] = t;
+                fbk.view[fbk.n++] = vk_image_view(&existing->copy, VK_IMAGE_VIEW_TYPE_2D, src->format, 0, 1, 0, 1, id, sa);
                 continue;
             }
             // Mali: a snapshot is reused within a pass (or frame) only. Carried into the next frame it was stale wherever the
@@ -4981,11 +4967,11 @@ static void resolve_feedback(Prog *pr) {
                 LOG("[vk] feedback snapshots reused: %s\n", reuse == 2 ? "within one pass" : reuse == 1 ? "within one frame" : "until written");
             }
             uint64_t this_pass = ps.open && !st.rt_dirty ? ps.serial : ps.serial + 1;
-            if (!nosnap && si >= 0 && (snap_ok[si] || self_write) && existing &&
+            if (!nosnap && si >= 0 && (fbk.snap_ok[si] || self_write) && existing &&
                 (reuse == 0 || (reuse == 1 && snap_frame[si] == renderer_present_count() + 1) ||
                  (reuse == 2 && snap_pass[si] == this_pass))) {
-                feedback_tex[nfeedback] = t;
-                feedback_view[nfeedback++] = vk_image_view(&existing->copy, VK_IMAGE_VIEW_TYPE_2D, src->format, 0, 1, 0, 1, id, sa);
+                fbk.tex[fbk.n] = t;
+                fbk.view[fbk.n++] = vk_image_view(&existing->copy, VK_IMAGE_VIEW_TYPE_2D, src->format, 0, 1, 0, 1, id, sa);
                 continue;
             }
             stat_feedback_copies++;
@@ -5024,20 +5010,20 @@ static void resolve_feedback(Prog *pr) {
                 debug_save_depth(dst, path);
                 cb = vk_cmd();
             }
-            feedback_tex[nfeedback] = t;
-            feedback_any_type[nfeedback] = false;
-            feedback_view[nfeedback++] = vk_image_view(dst, VK_IMAGE_VIEW_TYPE_2D, src->format, 0, 1, 0, 1, id, sa);
-            if (si < 0) { static int rr; si = rr++ & 7; snap_tex[si] = t; }
-            snap_mask |= (uint8_t)(1u << si);
-            snap_ok[si] = true;
-            snap_cleared[si] = false;
-            snap_wpass[si] = 0;
-            snap_be[si] = src;
+            fbk.tex[fbk.n] = t;
+            fbk.any_type[fbk.n] = false;
+            fbk.view[fbk.n++] = vk_image_view(dst, VK_IMAGE_VIEW_TYPE_2D, src->format, 0, 1, 0, 1, id, sa);
+            if (si < 0) { static int rr; si = rr++ & 7; fbk.snap_tex[si] = t; }
+            fbk.snap_mask |= (uint8_t)(1u << si);
+            fbk.snap_ok[si] = true;
+            fbk.snap_cleared[si] = false;
+            fbk.snap_wpass[si] = 0;
+            fbk.snap_be[si] = src;
             snap_frame[si] = renderer_present_count() + 1;  // (+1: 0 is never a frame's)
             snap_pass[si] = ps.serial + 1;  // (the pass that begins next, after this one ends)
             st.rt_dirty = true;
         }
-    if (!nfeedback && !draw_feedback)
+    if (!fbk.n && !fbk.draw)
         rf_clean = (__typeof__(rf_clean)){pr->vi, pr->fi, st.tpool, rt_gen, tex_gen[0], tex_gen[1]};
     else
         rf_clean.vi = NULL;
@@ -7405,7 +7391,7 @@ static void texture_info(int stage, ShaderInfo *si, int i, VkDescriptorImageInfo
     uint32_t tic = h & 0xFFFFF;
     NvnTexEntry *te = st.tpool && tic < (uint32_t)st.tpool->count ? &((NvnTexEntry *)st.tpool->entries)[tic] : NULL;
     TexBackend *tb = te && te->tex ? (TexBackend *)te->tex->backend : NULL;
-    if (nomemo || !h || !te || !te->tex || st_->shadow || nfeedback || scene_up.t || (tb && tb->in_feedback_layout)) {
+    if (nomemo || !h || !te || !te->tex || st_->shadow || fbk.n || scene_up.t || (tb && tb->in_feedback_layout)) {
         texture_info_(stage, si, i, out, sc, wh);
         return;
     }
@@ -7493,10 +7479,10 @@ static void texture_info_(int stage, ShaderInfo *si, int i, VkDescriptorImageInf
             // (a target of this pass that loops, g_vk.feedback_layout: its own image, not one of the copies below)
             if (et->backend && ((TexBackend *)et->backend)->in_feedback_layout && et != scene_up.t)
                 layout = VK_IMAGE_LAYOUT_ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT;
-            for (int k = 0; k < nfeedback; k++)
-                if (et == feedback_tex[k] && feedback_any_type[k]) view = feedback_view[k], layout = VK_IMAGE_LAYOUT_GENERAL;
-                else if (et == feedback_tex[k] && (st_->type == TEXTYPE_2D || st_->type == TEXTYPE_2D_ARRAY)) {
-                    view = feedback_view[k];
+            for (int k = 0; k < fbk.n; k++)
+                if (et == fbk.tex[k] && fbk.any_type[k]) view = fbk.view[k], layout = VK_IMAGE_LAYOUT_GENERAL;
+                else if (et == fbk.tex[k] && (st_->type == TEXTYPE_2D || st_->type == TEXTYPE_2D_ARRAY)) {
+                    view = fbk.view[k];
                     layout = VK_IMAGE_LAYOUT_GENERAL;
                     if (st_->type == TEXTYPE_2D_ARRAY) view = vk_dummy_view(TEXTYPE_2D_ARRAY);  // (2D snapshot as array: rare)
                 }
@@ -8824,7 +8810,7 @@ static void dispatch_compute(uint32_t gx, uint32_t gy, uint32_t gz) {
             if (st.sbuf[5][i].addr) LOG(" %d=%llx+%llu", i, (unsigned long long)st.sbuf[5][i].addr, (unsigned long long)st.sbuf[5][i].size);
         LOG("\n");
     }
-    nfeedback = 0;
+    fbk.n = 0;
     gsnap_cs_prepare(cp->si);
     VkDescriptorSet ds = stage_set(&cp->p, cp->p.set_layout[0], 0, 5, cp->si, NULL, NULL, gx, gy, gz, NULL, NULL, NULL);
     rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, cp->pipe);
@@ -9316,14 +9302,14 @@ static void draw_(CmdRec *r, bool indexed) {
             if (ps.open && !st.rt_dirty) st.rt_dirty = true;
             stat_det_miss++;
         }
-        det_draw = det_current();
+        fbk.det_draw = det_current();
     }
     if (pr->vi->ntex > 0 || pr->vi->uses_gmem) {  // (its vertex stage reads what earlier GPU work may have written)
         if (ps.open && !st.rt_dirty && ps.frag_only) { st.rt_dirty = true; stat_frag_restarts++; }
         ps.vs_reads_next = true;  // (whichever pass begins next, also one resolve_feedback starts: a full barrier)
     }
     resolve_feedback(pr);
-    det_draw = 0;
+    fbk.det_draw = 0;
     if (profd) {
         uint64_t now = SDL_GetTicksNS();
         prof_feedback_resolve += now - prof_stage_start;
@@ -9468,7 +9454,7 @@ static void draw_(CmdRec *r, bool indexed) {
     for (int i = 0; i < st.rt.ncolor && i < 8; i++)
         if (st.rt.color[i] && feedback_draw_writes_color(pr->fi->out_mask, st.channel_mask, i)) {
             ps.color_written |= (uint8_t)(1u << i);
-            det_written |= (uint8_t)(1u << i);
+            fbk.det_written |= (uint8_t)(1u << i);
             ps.color_unsynced |= (uint8_t)(1u << i);
         }
     VkCommandBuffer cb = vk_cmd();
@@ -9486,11 +9472,11 @@ static void draw_(CmdRec *r, bool indexed) {
     // ---- pipeline
     static struct { uint64_t gen; Prog *pr; uint8_t cls, fb; } km;
     Pipe *pp;
-    if (!no_key_gen && pipe_memo.pp && km.gen == key_gen && km.pr == pr && km.cls == cls && km.fb == draw_feedback) {
+    if (!no_key_gen && pipe_memo.pp && km.gen == key_gen && km.pr == pr && km.cls == cls && km.fb == fbk.draw) {
         pp = pipe_memo.pp;
         goto have_pipe;
     }
-    km.gen = key_gen; km.pr = pr; km.cls = cls; km.fb = draw_feedback;
+    km.gen = key_gen; km.pr = pr; km.cls = cls; km.fb = fbk.draw;
     PipeKey k;
     memset(&k, 0, sizeof k);
     k.prog = pr;
@@ -9501,7 +9487,7 @@ static void draw_(CmdRec *r, bool indexed) {
     k.s.depth = ps.depth;
     k.s.stencil = ps.stencil;
     k.s.samples = ps.samples;
-    k.s.feedback = draw_feedback;
+    k.s.feedback = fbk.draw;
     k.s.depth_clamp = st.depth_clamp && g_vk.depth_clamp;
     for (int i = 0; i < 32; i++) {
         if (!(pr->vi->attr_mask & (1u << i))) continue;

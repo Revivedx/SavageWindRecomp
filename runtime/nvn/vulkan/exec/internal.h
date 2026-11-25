@@ -89,6 +89,26 @@ typedef struct {
     int dbg_n, dbg_draws;
 } ExecPass;
 
+// Feedback loops (a draw sampling a target its pass writes): the draw being resolved, the snapshots taken of targets
+// this frame, and the color slots the open pass leaves detached.
+typedef struct {
+    bool draw;               // the current draw samples a target it writes (its pipeline allows the loop)
+    NvnTexture *tex[4];      // its feedback views (resolve_feedback), read by texture_info and the pipeline key
+    VkImageView view[4];
+    bool any_type[4];        // the view fits every lookup type (a restricted view of the image itself)
+    int n;
+    NvnTexture *snap_tex[8];
+    TexBackend *snap_be[8];  // (the image snap_tex had when the snapshot was taken: compared, never followed)
+    bool snap_ok[8];
+    const char *snap_why[8];
+    uint64_t snap_wpass[8];  // (the pass the latest write into the slot's target was in, since its snapshot; 0: none)
+    uint8_t snap_mask;
+    bool snap_cleared[8];    // (the slot's target itself was cleared since its snapshot: its contents are another thing's)
+    bool det_no_next;        // (a clear begins this pass: everything attached)
+    uint8_t det_written;     // color slots the open pass drew into or cleared
+    uint8_t det_draw;        // (during resolve_feedback) the slots the draw's pass leaves out: not attachments then
+} ExecFeedback;
+
 // Command buffer state a draw recorded last, so a draw records only what differs (see dyn_check).
 typedef struct {
     uint64_t epoch;
@@ -111,6 +131,7 @@ typedef struct {
 extern ExecState st;
 extern ExecDrawCache dc;
 extern ExecPass ps;
+extern ExecFeedback fbk;
 
 // Generations that invalidate cached command-buffer state.
 extern uint64_t dyn_epoch;
