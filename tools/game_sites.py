@@ -193,6 +193,8 @@ SITES = [
     # and the two loads of an actor's link in the check of one of its flags by name (1.9.0 0x700120c760; #766)
     Site('stale_actor_flag', 'code', 'f942ba68 52864261 72b85581 f9404500 94000000/fc000000 36000000/fff8001f 52800020 a9424ff4', 0),
     Site('stale_actor_flag2', 'code', 'f942ba68 528120a1 72a6b2c1 f9404500 94000000/fc000000 2a000288 37000008/fff8001f f942ba68', 0),
+    # AI message send to an actor link whose actor may be null (1.9.0 0x7000bbb670; #1130)
+    Site('stale_actor_ai_msg', 'code', 'f942f834 3900501f f9400415 b4000015/ff00001f aa0003f6 2a0203f3 f84106c8 f9400908 d63f0100 f94002a8 aa0003e3 12000264 aa1503e0 aa1403e1 f9400905', 0),
     # the physics step's solver microsteps (tools/patches.py _solver_steps): the delta frame times 6
     Site('phys_solver_steps', 'code', '1e231002 1e3c1004 f9401a68 1e2c1009 1e220822 f9400108 1e202048 f9400514', 4),
     # Havok's deactivation at the console's pace (tools/patches.py _phys_tick, _phys_motion_tick): the world step's
@@ -610,7 +612,8 @@ OPTIONAL_GROUPS = [
     ('lookat_update',),  # (the free camera: without it Home does nothing)
     ('gyro_scene_actor',),
     ('surf_contact', 'surf_boost_remove', 'surf_jump_request'),
-    ('stale_actor_helper', 'stale_actor_kind', 'stale_actor_target', 'stale_actor_flag', 'stale_actor_flag2'),
+    ('stale_actor_helper', 'stale_actor_kind', 'stale_actor_target', 'stale_actor_flag', 'stale_actor_flag2',
+     'stale_actor_ai_msg'),
     ('quick_menu_capture_alpha',),
     ('cjk_font_size', 'cjk_font_bin', 'cjk_font_quad'),
     ('kf_angle',),
@@ -821,6 +824,7 @@ KNOWN = {
         'stale_actor_target': 0x7000dea400,
         'stale_actor_flag': 0x700120c780,
         'stale_actor_flag2': 0x700120c7f0,
+        'stale_actor_ai_msg': 0x7000bbb670,
         'phys_solver_steps': 0x700156f930,
         'demo_move_arrive': 0x7000c711dc,
         'rail_point_radius': 0x7000c89d4c,

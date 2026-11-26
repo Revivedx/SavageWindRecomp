@@ -612,6 +612,15 @@ def _stale_target_exit(gen, a):
     raise AssertionError('stale target: no cbnz x19 above %#x' % a)
 
 
+def _stale_actor_ai_msg(gen, a):
+    assert _word(gen, a) == 0xf942f834, hex(_word(gen, a))  # ldr x20, [x1, #0x5f0]
+    w = _word(gen, a + 0xc)
+    assert w & 0xff00001f == 0xb4000015, hex(w)  # cbz x21, <ret_false>
+    ret_false = (a + 0xc) + sext((w >> 5) & 0x7ffff, 19) * 4
+    return ('{ if (!c->x[1]) { ST8(c->x[0] + 0x14, 0); goto L_%x; } '
+            'c->x[20] = LD64(c->x[1] + 0x5f0); }' % ret_false)
+
+
 def _surf_jump_request(gen, a):
     w = _word(gen, a)
     assert w & 0xfff8001f == 0x36000000  # tbz w0, #0, <no jump>
@@ -1549,6 +1558,7 @@ PATCHES = {
     'stale_actor_target': _stale_actor_target,
     'stale_actor_flag': _stale_actor_flag,
     'stale_actor_flag2': _stale_actor_flag,
+    'stale_actor_ai_msg': _stale_actor_ai_msg,
     'phys_solver_steps': _solver_steps,
     'kf_angle': _kf_angle,
     'demo_move_arrive': _demo_move_arrive,
