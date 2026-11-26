@@ -106,6 +106,7 @@ Settings g_settings = {
     .bloom = true,
     .depth_of_field = true,
     .grass = true,
+    .grass_quads = true,
     .lens_flare = true,
     .fast_fma = true,
 };
@@ -696,6 +697,7 @@ void settings_load(void) {
         else if (!strcmp(key, "bloom")) g_settings.bloom = atoi(val) != 0;
         else if (!strcmp(key, "depth_of_field")) g_settings.depth_of_field = atoi(val) != 0;
         else if (!strcmp(key, "grass")) g_settings.grass = atoi(val) != 0;
+        else if (!strcmp(key, "grass_quads")) g_settings.grass_quads = atoi(val) != 0;
         else if (!strcmp(key, "grass_distance")) {
             g_settings.grass_distance = GRASS_DIST_FOLLOW;
             for (int i = 0; i < GRASS_DIST_COUNT; i++)
@@ -1000,6 +1002,7 @@ bool settings_save_to(const char *path) {
     fprintf(f, "bloom = %d\n", g_settings.bloom ? 1 : 0);
     fprintf(f, "depth_of_field = %d\n", g_settings.depth_of_field ? 1 : 0);
     fprintf(f, "grass = %d\n", g_settings.grass ? 1 : 0);
+    fprintf(f, "grass_quads = %d\n", g_settings.grass_quads ? 1 : 0);
     int gd = g_settings.grass_distance;
     fprintf(f, "grass_distance = %s\n", k_grass_dist[gd >= 0 && gd < GRASS_DIST_COUNT ? gd : GRASS_DIST_FOLLOW]);
     fprintf(f, "lens_flare = %d\n", g_settings.lens_flare ? 1 : 0);

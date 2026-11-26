@@ -1556,3 +1556,5 @@ T("Press the sprint button once while moving and Link keeps sprinting until he s
 T("30 fps until F5 again", "30 fps até apertar F5 de novo")
 T("Frame rate as set again", "Taxa de quadros como configurada")
 T("30 fps for a physics puzzle, until pressed again:  F5", "30 fps para um quebra-cabeça de física, até apertar de novo:  F5")
+T("Ground cover", "Cobertura do solo")
+T("Distant grass ground-cover layer. Off: keeps near grass blades only.", "Camada distante de grama no solo. Não: mantém apenas as folhas de grama próximas.")

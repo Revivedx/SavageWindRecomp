@@ -1556,3 +1556,5 @@ T("Press the sprint button once while moving and Link keeps sprinting until he s
 T("30 fps until F5 again", "もう一度F5を押すまで30fps")
 T("Frame rate as set again", "フレームレートを設定どおりに戻しました")
 T("30 fps for a physics puzzle, until pressed again:  F5", "物理パズル用に30fps（もう一度押すまで）:  F5")
+T("Ground cover", "地表の草")
+T("Distant grass ground-cover layer. Off: keeps near grass blades only.", "遠景の地面を覆う草レイヤーです。オフにすると近くの草のみを表示します。")

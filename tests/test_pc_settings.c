@@ -49,5 +49,11 @@ int main(int argc, char **argv) {
     assert(graphics_preset_current() == GPRESET_POTATO);
     graphics_preset_apply(GPRESET_HIGH);
     assert(g_settings.grass && g_settings.lens_flare && graphics_preset_current() == GPRESET_HIGH);
+    g_settings.grass_quads = false;
+    settings_save();
+    settings_load();
+    assert(!g_settings.grass_quads);
+    g_settings.grass_quads = true;
+    settings_save();
     printf("PASS: load cursor=%s, toggle and save for next boot; Potato and High presets; 72 fps offered\n", argv[2]);
 }

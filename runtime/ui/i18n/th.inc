@@ -1556,3 +1556,5 @@ T("Press the sprint button once while moving and Link keeps sprinting until he s
 T("30 fps until F5 again", "30 fps จนกว่าจะกด F5 อีกครั้ง")
 T("Frame rate as set again", "อัตราเฟรมกลับเป็นตามที่ตั้งไว้")
 T("30 fps for a physics puzzle, until pressed again:  F5", "30 fps สำหรับปริศนาฟิสิกส์ จนกว่าจะกดอีกครั้ง:  F5")
+T("Ground cover", "หญ้าคลุมดิน")
+T("Distant grass ground-cover layer. Off: keeps near grass blades only.", "ชั้นหญ้าคลุมดินระยะไกล ปิด: แสดงเฉพาะใบหญ้าระยะใกล้")

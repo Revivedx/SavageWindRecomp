@@ -1512,6 +1512,9 @@ static void tab_display(void) {
         static const char *const gd_names[GRASS_DIST_COUNT] = {"Follow draw distance", "Potato", "Original", "Medium", "High"};
         opt_indent(1);
         if (!g_settings.grass) opt_disable_next();
+        opt_toggle("Ground cover", &g_settings.grass_quads, true,
+                   "Distant grass ground-cover layer. Off: keeps near grass blades only.");
+        if (!g_settings.grass) opt_disable_next();
         opt_choice("Grass distance", &g_settings.grass_distance, gd_names, GRASS_DIST_COUNT, GRASS_DIST_FOLLOW,
                    "How far out grass blades and ground cover are drawn. Follow draw distance matches Draw distance; "
                    "High extends grass to about 2.45x without raising actor limits.", false);
