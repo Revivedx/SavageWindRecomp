@@ -1020,6 +1020,9 @@ void build_items(void) {
     v.push_back(toggle(P_VIDEO_ADV, "Depth of field", "Blurs the far distance. Off: sharp out to the horizon.",
                        [](const Item &) { return (int)g_settings.depth_of_field; },
                        [](const Item &, int x) { g_settings.depth_of_field = x; }, 1));
+    v.push_back(toggle(P_VIDEO_ADV, "Map zoom blur", "Blurs the map for a moment when it opens and after each zoom. Off: sharp straight away.",
+                       [](const Item &) { return (int)g_settings.map_zoom_blur; },
+                       [](const Item &, int x) { g_settings.map_zoom_blur = x; }, 1));
     v.push_back(toggle(P_VIDEO_ADV, "Grass", "Grass blades and ground cover. Off: bare terrain, faster.",
                        [](const Item &) { return (int)g_settings.grass; },
                        [](const Item &, int x) { g_settings.grass = x; }, 1));

@@ -9199,6 +9199,11 @@ static void draw_(CmdRec *r, bool indexed) {
         if (bloom) { stat_skipped++; return; }
     }
     if (!g_settings.depth_of_field && g_cur_fs_hash == UINT64_C(0xf7731492223eb16a)) { stat_skipped++; return; }
+    // Map zoom blur off: as it opens and after each zoom, the world map blurs the screen (1280x720, four passes each
+    // way) and blends that back over the map for about half a second, through a mask and a ramp. Its two blend draws
+    // are skipped while the map is open (the blur passes themselves are shared with other effects).
+    if (!g_settings.map_zoom_blur && (g_cur_fs_hash == UINT64_C(0x6da1591e7d7e6726) ||
+        g_cur_fs_hash == UINT64_C(0xdfddd20310007579)) && framepace_map_ui()) { stat_skipped++; return; }
     // The bloom's fixed tap offsets must address adjacent console-size texels.
     // Enlarging those images spaces the taps apart and produces separate copies
     // of emissive details; odd mip scratch sizes also stopped inheriting scale.

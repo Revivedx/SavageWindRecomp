@@ -222,6 +222,8 @@ typedef struct {
     int haze;            // the air's haze, percent of the game's (services/fs.c haze_patch; from the next start)
     bool bloom;          // the glow around bright light (off: its draws clear their images: vulkan/exec.c)
     bool depth_of_field; // the distance blur over far pixels (off: its draw is skipped: vulkan/exec.c)
+    bool map_zoom_blur;  // the blur the world map lays over itself as it opens and after each zoom (off: its blend
+                         // draws are skipped: vulkan/exec.c)
     bool grass;          // grass blades and crossed quads (off: draw_distance.c hides both layers)
     int grass_distance;  // GRASS_DIST_*: independent grass draw distance (0: follow draw_distance)
     bool lens_flare;     // sun glare / lens flare (off: vulkan/exec.c skips sun occlusion queries)
