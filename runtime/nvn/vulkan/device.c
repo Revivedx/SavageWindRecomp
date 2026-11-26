@@ -14,6 +14,7 @@
 #include <malloc.h>
 #endif
 
+#include "../../collectibles.h"
 #include "../../framepace.h"
 #include "../../hash.h"
 #include "../../imageload.h"
@@ -3193,6 +3194,89 @@ static bool boot_held(void) {  // (GPU lock held: present_locked)
     return boot_hold;
 }
 
+// Collectible hints on the map (runtime/collectibles.h collectibles_ground): when they ask, the game image shrunk to
+// an eighth (a blit, linear filter) into a small image, copied to a buffer the CPU reads and handed over once its
+// submission has completed, a frame or two later: never waited for. Upright, as the screen shows it.
+static void collect_ground_failed(VkFormat f) {  // (once per format, and only when the hints ask)
+    static VkFormat told;
+    if (told != f) told = f, LOG("[vk] collectible hints: the game image (format %d) can't be copied, so the circles keep their usual look on light ground\n", (int)f);
+}
+
+static void collect_ground_copy(TexBackend *b) {
+    static VkImage img;
+    static VkBuffer buf;
+    static VmaAllocation img_mem, buf_mem;
+    static void *mapped;
+    static uint32_t w, h;
+    static VkFormat fmt, checked;
+    static bool blit_ok, pending;
+    static uint64_t seq;
+    if (pending) {
+        if (vk_completed_seq() < seq) return;
+        pending = false;
+        vmaInvalidateAllocation(g_vk.vma, buf_mem, 0, VK_WHOLE_SIZE);
+        collectibles_ground_put(mapped, (int)w, (int)h);
+    }
+    if (!b || !b->image || (b->aspect & ~VK_IMAGE_ASPECT_COLOR_BIT) || b->samples != 1 || b->width < 64 || b->height < 64)
+        return;
+    if (checked != b->format) {
+        VkFormatProperties fp;
+        vkGetPhysicalDeviceFormatProperties(g_vk.phys, b->format, &fp);
+        VkFormatFeatureFlags need = VK_FORMAT_FEATURE_BLIT_SRC_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
+        blit_ok = (fp.optimalTilingFeatures & need) == need;
+        checked = b->format;
+    }
+    if (!collectibles_ground_wanted()) return;
+    if (!blit_ok) { collect_ground_failed(b->format); return; }
+    // (an sRGB image into an sRGB one: the bytes stay as stored, as in the screenshots)
+    VkFormat want = b->format == VK_FORMAT_R8G8B8A8_SRGB || b->format == VK_FORMAT_B8G8R8A8_SRGB ? VK_FORMAT_R8G8B8A8_SRGB
+                                                                                                 : VK_FORMAT_R8G8B8A8_UNORM;
+    uint32_t nw = b->width / 8, nh = b->height / 8;
+    if (img && (nw != w || nh != h || want != fmt)) {
+        vmaDestroyImage(g_vk.vma, img, img_mem), vmaDestroyBuffer(g_vk.vma, buf, buf_mem);
+        img = VK_NULL_HANDLE, buf = VK_NULL_HANDLE;
+    }
+    VkCommandBuffer cb = vk_cmd();
+    if (!img) {
+        VkImageCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D, .format = want,
+                                .extent = {nw, nh, 1}, .mipLevels = 1, .arrayLayers = 1, .samples = VK_SAMPLE_COUNT_1_BIT,
+                                .tiling = VK_IMAGE_TILING_OPTIMAL,
+                                .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT};
+        VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+        if (vmaCreateImage(g_vk.vma, &ci, &ai, &img, &img_mem, NULL) != VK_SUCCESS) {
+            img = VK_NULL_HANDLE;
+            collect_ground_failed(b->format);
+            return;
+        }
+        VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = (VkDeviceSize)nw * nh * 4,
+                                 .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT};
+        VmaAllocationCreateInfo bai = {.usage = VMA_MEMORY_USAGE_AUTO,
+                                       .flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT};
+        VmaAllocationInfo info;
+        if (vmaCreateBuffer(g_vk.vma, &bi, &bai, &buf, &buf_mem, &info) != VK_SUCCESS) {
+            vmaDestroyImage(g_vk.vma, img, img_mem);
+            img = VK_NULL_HANDLE;
+            collect_ground_failed(b->format);
+            return;
+        }
+        mapped = info.pMappedData, w = nw, h = nh, fmt = want;
+        vk_full_barrier(cb);
+        vk_image_init_layout(cb, img, VK_IMAGE_ASPECT_COLOR_BIT);
+    }
+    bool flip = renderer_origin_lower_left();  // (the game image stored bottom row first: turned upright)
+    VkImageBlit r = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                     .srcOffsets = {{0, 0, 0}, {(int32_t)b->width, (int32_t)b->height, 1}},
+                     .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                     .dstOffsets = {{0, flip ? (int32_t)h : 0, 0}, {(int32_t)w, flip ? 0 : (int32_t)h, 1}}};
+    vk_full_barrier(cb);
+    rec_CmdBlitImage(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, img, VK_IMAGE_LAYOUT_GENERAL, 1, &r, VK_FILTER_LINEAR);
+    vk_full_barrier(cb);
+    VkBufferImageCopy c = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {w, h, 1}};
+    rec_CmdCopyImageToBuffer(cb, img, VK_IMAGE_LAYOUT_GENERAL, buf, 1, &c);
+    vk_full_barrier(cb);
+    seq = vk_pending_seq(), pending = true;
+}
+
 static void present_locked(NvnTexture *t) {
     g_last_presented = t;
     TexBackend *b = vk_tex(t, true);
@@ -3201,6 +3285,7 @@ static void present_locked(NvnTexture *t) {
     uint64_t t0 = SDL_GetTicksNS();
     { SW_ZONE("present/end_pass"); vk_end_pass(); }
     g_present_split[1] += SDL_GetTicksNS() - t0;
+    { SW_ZONE("present/collect_ground"); collect_ground_copy(b); }
     t0 += pso_wait();  // (not the acquire's time)
     bool held = boot_held();
     if (!held && boot_splash_active()) boot_splash_close();  // (the game's own frames from here on)

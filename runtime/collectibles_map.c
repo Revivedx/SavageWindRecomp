@@ -10,9 +10,11 @@
 // pointer there). The byte at +0x38c8 is 1 on the map and 0 in Hero's Path mode (seen in 1.9.0: it changes with X and
 // back with B, nothing else in the map's objects does). The hints stay off in Hero's Path mode and while the sensor's
 // settings panel, a dialog over the map (0x39) or a stamp's Edit/Delete window (0x3e) is up.
+#include <SDL3/SDL_timer.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "collectibles.h"
@@ -158,5 +160,56 @@ bool collectibles_map_view(CollectMapView *v) {
     v->cursor[0] = rdf(d + 0x3868) / v->scale[0], v->cursor[1] = -rdf(d + 0x386c) / v->scale[1];
     if (!isfinite(v->cursor[0]) || !isfinite(v->cursor[1])) v->cursor[0] = v->cursor[1] = 1e9f;  // (no region there)
     if (!prompt_bar(v->bar, v->bar_text, sizeof v->bar_text)) v->bar[0] = 1, v->bar[2] = 0, v->bar_text[0] = 0;
+    return true;
+}
+
+// ---- The ground under the hints (collectibles.h collectibles_ground): the presenter's small copies of the game image
+#define GROUND_EVERY_S 0.2  // (a copy at most this often while asked: panning brings new ground in view)
+static CollectMapView ground_asked, ground_view;
+static double ground_asked_at = -1, ground_taken_at = -10, ground_view_at = -10;
+static uint8_t *ground_px;
+static int ground_w, ground_h, ground_cap;
+static unsigned ground_gen;
+
+static float ground_zoom_was;  // (the zoom asked for the frame before)
+
+static double ground_now(void) { return SDL_GetTicksNS() / 1e9; }
+
+// The map zooming: its zoom changed from one ask to the next. A copy is paired with the view asked a frame before it,
+// and a zoom step moves a circle near the canvas's edge by more than its radius in a frame (a pan, far less).
+static bool ground_zooming(float zoom, float was) { return fabsf(zoom - was) > 1e-4f * was; }
+
+void collectibles_ground_ask(const CollectMapView *v) {
+    ground_zoom_was = ground_asked.zoom;
+    ground_asked = *v, ground_asked_at = ground_now();
+}
+
+bool collectibles_ground_wanted(void) {
+    double now = ground_now();
+    if (now - ground_asked_at > 0.1 || now - ground_taken_at < GROUND_EVERY_S) return false;
+    if (ground_zooming(ground_asked.zoom, ground_zoom_was)) return false;
+    ground_taken_at = now;
+    ground_view = ground_asked;  // (the view this copy shows; it arrives a frame or two later)
+    ground_view_at = now;
+    return true;
+}
+
+void collectibles_ground_put(const uint8_t *rgba, int w, int h) {
+    if (w <= 0 || h <= 0) return;
+    if (ground_zooming(ground_asked.zoom, ground_view.zoom)) return;  // (a zoom began while it was on its way)
+    int need = w * h * 4;
+    if (need > ground_cap) {
+        uint8_t *p = realloc(ground_px, (size_t)need);
+        if (!p) return;
+        ground_px = p, ground_cap = need;
+    }
+    memcpy(ground_px, rgba, (size_t)need);
+    ground_w = w, ground_h = h;
+    ground_gen++;
+}
+
+bool collectibles_ground(CollectGround *out) {
+    if (!ground_px || !ground_gen || ground_now() - ground_view_at > 1.0) return false;
+    out->rgba = ground_px, out->w = ground_w, out->h = ground_h, out->gen = ground_gen, out->view = ground_view;
     return true;
 }

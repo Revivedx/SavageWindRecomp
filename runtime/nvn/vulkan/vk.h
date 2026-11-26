@@ -105,8 +105,9 @@ VkDescriptorSet vk_alloc_set(VkDescriptorSetLayout layout);
 
 // ---- textures (textures.c)
 // Render-target scale groups (textures.c tex_scale_group): none, the 3D scene's (internal resolution), the final
-// image's (the window's resolution), shadow maps (Video > Shadow resolution)
-enum { RS_NONE = 0, RS_SCENE = 1, RS_OUT = 2, RS_SHADOW = 3 };
+// image's (the window's resolution), shadow maps (Video > Shadow resolution), the map's terrain capture (the window's
+// height, without the HUD handling RS_OUT passes get)
+enum { RS_NONE = 0, RS_SCENE = 1, RS_OUT = 2, RS_SHADOW = 3, RS_MAP = 4 };
 
 // A texture's claim on the write watch (textures.c, SAVAGEWIND_VK_CPU_OPTS bit 32): token 0: none
 typedef struct TexWW {

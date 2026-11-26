@@ -321,6 +321,23 @@ void mods_tab_draw(bool in_game, bool *want_restart) {
         }
     }
 
+    // game_memory_mb (runtime/kernel.c kernel_memory_setup): the game's heap at 6144 MB instead of its own 3120, read
+    // once when the game starts. Off by default; under 12 GB of RAM it can only be turned off.
+    opt_section("HD texture packs");
+    {
+        bool more = g_settings.game_memory_mb > 0, low_ram = SDL_GetSystemRAM() < 12 * 1024;
+        if (low_ram && !more) opt_disable_next();
+        if (opt_toggle("More memory for HD textures", &more, false,
+                       low_ram ? "Needs a PC with 16 GB of RAM: it gives the game 6 GB of memory instead of its own 3 GB, "
+                                 "for big HD texture packs."
+                               : "Gives the game 6 GB of memory instead of its own 3 GB, so big HD texture packs load. It "
+                                 "uses about 3 GB more RAM, with or without a pack: leave it off if you don't use one. "
+                                 "Takes effect the next time the game starts.")) {
+            g_settings.game_memory_mb = more ? 6144 : 0;
+            settings_save();
+        }
+    }
+
     opt_section("Actions");
     if (opt_button("Open mods folder",
                    "Opens the mods folder in your file manager. Put mod folders inside it, then choose Refresh mod list.")) {

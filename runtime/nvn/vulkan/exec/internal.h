@@ -58,6 +58,37 @@ typedef struct {
     uint64_t copy_row_stride, copy_image_stride;
 } ExecState;
 
+// The render pass in progress (begin_pass to vk_end_pass): what it draws into, and what its draws did so far.
+typedef struct {
+    bool open;   // a pass is begun in the command buffer
+    bool void_;  // it has nothing to draw into: not begun, its draws and clears skipped (begin_pass)
+    bool out;    // it draws into the game's final image (RS_OUT: the HUD and menus draw there)
+    VkFormat color[8], depth, stencil;
+    uint32_t ncolor, samples, w, h;
+    float sx, sy;
+    int mvec;
+    uint64_t key;
+    uint8_t detached;
+    uint64_t serial;       // passes begun
+    bool frag_only;        // it began behind a fragment-only barrier (SAVAGEWIND_VK_BARRIER_FRAG)
+    bool vs_reads_next;    // the pass about to begin has a draw whose vertex stage reads textures / memory
+    bool ds_written;       // a draw of it wrote depth or stencil
+    uint8_t color_written;   // the color targets (bits) a draw of it wrote
+    uint8_t color_unsynced;  // the color targets drawn or cleared since it began or its last feedback barrier
+    uint8_t feedback;        // the color targets (bits) it began with a feedback loop enabled
+    TexBackend *fbl[8];      // (g_vk.feedback_layout) its targets moved to ATTACHMENT_FEEDBACK_LOOP_OPTIMAL
+    int nfbl;
+    TexBackend *block[8];    // its targets drawn through a view of a compressed image's blocks (vk_block_flush)
+    int nblock;
+    NvnTexture *linear[8];   // its linear color targets (begin_pass), with their views
+    NvnTextureView linear_view[8];
+    bool linear_has_view[8];
+    int nlinear;
+    TexBackend *twin;        // (it draws into the shadow copy: its twin made again after it)
+    NvnTexture *dbg[8];      // (debug frame) its color targets
+    int dbg_n, dbg_draws;
+} ExecPass;
+
 // Command buffer state a draw recorded last, so a draw records only what differs (see dyn_check).
 typedef struct {
     uint64_t epoch;
@@ -79,6 +110,7 @@ typedef struct {
 
 extern ExecState st;
 extern ExecDrawCache dc;
+extern ExecPass ps;
 
 // Generations that invalidate cached command-buffer state.
 extern uint64_t dyn_epoch;

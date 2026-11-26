@@ -2239,6 +2239,62 @@ static void collect_disc(ImDrawList *dl, ImVec2 c, float r, int cr, int cg, int 
         }
 }
 
+// A flat disc, its edge feathered over the outer 6% (the ground dimmed under a hint on light ground)
+static void collect_flat(ImDrawList *dl, ImVec2 c, float r, int cr, int cg, int cb, float a) {
+    const int seg = (int)fminf(48, fmaxf(16, r * .4f));
+    ImVec2 uv = dl->_Data->TexUvWhitePixel;
+    dl->PrimReserve(seg * 3 + seg * 6, 1 + 2 * seg);
+    unsigned base = dl->_VtxCurrentIdx;
+    dl->PrimWriteVtx(c, uv, collect_col(cr, cg, cb, a));
+    for (int k = 0; k < 2; k++)
+        for (int i = 0; i < seg; i++) {
+            float t = i * 6.2831853f / seg, rr = r * (k ? 1 : .94f);
+            dl->PrimWriteVtx(ImVec2(c.x + cosf(t) * rr, c.y + sinf(t) * rr), uv, collect_col(cr, cg, cb, k ? 0 : a));
+        }
+    for (int i = 0; i < seg; i++) {
+        unsigned j = (i + 1) % seg, in = base + 1, out = in + seg;
+        dl->PrimWriteIdx((ImDrawIdx)base), dl->PrimWriteIdx((ImDrawIdx)(in + i)), dl->PrimWriteIdx((ImDrawIdx)(in + j));
+        dl->PrimWriteIdx((ImDrawIdx)(in + i)), dl->PrimWriteIdx((ImDrawIdx)(out + i)), dl->PrimWriteIdx((ImDrawIdx)(out + j));
+        dl->PrimWriteIdx((ImDrawIdx)(in + i)), dl->PrimWriteIdx((ImDrawIdx)(out + j)), dl->PrimWriteIdx((ImDrawIdx)(in + j));
+    }
+}
+
+// How light the ground is under a hint centred on world (x, z) with radius `rad` (world units): CIELAB L* of the mean
+// colour inside it in the presenter's copy of the game image, the map's canvas only (-1: not in that copy). The copy
+// shows the layout's 1280x720 units centred, fitted to it as the screen fits them (collectibles.h CollectGround).
+static float collect_ground_light(const CollectGround &g, float x, float z, float rad) {
+    static float lin[256];
+    if (lin[255] == 0)
+        for (int i = 0; i < 256; i++) {
+            float c = i / 255.f;
+            lin[i] = c > .04045f ? powf((c + .055f) / 1.055f, 2.4f) : c / 12.92f;
+        }
+    const CollectMapView &v = g.view;
+    float s = fminf(g.w / 1280.f, g.h / 720.f), lx = x * v.scale[0] * v.zoom + v.translate[0];
+    float ly = -z * v.scale[1] * v.zoom + v.translate[1], r = rad * v.scale[0] * v.zoom * s;
+    float cx = g.w * .5f + lx * s, cy = g.h * .5f - ly * s;
+    int x0 = (int)fmaxf(floorf(cx - r), floorf(g.w * .5f - v.half[0] * s)), x1 = (int)fminf(ceilf(cx + r), ceilf(g.w * .5f + v.half[0] * s));
+    int y0 = (int)fmaxf(floorf(cy - r), floorf(g.h * .5f - v.half[1] * s)), y1 = (int)fminf(ceilf(cy + r), ceilf(g.h * .5f + v.half[1] * s));
+    x0 = x0 < 0 ? 0 : x0, y0 = y0 < 0 ? 0 : y0, x1 = x1 > g.w ? g.w : x1, y1 = y1 > g.h ? g.h : y1;
+    unsigned sum[3] = {0, 0, 0}, n = 0;
+    for (int py = y0; py < y1; py++)
+        for (int px = x0; px < x1; px++) {
+            float dx = px + .5f - cx, dy = py + .5f - cy;
+            if (dx * dx + dy * dy >= r * r) continue;
+            const uint8_t *q = g.rgba + ((size_t)py * g.w + px) * 4;
+            sum[0] += q[0], sum[1] += q[1], sum[2] += q[2], n++;
+        }
+    if (n < 4) return -1;
+    float lum = 0;
+    for (int c = 0; c < 3; c++) {
+        float m = (float)sum[c] / n;
+        int i = (int)m;
+        float f = i < 255 ? lin[i] + (lin[i + 1] - lin[i]) * (m - i) : lin[255];
+        lum += f * (c == 0 ? .2126f : c == 1 ? .7152f : .0722f);
+    }
+    return lum > .008856f ? 116 * cbrtf(lum) - 16 : 903.3f * lum;
+}
+
 // A haze: col inside a..b, fading to nothing over `feather` around it (the panel's soft dark backing)
 static void collect_haze(ImDrawList *dl, ImVec2 a, ImVec2 b, float feather, ImU32 col) {
     ImVec2 uv = dl->_Data->TexUvWhitePixel;
@@ -2409,8 +2465,37 @@ static void collect_map_draw(ImGuiIO &io) {
     static CollectPoint pts[1024];
     static int n;
     static double taken;
+    // On light ground (Eldin's rock, snow) a hint is drawn stronger: the ground under it dimmed, the fill raised. k (0..1)
+    // from the ground's lightness in the presenter's copy of the game image: none up to L* 36, full from 42 (green
+    // ground, fields and water measured 17-36 under the hints, Goron City 42-50, Hateno's snowfield 41-49). It eases
+    // toward the latest copy's value; a hint the copy doesn't show keeps its last.
+    static float k_to[1024], k_now[1024];
+    static uint32_t k_seed[1024];
+    static unsigned k_gen;
     double now = SDL_GetTicks() / 1000.0;
-    if (now - taken > 0.25) n = collectibles_missing(pts, (int)(sizeof pts / sizeof *pts)), taken = now;
+    if (now - taken > 0.25) {
+        n = collectibles_missing(pts, (int)(sizeof pts / sizeof *pts)), taken = now;
+        for (int i = 0; i < n; i++)
+            if (k_seed[i] != pts[i].seed) k_seed[i] = pts[i].seed, k_to[i] = k_now[i] = -1, k_gen = 0;
+    }
+    collectibles_ground_ask(&v);
+    CollectGround ground;
+    if (collectibles_ground(&ground) && ground.gen != k_gen) {
+        k_gen = ground.gen;
+        for (int i = 0; i < n; i++) {
+            float dx, dz;
+            collect_offset(pts[i].seed, &dx, &dz);
+            float l = collect_ground_light(ground, pts[i].x + dx, pts[i].z + dz, COLLECT_R);
+            if (l >= 0) k_to[i] = fminf(fmaxf((l - 36) / 6, 0), 1);
+        }
+    }
+    for (int i = 0; i < n; i++) {
+        if (k_to[i] < 0) continue;
+        // (the first value: shown as is while the hints fade in; a hint first measured later, panned or zoomed into view,
+        // eases in from none like any change)
+        if (k_now[i] < 0) k_now[i] = g_collect_alpha < 1 ? k_to[i] : 0;
+        k_now[i] += fminf(fmaxf(k_to[i] - k_now[i], -dt / .25f), dt / .25f);
+    }
     auto screen = [&](float x, float z) { return ImVec2(cx + (x * k0 + v.translate[0]) * s, cy - (-z * k1 + v.translate[1]) * s); };
     ImVec2 lo(cx - v.half[0] * s, cy - v.half[1] * s), hi(cx + v.half[0] * s, cy + v.half[1] * s);
     dl->PushClipRect(lo, hi, true);
@@ -2422,8 +2507,10 @@ static void collect_map_draw(ImGuiIO &io) {
         float x = pts[i].x + dx, z = pts[i].z + dz;
         ImVec2 p = screen(x, z);
         if (p.x < lo.x - r || p.x > hi.x + r || p.y < lo.y - r || p.y > hi.y + r) continue;
-        if (pts[i].kind == COLLECT_KOROK) collect_disc(dl, p, r, 235, 240, 215, .30f * a);
-        else collect_disc(dl, p, r, 255, 175, 80, .42f * a);
+        float k = k_now[i] > 0 ? k_now[i] : 0;
+        if (k > 0) collect_flat(dl, p, r, 20, 16, 12, .45f * k * a);
+        if (pts[i].kind == COLLECT_KOROK) collect_disc(dl, p, r, 235, 240, 215, (.30f + .10f * k) * a);
+        else collect_disc(dl, p, r, 255, 175, 80, (.42f + .10f * k) * a);
         float cdx = v.cursor[0] - x, cdz = v.cursor[1] - z, d = cdx * cdx + cdz * cdz;
         if (d < near) near = d, label = pts[i].kind == COLLECT_KOROK ? "Korok seed" : "Shrine";
     }

@@ -664,6 +664,24 @@ static void a_moved_menu_input_leaves_its_actions(void) {
     assert(hold(AIM_RUNE) == 0);
     host(0, 0, 0);
     act_poll(true);
+    // ZL on the keyboard (#1103): Menu: previous tab 2 moved to G, Guard / lock on and the hidden lock-on check keep
+    // right click, and G does neither
+    const int GUARD = 13, HIDDEN_LOCK_ON = 29, RIGHT_CLICK = BIND_MOUSE + SDL_BUTTON_RIGHT;
+    assert(g_bind_key[BIND_ZL] == RIGHT_CLICK && act_is_default(GUARD));
+    bind_settings_load("bind_key_zl", "G");
+    assert(g_bind_key[BIND_ZL] == SDL_SCANCODE_G && act_is_default(GUARD));
+    key_down[RIGHT_CLICK] = 1;
+    host(0, 0, 0);
+    act_poll(true);
+    assert(hold(GUARD) == 1 && hold(HIDDEN_LOCK_ON) == 1);
+    key_down[RIGHT_CLICK] = 0;
+    key_down[SDL_SCANCODE_G] = 1;
+    host(0, 0, 0);
+    act_poll(true);
+    assert(hold(GUARD) == 0 && hold(HIDDEN_LOCK_ON) == 0);
+    key_down[SDL_SCANCODE_G] = 0;
+    host(0, 0, 0);
+    act_poll(true);
     // back to the defaults: the game's own answers again
     bind_reset(BIND_DEV_KEY);
     bind_reset(BIND_DEV_PAD);

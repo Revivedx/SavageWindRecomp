@@ -59,6 +59,7 @@ play SAVAGEWIND_VK_SPARSE_HEAP | 0 | Sparse memory for the game. 1 forces it on,
 play SAVAGEWIND_VK_NO_GMEM | 1 | Turns off the single memory mapping of the game's heap.
 play SAVAGEWIND_VK_NO_PIPELINE_CACHE | 1 | Ignores the saved pipeline cache.
 play SAVAGEWIND_VK_NO_SPIRV_CACHE | 1 | Ignores the saved shader cache.
+play SAVAGEWIND_NO_CASCADE_BLEND | 1 | Keeps the game's own sun shadow cascade cuts (no dithered band where two cascades meet).
 play SAVAGEWIND_GPU_OVERLAP | 0 | Overlap of CPU and GPU work. 0 turns it off.
 play SAVAGEWIND_NO_OCCLUSION_QUERY | 1 | Turns off occlusion queries.
 play SAVAGEWIND_NO_PREEMPT | 1 | Turns off thread preemption in the game's scheduler.
