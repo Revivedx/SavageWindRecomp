@@ -192,6 +192,9 @@ static bool format_is_float(VkFormat f) {  // (uncompressed: these can hold NaN 
 //             2048 to 8192) they are made at instead of the game's (output_scale.c shadow_map_size). Also
 //             their half-size copy (R16 448x448x3, the max of each 2x2), at the same factor: water and the other
 //             forward-shaded surfaces take their shadows from it (issue #101)
+//   RS_MAP    AppMap's terrain capture (2250x1080: its 1500x720 layout at 1.5x, exec.c map_capture_patch): RS_OUT's
+//             vertical scale on both axes. At its guest size it held one map texel per 1080p pixel, so at 4K the map
+//             was the 1080p picture stretched 2x
 static float g_rs[4][2] = {{1, 1}, {1, 1}, {1, 1}, {1, 1}};
 static uint32_t g_shadow_size;
 void renderer_get_scale(float *sx, float *sy) { *sx = g_rs[RS_OUT][0]; *sy = g_rs[RS_OUT][1]; }
@@ -203,6 +206,7 @@ void renderer_set_shadow_size(uint32_t n) {  // (never past what the GPU can mak
 }
 uint64_t renderer_present_count(void);
 static float rs_want(const TexBackend *b, int axis) {  // the scale a texture of b's group is wanted at now
+    if (b->rs_group == RS_MAP) return g_rs[RS_OUT][1];
     if (b->rs_group != RS_SHADOW) return g_rs[b->rs_group][axis];
     // (square) bigger than the game's (High and up), or smaller (Potato); 0: the game's own
     return b->guest_w && g_shadow_size && g_shadow_size != b->guest_w ? (float)g_shadow_size / (float)b->guest_w : 1.0f;
@@ -250,6 +254,7 @@ static uint8_t tex_scale_group(const NvnTexture *t) {
         return RS_SHADOW;
     if (!vk_shadow_direct() && vk_is_shadow_copy(t)) return RS_SHADOW;  // (the copy's readers use the cascades instead)
     if ((t->target != 1 && t->target != 4) || t->samples > 1 || !(t->flags & 9) || t->width < 32 || t->height < 16) return RS_NONE;
+    if (t->target == 1 && t->width == 2250 && t->height == 1080) return RS_MAP;  // (and its depth target, if any)
     float a = (float)t->width / (float)t->height;
     if (a < 1.74f || a > 1.81f) return RS_NONE;
     if (t->flags & 1) return RS_OUT;  // NVN_TEXTURE_FLAGS_DISPLAY: the images the game presents
