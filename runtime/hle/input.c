@@ -409,6 +409,12 @@ static bool horse_riding(void) {
     return t && plat_now_ns() - t < CAM_CALLER_NS;
 }
 
+static void horse_keyboard_stick(int32_t *klx, int32_t *kly) {
+    if (!horse_riding() || !*klx) return;
+    if (*kly > 0) *kly = 0;                     // (#290) W + A/D: pure lateral steering
+    else if (*kly < 0) *klx = *klx * 40 / 100;  // (#1154) S + A/D: keep inside rear braking cone (~22 deg) while steering
+}
+
 // Link is on a horse or the Master Cycle Zero (vulkan/exec.c: frame generation moves his box with him, and what he rides
 // is in it then). The cycle: the game asks its accelerate action every frame while Link rides it (bindings.c).
 bool rt_link_mounted(void) {
@@ -1253,7 +1259,7 @@ static void fill_state(Cpu *c) {
     int32_t plx = sticks ? pad_lx : 0, ply = sticks ? pad_ly : 0, prx = sticks ? pad_rx : 0, pry = sticks ? pad_ry : 0;
     bool map_keys=pc_cursor_map_navigation();
     int32_t klx = menu || map_keys ? 0 : key_lx, kly = menu || map_keys ? 0 : key_ly;
-    if (horse_riding() && klx && kly > 0) kly = 0;
+    horse_keyboard_stick(&klx, &kly);
     int32_t lx = clamp_axis(klx + plx + script_lx);
     int32_t ly = clamp_axis(kly + ply + script_ly);
     // Gate at each poll: an arrow or Enter held when a menu closes must never move the player or press A.
