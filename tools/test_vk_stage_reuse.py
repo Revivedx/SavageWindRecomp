@@ -8,6 +8,11 @@ import tempfile
 
 def function(source, name):
     pos=source.index(name+'(')
+    # Skip forward declarations and calls: the definition is the one whose parameter list is followed by a brace.
+    while True:
+        end_sig=min(i for i in (source.find(';',pos),source.find('{',pos)) if i>=0)
+        if source[end_sig]=='{' and source.rfind('static ',0,pos)>source.rfind('\n\n',0,pos):break
+        pos=source.index(name+'(',pos+1)
     start=source.rfind('static ',0,pos)
     brace=source.index('{',pos)
     end,depth=brace+1,1
@@ -42,6 +47,8 @@ typedef struct {
     VkBindingInfo binds[MAX_BIND]; int nbinds;
     uint8_t bind_order[2][MAX_BIND], nstage[2], nlate[2];
     bool reuse_stage[2]; uint32_t reuse_mask[2];
+    uint8_t set_idx[2][MAX_BIND]; uint8_t set_n[2];
+    bool has_rscale[2], has_tint[2];
 } Prog;
 typedef struct {int ntex; uint32_t cbuf_size[18]; bool uses_gmem, writes_gmem;} ShaderInfo;
 typedef struct {VkBuffer buf; uint64_t off; void *ptr;} VkSpan;
@@ -56,6 +63,11 @@ static float tex_sc[2][64][2];
 static uint32_t tex_wh[2][64][2];
 #define LOG(...) ((void)0)
 static _Atomic int stage_cpu_options=-1;
+#define CPU_OPTS_REUSE 3
+#define CPU_OPTS_VALID (CPU_OPTS_REUSE | 3824)
+#define CPU_OPTS_DEFAULT 3312
+static bool g_opt_dispatch_fast, g_opt_cb_unlink;
+static void stage_cpu_publish(int mask) {g_opt_dispatch_fast=(mask&1024)!=0;g_opt_cb_unlink=(mask&2048)!=0;}
 static _Atomic uint64_t stage_reuse_calls, stage_reuse_eligible, stage_reuse_hits;
 typedef struct {bool failed; int mask;} ControlReply;
 static void control_fail(ControlReply *r,const char *text) {(void)text;r->failed=true;}
@@ -115,6 +127,18 @@ static VkSpan copy_dedupe_in(int id,const void *p,uint64_t n,uint64_t total,uint
 }
 static VkSpan copy_dedupe(int id,const void *p,uint64_t n,uint64_t align) {return copy_dedupe_in(id,p,n,n,align);}
 static VkDescriptorBufferInfo ubo_span(VkSpan s,uint64_t n) {return (VkDescriptorBufferInfo){s.buf,s.off,n};}
+// (the identity render-scale row and the zero tint: transient memory of their own, made once a submission)
+static unsigned char transient_mem[1<<16];
+static uint64_t transient_used;
+static VkSpan vk_transient(uint64_t size,uint64_t align) {
+    uint64_t off=(transient_used+align-1)&~(align-1);
+    if(off+size>sizeof transient_mem)off=0;
+    transient_used=off+size;
+    return (VkSpan){(VkBuffer)(uintptr_t)900,off,transient_mem+off};
+}
+static VkSpan vk_transient_copy(const void *p,uint64_t size,uint64_t align) {
+    VkSpan s=vk_transient(size,align);memcpy(s.ptr,p,size);return s;
+}
 '''
 
 MAIN = r'''
@@ -126,6 +150,7 @@ int main(void) {
     Prog p={.nbinds=4,.binds={{1,3,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC},
         {1,32,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER},{1,18,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER},
         {1,19,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER}}};
+    prog_index_sets(&p);
     stage_reuse_plan(&p);
     ShaderInfo si={.ntex=1};
     VkDescriptorImageInfo images[1]={{(VkSampler)5,(VkImageView)6,VK_IMAGE_LAYOUT_GENERAL}};
@@ -187,8 +212,9 @@ int main(void) {
 def main():
     root=Path(__file__).resolve().parent.parent
     source=(root/'runtime/nvn/vulkan/exec.c').read_text()
-    c='\n'.join([FIXTURE,function(source,'stage_reuse_plan'),function(source,'stage_cpu_opts_init'),function(source,'stage_cpu_opts'),
-                  function(source,'set_finish'),function(source,'stage_set').replace('stage_set(', 'stage_set_prepare('),
+    c='\n'.join([FIXTURE,function(source,'prog_index_sets'),function(source,'stage_reuse_plan'),function(source,'stage_cpu_opts_init'),function(source,'stage_cpu_opts'),
+                  function(source,'stage_reuse_mode'),function(source,'mum64'),function(source,'set_finish'),
+                  source[source.index('typedef struct {\n    VkWriteDescriptorSet w[MAX_BIND];'):source.index('// STAGE_REUSE_TEST_BEGIN')].replace('stage_set(', 'stage_set_prepare('),
                   source[source.index('// STAGE_REUSE_TEST_BEGIN'):source.index('// STAGE_REUSE_TEST_END')].replace('stage_set(', 'stage_set_prepare(').replace('stage_set_reuse(', 'stage_set('),MAIN])
     with tempfile.TemporaryDirectory(prefix='swr-reuse-') as d:
         path=Path(d)/'test.c';path.write_text(c);exe=Path(d)/'test'

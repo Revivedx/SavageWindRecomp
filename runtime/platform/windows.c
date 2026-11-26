@@ -31,7 +31,7 @@ __declspec(dllexport) int AmdPowerXpressRequestHighPerformance = 1;
 // does not fault: such buffers must be inside committed regions.
 static uint64_t g_lo, g_hi;
 #define COMMIT_CHUNK 0x10000ull
-#define SPARSE_HEAP_MAX_PAGES (4ull * 1024 * 1024 * 1024 / COMMIT_CHUNK)
+#define SPARSE_HEAP_MAX_PAGES (0x0190000000ull / COMMIT_CHUNK)  // (the heap at its largest: HEAP_MAX_LARGEST, rt.h)
 #define SPARSE_HEAP_BITMAP_WORDS ((SPARSE_HEAP_MAX_PAGES + 63) / 64)
 static atomic_uint_fast64_t guest_commit_gen;
 static uint64_t sparse_heap_base, sparse_heap_size;
@@ -379,13 +379,19 @@ void plat_thread_elevate(void) {
 static char g_log_path[MAX_PATH];
 
 static void log_to_file_without_console(void) {
-    if (GetStdHandle(STD_ERROR_HANDLE) && GetStdHandle(STD_ERROR_HANDLE) != INVALID_HANDLE_VALUE) return;  // console / pipe
+    // (test: SAVAGEWIND_LOG_FILE=<file> - the log to that file whatever stderr is; a development build started by
+    // another program, such as SWMM+, otherwise logs to a console of its own)
+    const char *forced = getenv("SAVAGEWIND_LOG_FILE");
+    if (forced && !*forced) forced = NULL;
+    if (!forced && GetStdHandle(STD_ERROR_HANDLE) && GetStdHandle(STD_ERROR_HANDLE) != INVALID_HANDLE_VALUE)
+        return;  // console / pipe
     char exe[MAX_PATH];
     DWORD n = GetModuleFileNameA(NULL, exe, sizeof exe);
     if (!n || n >= sizeof exe) return;
     char *slash = strrchr(exe, '\\');
     if (slash) slash[1] = 0;
     snprintf(g_log_path, sizeof g_log_path, "%ssavagewind.log", exe);
+    if (forced) snprintf(g_log_path, sizeof g_log_path, "%s", forced);
     bool append = getenv("SAVAGEWIND_LOG_APPEND") != NULL;
     if (!append) {  // the last run's log stays as savagewind.prev.log: opening again after a failed setup kept nothing of it
         char prev[MAX_PATH + 16];
@@ -749,6 +755,33 @@ PlatProc plat_spawn(const char *const argv[], const char *log_path, bool append_
     ResumeThread(pi.hThread);
     CloseHandle(pi.hThread);
     return (PlatProc)pi.hProcess;
+}
+
+// Another program on its own (platform.h): not in plat_spawn's kill-on-close job (out of any job this process is in,
+// when that job allows it), no handles inherited, its own folder as its working folder, allowed to come to the front
+bool plat_start_program(const char *const argv[]) {
+    static char cmd[32768];
+    cmd[0] = 0;
+    for (int i = 0; argv[i]; i++) append_arg(cmd, sizeof cmd, argv[i]);
+    static wchar_t wcmd[32768], wprog[MAX_PATH], wfull[MAX_PATH], wdir[MAX_PATH];
+    MultiByteToWideChar(CP_UTF8, 0, cmd, -1, wcmd, 32768);
+    MultiByteToWideChar(CP_UTF8, 0, argv[0], -1, wprog, MAX_PATH);
+    for (wchar_t *p = wprog; *p; p++) if (*p == L'/') *p = L'\\';
+    const wchar_t *app = GetFullPathNameW(wprog, MAX_PATH, wfull, NULL) ? wfull : wprog;
+    wcscpy(wdir, app);
+    wchar_t *slash = wcsrchr(wdir, L'\\');
+    if (slash) *slash = 0;
+    STARTUPINFOW si = {.cb = sizeof si};
+    PROCESS_INFORMATION pi;
+    AllowSetForegroundWindow(ASFW_ANY);
+    BOOL ok = CreateProcessW(app, wcmd, NULL, NULL, FALSE, CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB, NULL,
+                             slash ? wdir : NULL, &si, &pi);
+    if (!ok)  // (in a job that allows no breakaway: started in it, as before)
+        ok = CreateProcessW(app, wcmd, NULL, NULL, FALSE, CREATE_NEW_PROCESS_GROUP, NULL, slash ? wdir : NULL, &si, &pi);
+    if (!ok) return false;
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    return true;
 }
 
 void plat_proc_kill(PlatProc p) {  // (what it started ends with this process: the job above)

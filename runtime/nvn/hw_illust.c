@@ -958,7 +958,7 @@ static bool each_pane(uint8_t *d, size_t n, bool (*f)(uint8_t *pane, void *ctx),
     return true;
 }
 
-typedef struct { const PaneEdit *e; size_t n; int found; } EditCtx;
+typedef struct { const PaneEdit *e; size_t n; int found; const int *face; } EditCtx;
 static const PaneEdit *edit_for(const uint8_t *pane, const EditCtx *c) {
     char name[25];
     memcpy(name, pane + 0x0C, 24);
@@ -974,9 +974,27 @@ static bool check_pane(uint8_t *pane, void *ctx) {
     c->found++;
     return fabsf(rdf(pane + 0x2C) - e->was[0]) < 0.01f && fabsf(rdf(pane + 0x30) - e->was[1]) < 0.01f;
 }
+// The tips' marks on the face buttons, by their place on the Switch's close-up (east A, south B, north X, west Y: the
+// order of glyphs_hud_positions' places). With A and B (or X and Y) bound to other buttons, a tip's mark goes on the
+// button its Switch button is bound to, where the prompt's character points (#1091: with A and B swapped, the
+// parry's tip marked the east button while the parry was on the south one): the device's mark of that place.
+static const float k_face_was[4][2] = {{13.5f, 9.5f}, {-0.5f, -4}, {-0.5f, 23}, {-15, 9.5f}};
+static const PaneEdit *face_target(const PaneEdit *e, const EditCtx *c) {
+    if (!c->face) return e;
+    int i = 0;
+    while (i < 4 && (e->was[0] != k_face_was[i][0] || e->was[1] != k_face_was[i][1])) i++;
+    int to = i < 4 ? c->face[i] : -1;
+    if (to < 0 || to > 3 || to == i) return e;
+    for (size_t k = 0; k < c->n; k++) {  // (the same kind of mark: the glow or the dot, told apart by their size)
+        const PaneEdit *o = &c->e[k];
+        if (o->was[0] == k_face_was[to][0] && o->was[1] == k_face_was[to][1] && o->size[0] == e->size[0]) return o;
+    }
+    return e;
+}
 static bool edit_pane(uint8_t *pane, void *ctx) {
     const PaneEdit *e = edit_for(pane, ctx);
     if (!e) return true;
+    e = face_target(e, ctx);
     wrf(pane + 0x2C, e->t[0]), wrf(pane + 0x30, e->t[1]);   // translation x, y
     wrf(pane + 0x40, e->rot);                               // rotation z
     wrf(pane + 0x44, e->scale[0]), wrf(pane + 0x48, e->scale[1]);
@@ -984,10 +1002,37 @@ static bool edit_pane(uint8_t *pane, void *ctx) {
     return true;
 }
 
-int hw_illust_layout(int device, int layout, uint8_t *flyt, size_t n) {
+// The Switch's own close-ups (no device drawn over them): only the face buttons' marks move, to the Switch button's
+// place their button is bound to
+static bool switch_face_pane(uint8_t *pane, void *ctx) {
+    EditCtx *c = ctx;
+    const PaneEdit *e = edit_for(pane, c);
+    if (!e) return true;
+    for (int i = 0; i < 4; i++) {
+        if (e->was[0] != k_face_was[i][0] || e->was[1] != k_face_was[i][1]) continue;
+        int to = c->face[i];
+        if (to >= 0 && to < 4 && to != i) wrf(pane + 0x2C, k_face_was[to][0]), wrf(pane + 0x30, k_face_was[to][1]);
+    }
+    return true;
+}
+
+int hw_illust_layout(int device, int layout, uint8_t *flyt, size_t n, const int face[4]) {
+    if (device < 0 && layout == HW_LAYOUT_TIPS && face) {
+        static const PaneEdit k_face_marks[] = {
+            {"P_Color_01", {13.5f, 9.5f}}, {"P_Point_00", {13.5f, 9.5f}}, {"P_Color_15", {-0.5f, -4}},
+            {"P_Point_01", {-0.5f, -4}}, {"P_Color_25", {-0.5f, 23}}, {"P_Point_02", {-0.5f, 23}},
+            {"P_Color_26", {-15, 9.5f}}, {"P_Point_03", {-15, 9.5f}}};
+        bool moved = false;
+        for (int i = 0; i < 4; i++) moved |= face[i] != i;
+        EditCtx c = {k_face_marks, sizeof k_face_marks / sizeof *k_face_marks, 0, face};
+        if (!moved || !each_pane(flyt, n, check_pane, &c) || c.found != (int)c.n) return 0;
+        each_pane(flyt, n, switch_face_pane, &c);
+        return c.found;
+    }
     if (device < 0 || device >= HW_DEVICE_COUNT) return 0;
     EditCtx c = {layout == HW_LAYOUT_TIPS ? k_marks[device].e : k_tips[device].e,
-                 layout == HW_LAYOUT_TIPS ? k_marks[device].n : k_tips[device].n, 0};
+                 layout == HW_LAYOUT_TIPS ? k_marks[device].n : k_tips[device].n, 0,
+                 layout == HW_LAYOUT_TIPS ? face : NULL};
     if (!each_pane(flyt, n, check_pane, &c) || c.found != (int)c.n) return 0;
     each_pane(flyt, n, edit_pane, &c);
     return c.found;

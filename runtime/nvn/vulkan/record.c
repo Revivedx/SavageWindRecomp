@@ -22,8 +22,9 @@
 //                       of other sets of a pool may run at the same time (only the set written is externally
 //                       synchronized); a slot's pools are reset once its submission is done on the GPU, which implies
 //                       R submitted it, which implies R made every call before it (packets run in order)
-//   the queue           R's alone (submissions); T uses it only after rec_drain. Presents go on device.c's own queue
-//                       once rec_wait_submitted says the submission that signals their semaphore was made
+//   the queue           R's submissions; T uses it only after rec_drain. Presents go on it too (device.c: the calling
+//                       thread's, the present thread's for frame generation) once rec_wait_submitted says the
+//                       submission that signals their semaphore was made; g_vk_queue_lock (rec_queue_lock) around each
 //   Vulkan objects in   images, views, buffers, samplers, pipelines, layouts, query pools: created by T (or the build
 //   packets             workers) before the packet that names them; destroyed by T only once the submission that could
 //                       use them is done on the GPU - again after R recorded and submitted it
@@ -50,17 +51,26 @@ typedef struct { PktFn fn; uint32_t size; uint32_t pad; } PktHdr;  // fn NULL: s
 
 static uint8_t *ring;
 static uint64_t ring_cap;  // (a power of two)
-static _Atomic uint64_t head;  // (T) published end
-static _Atomic uint64_t tail;  // (R) recorded end
-static uint64_t wpos, published;  // (T) written end, the end last published
+// The ring's two ends and the translator's own cursors get a cache line each. Statics are laid out in the linker's
+// order (in one build it sorted them by name: `tail` shared a line with `target`, `wpos` with `wp`), so a cursor one
+// thread writes constantly must not share a line with whatever follows it. A profile capture (queue thread): the load of
+// `tail` in wait_room was 0.10 ms a frame, 16000 pushes at about 6 ns each: R stores `tail` after every packet, so
+// T's load finds the line in R's cache. wait_room reads it only when the last value it saw says the ring is full.
+typedef struct { _Atomic uint64_t v; } __attribute__((aligned(64))) RingEnd;  // (sizeof 64: alone on its line)
+static RingEnd head_end;  // (T) published end
+static RingEnd tail_end;  // (R) recorded end
+typedef struct { uint64_t wpos, published, tail_seen; RecStats st; } __attribute__((aligned(64))) TState;
+static TState T;  // (T) wpos: written end; published: the end last published; tail_seen: the last `tail` T loaded; st: T's counters
 static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
+// (the game's queue: submits here, frame generation's presents on the present thread, sparse binds; vk.h g_vk_queue_lock)
+void rec_queue_lock(void) { pthread_mutex_lock(&g_vk_queue_lock); }
+void rec_queue_unlock(void) { pthread_mutex_unlock(&g_vk_queue_lock); }
 static pthread_cond_t cv_work = PTHREAD_COND_INITIALIZER, cv_done = PTHREAD_COND_INITIALIZER;
 static _Atomic int asleep;
 static _Atomic int done_waiters;  // threads inside a cv_done wait (WAIT_DONE): R broadcasts only when there are any
 static _Atomic uint64_t submitted;
 static int on = -1;  // 1: the thread records, 0: calls at once, -1: not started
 static bool prof, prof_enq;  // SAVAGEWIND_VK_PROF; the time queuing each packet only when it isn't 2 (two clock reads a packet)
-static RecStats st_t;  // T's counters
 static _Atomic uint64_t r_busy_ns, r_wakeups, r_submit_ns;
 static _Atomic uint64_t a_seq_waits, a_seq_wait_ns;  // (waits from any thread)
 
@@ -101,9 +111,9 @@ static void notify_done(void) {
 
 // T: what it wrote so far is the recorder's to run
 static void publish(void) {
-    if (published == wpos) return;
-    published = wpos;
-    atomic_store_explicit(&head, wpos, memory_order_seq_cst);
+    if (T.published == T.wpos) return;
+    T.published = T.wpos;
+    atomic_store_explicit(&head_end.v, T.wpos, memory_order_seq_cst);
     if (atomic_load_explicit(&asleep, memory_order_seq_cst)) {
         pthread_mutex_lock(&mu);
         pthread_cond_signal(&cv_work);
@@ -115,15 +125,20 @@ static void slow_wait(const char *what, uint64_t ns);
 // T: room for `need` bytes at wpos (the recorder frees room as it records; a full ring means it is behind by its
 // whole size, 16 MB of packets, so the wait is rare)
 static void wait_room(uint64_t need) {
-    if (wpos + need - atomic_load_explicit(&tail, memory_order_acquire) <= ring_cap) return;
+    // (`tail` only grows, so room by the last value T saw is room now; the line it lives on is R's, written after every
+    // packet: loaded only when the last value says the ring is full. The acquire of that earlier load still orders
+    // R's reads of these bytes before T's writes)
+    if (T.wpos + need - T.tail_seen <= ring_cap) return;
+    T.tail_seen = atomic_load_explicit(&tail_end.v, memory_order_acquire);
+    if (T.wpos + need - T.tail_seen <= ring_cap) return;
     publish();
     SW_ZONE("recorder ring full");
     uint64_t t0 = NOW();
     pthread_mutex_lock(&mu);
-    WAIT_DONE(wpos + need - atomic_load_explicit(&tail, memory_order_acquire) > ring_cap, 1000000);
+    WAIT_DONE(T.wpos + need - atomic_load_explicit(&tail_end.v, memory_order_acquire) > ring_cap, 1000000);
     pthread_mutex_unlock(&mu);
-    st_t.full_waits++;
-    st_t.full_ns += NOW() - t0;
+    T.st.full_waits++;
+    T.st.full_ns += NOW() - t0;
     slow_wait("room in the ring", NOW() - t0);
 }
 
@@ -132,29 +147,29 @@ static void wait_room(uint64_t need) {
 static void *push(PktFn fn, size_t args, size_t extra) {
     uint64_t need = (sizeof(PktHdr) + ((args + PKT_ALIGN - 1) & ~(size_t)(PKT_ALIGN - 1)) + extra + PKT_ALIGN - 1) & ~(uint64_t)(PKT_ALIGN - 1);
     if (need > ring_cap / 4) FATAL("[vk] recorder: a packet of %llu bytes does not fit the ring\n", (unsigned long long)need);
-    uint64_t at = wpos & (ring_cap - 1);
+    uint64_t at = T.wpos & (ring_cap - 1);
     if (at + need > ring_cap) {  // no room before the end: a skip packet, the real one at the start
         uint64_t skip = ring_cap - at;
         wait_room(skip);
         PktHdr *s = (PktHdr *)(ring + at);
         s->fn = NULL;
         s->size = (uint32_t)skip;
-        wpos += skip;
+        T.wpos += skip;
         at = 0;
     }
     wait_room(need);
     PktHdr *h = (PktHdr *)(ring + at);
     h->fn = fn;
     h->size = (uint32_t)need;
-    wpos += need;
-    st_t.packets++;
-    st_t.bytes += need;
+    T.wpos += need;
+    T.st.packets++;
+    T.st.bytes += need;
     SW_TALLY("vk packets");
     return h + 1;
 }
 static uint64_t publish_every = PUBLISH_EVERY;  // (rec_init: 64 KB where R doesn't spin)
 static void commit(void) {
-    if (wpos - published >= publish_every) publish();
+    if (T.wpos - T.published >= publish_every) publish();
 }
 // (the arrays of a packet: after its arguments, 16-aligned)
 #define AL16(n) (((n) + 15) & ~(size_t)15)
@@ -176,7 +191,7 @@ static uint64_t spin_ns;
 static uint64_t spin_for_work(uint64_t t) {  // the published end once it moves past t, else t
     uint64_t t0 = NOW(), h;
     for (unsigned i = 1;; i++) {
-        if ((h = atomic_load_explicit(&head, memory_order_acquire)) != t) return h;
+        if ((h = atomic_load_explicit(&head_end.v, memory_order_acquire)) != t) return h;
         RELAX();
         if (!(i & 31) && NOW() - t0 > spin_ns) return t;
     }
@@ -191,13 +206,13 @@ static void *run(void *arg) {
     control_prof_thread("recorder");
     uint64_t t = 0;
     for (;;) {
-        uint64_t h = atomic_load_explicit(&head, memory_order_acquire);
+        uint64_t h = atomic_load_explicit(&head_end.v, memory_order_acquire);
         if (h == t && spin_ns && (h = spin_for_work(t)) != t) {
             // work came while spinning: no sleep, no wake-up syscall on T's side
         } else if (h == t) {
             pthread_mutex_lock(&mu);
             atomic_store_explicit(&asleep, 1, memory_order_seq_cst);
-            while ((h = atomic_load_explicit(&head, memory_order_seq_cst)) == t) pthread_cond_wait(&cv_work, &mu);
+            while ((h = atomic_load_explicit(&head_end.v, memory_order_seq_cst)) == t) pthread_cond_wait(&cv_work, &mu);
             atomic_store_explicit(&asleep, 0, memory_order_relaxed);
             pthread_mutex_unlock(&mu);
             ADD(r_wakeups, 1);
@@ -208,7 +223,7 @@ static void *run(void *arg) {
             const PktHdr *p = (const PktHdr *)(ring + (t & (ring_cap - 1)));
             if (p->fn) p->fn(p + 1);
             t += p->size;
-            atomic_store_explicit(&tail, t, memory_order_release);
+            atomic_store_explicit(&tail_end.v, t, memory_order_release);
         }
         if (prof) ADD(r_busy_ns, NOW() - t0);
         notify_done();  // caught up: drains and waiters
@@ -299,23 +314,23 @@ void rec_wait_submitted(uint64_t seq) {
 void rec_drain(void) {
     if (on <= 0) return;
     publish();
-    uint64_t upto = wpos;
-    if (atomic_load_explicit(&tail, memory_order_acquire) >= upto) return;
+    uint64_t upto = T.wpos;
+    if (atomic_load_explicit(&tail_end.v, memory_order_acquire) >= upto) return;
     SW_ZONE("recorder drain");
     uint64_t t0 = NOW();
     pthread_mutex_lock(&mu);
-    WAIT_DONE(atomic_load_explicit(&tail, memory_order_acquire) < upto, 2000000);
+    WAIT_DONE(atomic_load_explicit(&tail_end.v, memory_order_acquire) < upto, 2000000);
     pthread_mutex_unlock(&mu);
     uint64_t dt = NOW() - t0;
-    st_t.drains++;
-    st_t.drain_ns += dt;
+    T.st.drains++;
+    T.st.drain_ns += dt;
     slow_wait("a drain", dt);
 }
 
 // ================================================================== stats
 void rec_stats_take(RecStats *o) {
-    *o = st_t;
-    memset(&st_t, 0, sizeof st_t);
+    *o = T.st;
+    memset(&T.st, 0, sizeof T.st);
     o->busy_ns = atomic_exchange_explicit(&r_busy_ns, 0, memory_order_relaxed);
     o->wakeups = atomic_exchange_explicit(&r_wakeups, 0, memory_order_relaxed);
     o->submit_ns = atomic_exchange_explicit(&r_submit_ns, 0, memory_order_relaxed);
@@ -326,7 +341,7 @@ void rec_stats_take(RecStats *o) {
 // (T) time spent queuing: around every rec_* that queues, when profiling in detail
 // (and, in the profiler's capture (runtime/prof.h), added up under one name)
 #define ENQ_T0() SW_ACC("vk enqueue"); uint64_t enq_t0_ = prof_enq ? NOW() : 0
-#define ENQ_END() do { if (prof_enq) st_t.enqueue_ns += NOW() - enq_t0_; } while (0)
+#define ENQ_END() do { if (prof_enq) T.st.enqueue_ns += NOW() - enq_t0_; } while (0)
 
 // ================================================================== descriptor writes
 static bool write_is_image(const VkWriteDescriptorSet *w) {

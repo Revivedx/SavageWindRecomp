@@ -187,6 +187,13 @@ const char *rt_dlc_state_name(RtDlcState state) {
     return "unknown";
 }
 
+bool rt_romfs_dlc_merged(const char *romfs) {
+    char m1[2048], m2[2048];
+    return romfs && *romfs &&
+           ((join2(m1, sizeof m1, romfs, "System/AocVersion.txt") && file_exists_path(m1)) ||
+            (join2(m2, sizeof m2, romfs, "Pack/AocMainField.pack") && file_exists_path(m2)));
+}
+
 RtDlcCheck rt_dlc_check(const char *root) {
     RtDlcCheck out;
     memset(&out, 0, sizeof out);
@@ -203,10 +210,8 @@ RtDlcCheck rt_dlc_check(const char *root) {
             out.state = RT_DLC_MISNAMED;
             return out;
         }
-        char m1[2048], m2[2048];
-        if ((join2(m1, sizeof m1, root, "romfs/System/AocVersion.txt") && file_exists_path(m1)) ||
-            (join2(m2, sizeof m2, root, "romfs/Pack/AocMainField.pack") && file_exists_path(m2)))
-            out.state = RT_DLC_MERGED;
+        char romfs[2048];
+        if (join2(romfs, sizeof romfs, root, "romfs") && rt_romfs_dlc_merged(romfs)) out.state = RT_DLC_MERGED;
         return out;
     }
 

@@ -75,6 +75,7 @@ typedef struct {
 typedef struct NvnDescPool {
     uint64_t addr;
     int count;
+    uint32_t sampler_gen;  // generation of the registered sampler descriptions
     void *entries;  // NvnTexEntry[] or NvnSamplerDesc[]
 } NvnDescPool;
 
@@ -117,7 +118,7 @@ typedef struct NvnCmdBuf {
     uint64_t callback, callback_data;
     bool recording;
     uint64_t guest;  // the guest NVNcommandBuffer*
-    struct NvnCmdBuf *registry_next;
+    struct NvnCmdBuf *registry_next, *registry_prev;  // (cmdbuf.c registry, cbreg.h)
 } NvnCmdBuf;
 void cmdbuf_pool_gone(uint64_t lo, uint64_t hi);  // a memory pool is finalized: lists recorded in it die
 

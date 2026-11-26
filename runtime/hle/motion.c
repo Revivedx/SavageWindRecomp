@@ -66,6 +66,7 @@
 #define TILT_PER_PIXEL (0.2 * PI / 180)
 #define PITCH_MAX (85 * PI / 180)
 #define VALVE_VENDOR 0x28de
+#define NINTENDO_VENDOR 0x057e  // (Pro Controller, Joy-Con: SDL's Switch driver starts them itself)
 
 typedef struct {
     int64_t delta_time;       // ns since the previous sample
@@ -254,7 +255,10 @@ bool motion_has_sensors(void) {
 // leave the controllers behind it alone, so the game never saw their gyroscopes (#136, #812). They are opened anyway,
 // for their sensors only: their buttons never reach the game (motion_pad_sensor_only), Steam's virtual pad keeps
 // those. Valve's own stay hidden: SDL's Steam Controller and Deck drivers reset the controller's settings, which Steam
-// is using (the Deck's sensors are read from its HID node instead). SAVAGEWIND_STEAM_SENSORS=0: leave them all hidden.
+// is using (the Deck's sensors are read from its HID node instead). Nintendo's too: SDL's Switch driver starts a Pro
+// Controller or a Joy-Con with its own commands, and about 20 s later Steam's reads of it failed, Steam closed it and
+// opened it again, and its virtual pad no longer reached the game at all (#136). SAVAGEWIND_STEAM_SENSORS=0: leave
+// them all hidden.
 static struct { uint16_t vendor, product; } hidden[16];
 static int nhidden;
 
@@ -277,7 +281,7 @@ void motion_before_sdl_init(void) {
             ok = end != q && (*end == ',' || *end == ' ' || !*end);
         }
         if (ok && vendor <= 0xffff && product <= 0xffff) {
-            if (vendor == VALVE_VENDOR) {
+            if (vendor == VALVE_VENDOR || vendor == NINTENDO_VENDOR) {
                 int n = snprintf(keep + kept, sizeof keep - kept, "%s0x%04lx/0x%04lx", kept ? "," : "", vendor, product);
                 if (n > 0 && (size_t)n < sizeof keep - kept) kept += n;
             } else if (nhidden < (int)(sizeof hidden / sizeof *hidden)) {

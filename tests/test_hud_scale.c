@@ -232,5 +232,18 @@ int main(void) {
     assert(NEAR(hud_edge_scissor_dx(640, 1280, 1.25), 0.0));
     assert(NEAR(hud_edge_scissor_dx(1100, 1280, 0.8), 0.0));
 
+    // A window's background capture: the source rectangle (c3[22..26]: offset, scale, rotation) narrowed on a wider
+    // window (#1093) and shortened on a taller one (#947); 16:9 untouched
+    {
+        float g[27] = {0};
+        g[22] = .1f, g[23] = -.2f, g[24] = .5f, g[25] = .25f;
+        assert(!hud_capture_crop(g, 1, 0) && g[24] == .5f && g[25] == .25f);
+        assert(hud_capture_crop(g, 4.0f / 3, 0));
+        assert(NEAR(g[24], .375f) && NEAR(g[25], .25f) && NEAR(g[22], .1f) && NEAR(g[23], -.2f));
+        g[24] = .5f;
+        assert(hud_capture_crop(g, .9f, 0));
+        assert(NEAR(g[24], .5f) && NEAR(g[25], .225f) && NEAR(g[23], -.2f));
+    }
+
     puts("PASS: hud_scale");
 }

@@ -6,11 +6,13 @@ the Switch. Without one, Savage Wind turns a virtual controller instead, while t
 (game version 1.9.0):
 
 - **Keyboard**: the gyro keys turn it at 90 degrees per second while held, and it keeps its pose when they are let go.
-- **Mouse**: hold the left button and drag, like rolling a ball under the hand; let go to keep the pose and take a new
-  grip anywhere on the screen. The tilt key (T) and the mouse work too, as everywhere.
+- **Mouse**: left-drag to rotate like rolling a ball under your hand. A straight horizontal drag turns the table.
+  Right-drag horizontally to bank it or vertically to tilt it front to back. Release either button to keep the pose
+  and take a new grip. The tilt key (T) and mouse wheel also work.
 - **A controller without a gyroscope** (Xbox and most XInput pads): the right stick turns the platform (X) and tilts
   it front / back (Y), the left stick banks it (X) and tilts it front / back (Y). R3 or L3 levels it again. The sticks
-  move neither Link nor the camera meanwhile. The motion sensitivity and inversion options apply.
+  move neither Link nor the camera meanwhile. Raise Motion sensitivity in Options > Controls for a faster turn.
+  A fully deflected stick turns a single axis at 100 degrees per second at 100% sensitivity. The inversion options apply.
 - **A controller with a gyroscope**: the gyroscope tilts it as it is held (no sensitivity, inversion or lean). The
   sticks take over once pushed past half way (a gyroscope lying still, a handheld on its dock); R3 or L3 gives it back
   to the gyroscope.
@@ -23,7 +25,7 @@ Options > Controls:
 
 - **Shrine keyboard gyro** (on): the gyro keys, only while controlling a mechanism. Anywhere else the keys they share
   (I / J / K / L turn the camera by default) work as they always do.
-- **Shrine mouse drag** (on): the left-button drag. Off, the left button attacks as usual and the keys still work.
+- **Shrine mouse drag** (on): enables left and right drag. The tilt key and gyro keys also work with it off.
 
 `SAVAGEWIND_PC_GYRO=0|1` and `SAVAGEWIND_GYRO_SCENE=0|1` set the two switches at start.
 

@@ -11,6 +11,7 @@ extern "C" {
 #include "../services/archive.h"
 #include "../nvn/tegra.h"
 #include "../nvn/glyphs.h"
+#include "../collectibles.h"
 }
 
 namespace {
@@ -122,6 +123,58 @@ ImFont *append(ImFontAtlas *atlas, const unsigned char *src, size_t size,
 }
 } // namespace
 
+// The player's Font_EU archive, unpacked (NULL: not there); free() it
+static unsigned char *font_archive(size_t *size) {
+    if (!g_romfs_dir) return nullptr;
+    char path[1200];
+    const char *overlay = getenv("SAVAGEWIND_ROMFS_OVERLAY");
+    FILE *file = nullptr;
+    if (overlay && *overlay) {
+        snprintf(path, sizeof path, "%s/Font/Font_EU.sbfarc", overlay);
+        file = fopen(path, "rb");
+    }
+    if (!file) {
+        snprintf(path, sizeof path, "%s/Font/Font_EU.sbfarc", g_romfs_dir);
+        file = fopen(path, "rb");
+    }
+    if (!file) return nullptr;
+    fseek(file, 0, SEEK_END); long length = ftell(file); rewind(file);
+    if (length <= 0 || length > 16 * 1024 * 1024) { fclose(file); return nullptr; }
+    std::vector<unsigned char> packed(length);
+    bool read = fread(packed.data(), 1, length, file) == (size_t)length; fclose(file);
+    return read ? yaz0_unpack(packed.data(), packed.size(), size) : nullptr;
+}
+
+static std::vector<Cell> g_game_cells;  // (game_fonts_add's glyphs, until game_fonts_fill)
+
+void game_fonts_add(ImFontAtlas *atlas, const char *const *fonts, int n, const unsigned *chars, int nchars, ImFont **out) {
+    for (int i = 0; i < n; i++) out[i] = nullptr;
+    g_game_cells.clear();
+    size_t size;
+    unsigned char *archive = font_archive(&size);
+    if (!archive) return;
+    std::vector<unsigned> want(chars, chars + nchars);
+    for (int i = 0; i < n; i++) {
+        uint32_t base, lo, hi;
+        if (sarc_find(archive, size, fonts[i], &base, &lo, &hi) >= 0)
+            out[i] = append(atlas, archive + base + lo, hi - lo, want, g_game_cells);
+    }
+    free(archive);
+}
+
+void game_fonts_fill(ImFontAtlas *atlas) {
+    if (g_game_cells.empty()) return;
+    unsigned char *pixels; int w, h;
+    atlas->GetTexDataAsAlpha8(&pixels, &w, &h);
+    for (const Cell &cell : g_game_cells) {
+        const ImFontAtlasCustomRect *r = atlas->GetCustomRectByIndex(cell.rect);
+        for (unsigned y = 0; y < r->Height; y++)
+            memcpy(pixels + (r->Y + y) * w + r->X, cell.pixels.data() + y * r->Width, r->Width);
+    }
+    LOG("[fonts] game fonts for the overlay: %zu glyphs\n", g_game_cells.size());
+    g_game_cells.clear();
+}
+
 void quick_hint_fonts_load(ImFontAtlas *atlas, ImFont **text, ImFont **buttons) {
     *text = *buttons = nullptr;
     if (!g_romfs_dir) return;
@@ -145,7 +198,12 @@ void quick_hint_fonts_load(ImFontAtlas *atlas, ImFont **text, ImFont **buttons) 
     if (!archive) return;
     std::vector<unsigned> chars;
     for (unsigned c = 32; c < 127; c++) chars.push_back(c);
-    for (const char *label : {tr("Sort"), tr("Drop"), tr("Back"), tr("Replace")}) {
+    // (and Cheats > Collectible hints on the map's labels, with the tower regions' names in the game's language)
+    std::vector<const char *> labels = {tr("Sort"), tr("Drop"), tr("Back"), tr("Replace"), tr("Korok seeds"), tr("Shrines"),
+                                         tr("Korok seed"), tr("Shrine"), tr("Hints")};
+    for (int i = 0; i < COLLECT_REGIONS; i++)
+        if (const char *name = collectibles_region_name(i)) labels.push_back(name);
+    for (const char *label : labels) {
         while (*label) {
             unsigned code; int n = ImTextCharFromUtf8(&code, label, nullptr);
             if (!n) break;
@@ -155,6 +213,7 @@ void quick_hint_fonts_load(ImFontAtlas *atlas, ImFont **text, ImFont **buttons) 
     }
     std::vector<unsigned> icons;
     for (unsigned c = 0xe040; c <= 0xe043; c++) icons.push_back(c);
+    icons.push_back(0xe061);  // (D-pad Down: Cheats > Collectible hints on the map's prompt)
     std::vector<Cell> cells;
     for (int i = 0; i < 2; i++) {
         uint32_t base, lo, hi;

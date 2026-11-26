@@ -89,6 +89,9 @@ void plat_accessibility_shortcuts(bool allow);
 // Child processes (game code generator and compiler, game-file setup). stdout + stderr go to log_path (NULL = /dev/null).
 typedef intptr_t PlatProc;  // 0 = failed to start
 PlatProc plat_spawn(const char *const argv[], const char *log_path, bool append_log);
+// Another program on its own (Configuration opening SWMM+): not tied to this process - it keeps running after this one
+// ends (no kill-on-close job, its own session), its working folder its own. False: it couldn't be started.
+bool plat_start_program(const char *const argv[]);
 int plat_proc_wait(PlatProc p, bool block);  // exit code, or -1 while still running (block = false)
 void plat_proc_kill(PlatProc p);             // end it and what it started (then it's gone: no wait)
 bool plat_remove_tree(const char *dir);      // rm -rf

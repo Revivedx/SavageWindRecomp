@@ -472,6 +472,22 @@ int main(void) {
     assert(sweeps == 1 && discarded == 1 && schedules == 1 && actor_drops == 1);
     assert(quick_drop_action_filter_buttons(UINT64_MAX) == UINT64_MAX);
     g_settings.quick_drop = true;
+    // A same-type replacement can occupy the slot before the UI observes detach.
+    setup(); ST8(item + 0x24, 1); native_equipment = equipment;
+    request(&c); quick_drop_action_close(&c);
+    assert(quick_drop_action_busy() && discarded == 1);
+    consume_native_drop(&c);
+    ST8(player + 0x1120, 0);
+    native_equipment = equipment;
+    quick_drop_action_tick(&ui);
+    assert(quick_drop_action_busy() && !sweeps); // The outgoing instance still occupies the slot.
+    uint64_t replacement = equipment + 0x2000;
+    ST64(replacement + 0x10, LD64(equipment + 0x10));
+    native_equipment = replacement;
+    quick_drop_action_tick(&ui);
+    assert(!quick_drop_action_busy() && quick_drop_action_result() == QUICK_DROP_COMPLETE);
+    assert(sweeps == 1 && discarded == 1 && actor_drops == 1 && native_equipment == replacement);
+    assert(quick_drop_action_filter_buttons(UINT64_MAX) == UINT64_MAX);
     // Scheduler may execute immediately too, with the source item page
     // inaccessible already. Completion still awaits the guest driver/sweep.
     setup(); ST8(item + 0x24, 1); ST64(mgr + 0x447e0, item); native_equipment = equipment;

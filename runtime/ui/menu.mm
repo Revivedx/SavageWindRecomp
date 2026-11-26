@@ -14,10 +14,12 @@
 #include <vector>
 
 #include "i18n.h"
+#include "../place_display.h"
 #include "quick_hint_font.h"
 #include "imgui.h"
 #include "gyro_drag.h"
 #include "option_rows.h"
+#include "ui_theme.h"
 #include "mods_tab.h"
 #include "saves_tab.h"
 #include "imgui_internal.h"  // (NavCursorVisible)
@@ -28,14 +30,18 @@
 #else
 #include "imgui_impl_vulkan.h"
 extern "C" bool vk_imgui_backend_init(void);  // runtime/nvn/vulkan/imgui_glue.cpp
+extern "C" bool vram_query_mb(int *total_mb, int *budget_mb);  // runtime/nvn/vulkan/vram.c
+extern "C" void rec_queue_lock(void), rec_queue_unlock(void);  // (runtime/nvn/vulkan/record.c)
 #endif
 extern "C" bool vk_feedback_once(void);  // runtime/nvn/vulkan/exec.c (Video > Scene copies; Vulkan only)
 
 extern "C" {
 #include "../amiibo.h"
 #include "../bookmarks.h"
+#include "../collectibles.h"
 #include "../control.h"
 #include "../control_places.h"
+#include "../game_sites.h"
 #include "../hle.h"
 #include "../items.h"
 #include "../settings.h"
@@ -53,10 +59,12 @@ extern "C" {
 }
 #include "menu.h"
 void input_reset(void);
+bool input_tilt_active(void);
 void input_pc_escape(bool down);
 void controls_bindings_draw(float scale);  // controls_ui.mm
 #include "../input_bind.h"
 #include "../perfmon.h"
+#include "achievements_ui.h"  // (the Achievements page and the unlock toasts)
 #include "../paths.h"
 #include "../pc_cursor.h"
 #include "../imageload.h"
@@ -97,6 +105,7 @@ static void push(const QEvent &e) {
 
 bool menu_is_open(void) { return g_open.load(); }
 static void set_open(bool open);
+extern "C" void menu_test_close(void) { set_open(false); }  // (SAVAGEWIND_MENU_CLOSE_AT)
 extern "C" void menu_test_open(void) {
     set_open(true);
     if (getenv("SAVAGEWIND_MENU_TAB")) { extern int g_tab_request_ext; g_tab_request_ext = atoi(getenv("SAVAGEWIND_MENU_TAB")); }
@@ -107,6 +116,7 @@ extern "C" void menu_test_open(void) {
 // the player (key_from_pad).
 static std::atomic<bool> g_ab_swapped_open{false};
 
+static bool g_had_page_focus, g_restore_on_open;
 void menu_tabs_focus(bool first_tab);
 static void set_open(bool open) {
     if (open == g_open.load()) return;
@@ -116,7 +126,10 @@ static void set_open(bool open) {
     bind_capture_cancel();
     if (open) {
         static bool opened;  // the controller's cursor: the first tab (Controls) the first time this session, later the
-        menu_tabs_focus(!opened);  // selected one
+        if (opened && g_settings.menu_remember_pos && g_had_page_focus)
+            g_restore_on_open = true;
+        else
+            menu_tabs_focus(!opened);  // selected one
         opened = true;
     }
     else { settings_save(); osk_cancel(); g_text_busy = false; }
@@ -255,6 +268,29 @@ bool menu_handle_event(const SDL_Event *e) {
         push(q);
         return false;  // the input runtime also releases its cached controls
     }
+    // Fullscreen that the system made or ended (macOS's green button or its View menu):
+    // taken as Video > Fullscreen, so the size set there applies. Before, the game took the whole screen's pixels as
+    // its size (3420x2146 on a 15" MacBook Air: about 46 fps where 1080p is a locked 60) while Video said 1080p.
+    // (Ours raise the same events; then the setting already agrees. An exclusive window that loses the focus is
+    // minimised and leaves its mode (#224): not a choice, so only a focused, shown window counts. An event the window
+    // no longer agrees with is one of ours gone by - Video > Monitor leaves fullscreen for the move and enters it again
+    // - and is left alone.) macOS only: elsewhere the window manager leaves the game's fullscreen alone, and gamescope's
+    // own fullscreen on a handheld (window_size.c: a window there) would fight the setting.
+#ifdef __APPLE__
+    if (e->type == SDL_EVENT_WINDOW_ENTER_FULLSCREEN || e->type == SDL_EVENT_WINDOW_LEAVE_FULLSCREEN) {
+        bool entered = e->type == SDL_EVENT_WINDOW_ENTER_FULLSCREEN;
+        SDL_Window *w = SDL_GetWindowFromID(e->window.windowID);
+        SDL_WindowFlags f = w ? SDL_GetWindowFlags(w) : 0;
+        if (entered != g_settings.fullscreen && entered == !!(f & SDL_WINDOW_FULLSCREEN) &&
+            (f & SDL_WINDOW_INPUT_FOCUS) && !(f & SDL_WINDOW_MINIMIZED)) {
+            g_settings.fullscreen = entered;
+            g_want_window_apply.store(true);
+            settings_save();
+            LOG("[window] fullscreen %s by the system: Video > Fullscreen follows\n", entered ? "made" : "ended");
+        }
+        return false;
+    }
+#endif
     // a binding capture (Controls tab, or the game's Options screen) takes the press
     if (bind_capture_event(e)) return true;
     if (e->type == SDL_EVENT_KEY_DOWN) g_last_pad = false;
@@ -282,10 +318,14 @@ bool menu_handle_event(const SDL_Event *e) {
     }
     switch (e->type) {
     case SDL_EVENT_KEY_DOWN:
-        if (!e->key.repeat && (e->key.scancode == SDL_SCANCODE_GRAVE || e->key.scancode == SDL_SCANCODE_F12) &&
-            !g_open.load() && g_kbd.load() != 1 && !g_sizes.load()) {
-            set_console(!console_is_open());
-            return true;
+        {
+            bool console_key = (g_bind_key[BIND_CONSOLE] > 0 && e->key.scancode == g_bind_key[BIND_CONSOLE]) ||
+                               (g_bind_key2[BIND_CONSOLE] > 0 && e->key.scancode == g_bind_key2[BIND_CONSOLE]) ||
+                               (g_bind_key[BIND_CONSOLE] == SDL_SCANCODE_F12 && e->key.scancode == SDL_SCANCODE_GRAVE);
+            if (!e->key.repeat && console_key && !g_open.load() && g_kbd.load() != 1 && !g_sizes.load()) {
+                set_console(!console_is_open());
+                return true;
+            }
         }
         if (console_is_open()) {
             if (e->key.scancode == SDL_SCANCODE_ESCAPE) { if (!e->key.repeat) set_console(false); return true; }
@@ -397,7 +437,7 @@ bool menu_handle_event(const SDL_Event *e) {
     case SDL_EVENT_MOUSE_MOTION:
         if (!capturing() && !pc_gyro_scene_active()) return false;
         { QEvent q = {}; q.kind = QEvent::MOUSE_POS; q.x = e->motion.x * g_pixel_density; q.y = e->motion.y * g_pixel_density; push(q); }
-        return true;
+        return capturing() || !input_tilt_active();  // the tilt binding needs the relative motion at an apparatus
     case SDL_EVENT_MOUSE_BUTTON_DOWN: case SDL_EVENT_MOUSE_BUTTON_UP:
         if (e->type == SDL_EVENT_MOUSE_BUTTON_UP && e->button.button == SDL_BUTTON_LEFT && g_sizes_eat_up.exchange(false) &&
             !capturing())
@@ -412,7 +452,7 @@ bool menu_handle_event(const SDL_Event *e) {
         }
         return true;
     case SDL_EVENT_MOUSE_WHEEL:
-        if (!capturing() && !pc_gyro_scene_active()) return false;
+        if (!capturing()) return pc_gyro_scene_active() && !input_tilt_active();
         { QEvent q = {}; q.kind = QEvent::WHEEL; q.x = e->wheel.x; q.y = e->wheel.y; push(q); }
         return true;
     default:
@@ -445,10 +485,13 @@ static bool g_inited;
 static ImGuiContext *g_ctx;  // ours: the start screen (back to it after a reboot) has its own context
 static ImFont *g_hint_font, *g_hint_buttons;
 static bool g_hint_font_attempted;
+static bool g_ach_game_fonts;  // the achievement toasts asked for the game's fonts (there was a romfs)
 static uint32_t g_hint_generation;
+static unsigned g_hint_names;  // (collectibles_names_generation: the region names whose letters the hint font has)
 static ImFont *g_font, *g_font_big;
 static ImFont *g_font_mono;  // the console (columns line up); NULL: the normal font
-static ImFont *g_menu_font, *g_menu_font_big;  // the menu window (Fira Sans); everything else keeps g_font
+static ImFont *g_menu_font, *g_menu_font_big;  // the menu window (ui_theme.h's); everything else keeps g_font
+static ImFont *g_menu_font_semi;                // (its semibold: buttons, emphasis)
 static int g_tab, g_tab_request = -2;  // (-2: no request; -1 is the Prelaunch tab)
 static int g_focus_tab = -99;  // put the nav cursor on this tab next frame (-100: the selected one; -99: none)
 static int g_focus_frames;
@@ -458,39 +501,8 @@ static int g_focus_frames;
 void menu_tabs_focus(bool first_tab) { g_focus_tab = first_tab ? -1 : -100, g_focus_frames = 0; }
 int g_tab_request_ext = -1;
 
-static void style_init(void) {
-    ImGuiStyle &s = ImGui::GetStyle();
-    ImGui::StyleColorsDark();
-    s.WindowRounding = 14; s.FrameRounding = 8; s.GrabRounding = 8; s.TabRounding = 8; s.ChildRounding = 10;
-    s.WindowPadding = ImVec2(28, 24); s.FramePadding = ImVec2(14, 8); s.ItemSpacing = ImVec2(14, 12);
-    s.WindowBorderSize = 0; s.ScrollbarSize = 18;
-    ImVec4 *c = s.Colors;
-    ImVec4 gold(0.93f, 0.76f, 0.33f, 1), gold_dim(0.62f, 0.49f, 0.20f, 1), green(0.15f, 0.36f, 0.25f, 1);
-    c[ImGuiCol_WindowBg] = ImVec4(0.06f, 0.09f, 0.08f, 0.94f);
-    c[ImGuiCol_ChildBg] = ImVec4(0.09f, 0.13f, 0.11f, 0.85f);
-    c[ImGuiCol_PopupBg] = ImVec4(0.07f, 0.10f, 0.09f, 0.98f);
-    c[ImGuiCol_Text] = ImVec4(0.96f, 0.94f, 0.88f, 1);
-    c[ImGuiCol_TextDisabled] = ImVec4(0.62f, 0.64f, 0.58f, 1);
-    c[ImGuiCol_FrameBg] = ImVec4(0.13f, 0.19f, 0.16f, 1);
-    c[ImGuiCol_FrameBgHovered] = green;
-    c[ImGuiCol_FrameBgActive] = ImVec4(0.19f, 0.45f, 0.31f, 1);
-    c[ImGuiCol_Button] = ImVec4(0.14f, 0.22f, 0.18f, 1);
-    c[ImGuiCol_ButtonHovered] = green;
-    c[ImGuiCol_ButtonActive] = ImVec4(0.21f, 0.50f, 0.34f, 1);
-    c[ImGuiCol_Header] = green;
-    c[ImGuiCol_HeaderHovered] = ImVec4(0.19f, 0.45f, 0.31f, 1);
-    c[ImGuiCol_HeaderActive] = ImVec4(0.21f, 0.50f, 0.34f, 1);
-    c[ImGuiCol_Tab] = ImVec4(0.12f, 0.18f, 0.15f, 1);
-    c[ImGuiCol_TabHovered] = green;
-    c[ImGuiCol_TabSelected] = ImVec4(0.21f, 0.44f, 0.31f, 1);
-    c[ImGuiCol_TabSelectedOverline] = gold;
-    c[ImGuiCol_CheckMark] = gold;
-    c[ImGuiCol_SliderGrab] = gold_dim;
-    c[ImGuiCol_SliderGrabActive] = gold;
-    c[ImGuiCol_NavCursor] = gold;
-    c[ImGuiCol_Separator] = ImVec4(0.30f, 0.36f, 0.30f, 1);
-    c[ImGuiCol_TitleBg] = c[ImGuiCol_TitleBgActive] = c[ImGuiCol_WindowBg];
-}
+// The menu's look: SWMM+'s (ui_theme.h), at 1080 p's sizes (menu_render scales them to the output)
+static void style_init(void) { ui_theme_style(ImGui::GetStyle(), 2.0f); }
 
 
 // The fonts, with the menu language's glyphs that Latin fonts lack merged in (runtime/ui/i18n.mm); made again when the
@@ -528,22 +540,42 @@ static void load_fonts(void) {
         g_font_mono = add(p, 28, cfg);
         if (g_font_mono) break;
     }
-    // the menu window itself: Fira Sans, as on the start screen (shipped, OFL) - Medium for the rows, SemiBold for the
-    // titles - at its Settings window's sizes; the FPS counter, overlays and on-screen keyboard keep the fonts above
-    char med[1024], semi[1024];
-    const char *test = getenv("SAVAGEWIND_MENU_FONT");  // (test) another weight / face
-    if (test) strlcpy(med, test, sizeof med), strlcpy(semi, test, sizeof semi);
-    if (test || (rt_resource("FiraSans-Medium.ttf", "third_party/fonts/FiraSans/FiraSans-Medium.ttf", med, sizeof med) &&
-                 rt_resource("FiraSans-SemiBold.ttf", "third_party/fonts/FiraSans/FiraSans-SemiBold.ttf", semi, sizeof semi))) {
-        g_menu_font = add(med, 29, cfg);
-        g_menu_font_big = add(semi, 53.5f, cfg);
+    // the menu window itself: SWMM+'s fonts and icons (ui_theme.h), as Savage Wind Configuration, at 1080 p's sizes;
+    // the FPS counter, overlays and on-screen keyboard keep the fonts above
+    UiFonts ui;
+    if (ui_theme_fonts(io.Fonts, &ui, latin_ext, 2.0f))
+        g_menu_font = ui.body, g_menu_font_semi = ui.semibold, g_menu_font_big = ui.bold;
+    else {  // (none of its faces: Fira Sans, shipped)
+        char med[1024], semi[1024];
+        if (rt_resource("FiraSans-Medium.ttf", "third_party/fonts/FiraSans/FiraSans-Medium.ttf", med, sizeof med) &&
+            rt_resource("FiraSans-SemiBold.ttf", "third_party/fonts/FiraSans/FiraSans-SemiBold.ttf", semi, sizeof semi)) {
+            g_menu_font = add(med, 29, cfg);
+            g_menu_font_big = add(semi, 40, cfg);
+        }
+    }
+    // the achievement toasts' title: a book serif in bold (Palatino, Georgia, DejaVu Serif), else Fira's SemiBold
+    ImFont *toast_title = NULL;
+    const char *serif[] = {"C:/Windows/Fonts/palab.ttf", "C:/Windows/Fonts/georgiab.ttf",
+                           "/System/Library/Fonts/Supplemental/Palatino.ttc",
+                           "/System/Library/Fonts/Supplemental/Georgia Bold.ttf",
+                           "/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf", "/usr/share/fonts/TTF/DejaVuSerif-Bold.ttf"};
+    for (const char *p : serif) {
+        if (FILE *f = fopen(p, "rb")) fclose(f);
+        else continue;
+        if ((toast_title = add(p, 56, cfg))) break;
     }
     if (!g_font) g_font = io.Fonts->AddFontDefault();
     if (!g_font_big) g_font_big = g_font;
     if (!g_menu_font || !g_menu_font_big) g_menu_font = g_font, g_menu_font_big = g_font_big;
+    if (!g_menu_font_semi) g_menu_font_semi = g_menu_font;
+    ach_ui_fonts(toast_title ? toast_title : g_menu_font_big, g_menu_font);
+    g_ach_game_fonts = ach_ui_game_fonts(io.Fonts);  // (their pixels: game_fonts_fill below, once the atlas is built)
     g_hint_font = g_hint_buttons = nullptr;
-    g_hint_font_attempted = g_romfs_dir && (g_settings.quick_sort || g_settings.quick_drop || g_settings.quick_replace);
+    g_hint_font_attempted = g_romfs_dir && (g_settings.quick_sort || g_settings.quick_drop || g_settings.quick_replace ||
+                                            g_settings.collectibles_map);
+    g_hint_names = collectibles_names_generation();  // (before the load: names that arrive during it make it again)
     if (g_hint_font_attempted) quick_hint_fonts_load(io.Fonts, &g_hint_font, &g_hint_buttons);
+    game_fonts_fill(io.Fonts);
     g_hint_generation = icons_generation;
 }
 
@@ -551,10 +583,15 @@ static void load_fonts(void) {
 extern "C" void vk_imgui_fonts_changed(void);  // (runtime/nvn/vulkan/imgui_glue.cpp)
 extern "C" const char *vk_hdr_icc_description(void);  // (runtime/nvn/vulkan/device.c)
 static void fonts_follow_language(void) {
-    bool need_hint_fonts = (g_settings.quick_sort || g_settings.quick_drop || g_settings.quick_replace) && g_romfs_dir && !g_hint_font_attempted;
-    bool icons_changed = (g_settings.quick_sort || g_settings.quick_drop || g_settings.quick_replace) && g_hint_generation != glyphs_font_generation();
+    bool hint_fonts = g_settings.quick_sort || g_settings.quick_drop || g_settings.quick_replace || g_settings.collectibles_map;
+    bool need_hint_fonts = hint_fonts && g_romfs_dir && !g_hint_font_attempted;
+    bool icons_changed = hint_fonts && g_hint_generation != glyphs_font_generation();
+    // (Collectible hints on the map: the regions' names arrive from the game files after the fonts were made)
+    bool names_changed = g_settings.collectibles_map && g_hint_font_attempted &&
+                         g_hint_names != collectibles_names_generation();
+    bool need_ach_fonts = g_romfs_dir && !g_ach_game_fonts;  // (the achievement toasts' game fonts: the romfs is there now)
     int current_fonts_gen = ui_lang_generation() * 10007 + ui_dynamic_generation();
-    if (g_fonts_lang == current_fonts_gen && !need_hint_fonts && !icons_changed) return;
+    if (g_fonts_lang == current_fonts_gen && !need_hint_fonts && !icons_changed && !names_changed && !need_ach_fonts) return;
     load_fonts();
 #ifdef SW_METAL
     ImGui_ImplMetal_DestroyFontsTexture();  // (NewFrame makes it again)
@@ -603,10 +640,13 @@ static void drain_events(ImGuiIO &io) {
     }
 }
 
-// Section header in the big font.
+// Section header: SWMM+'s (ui_theme.h) - the name in the semibold, a line under it
 static void header(const char *t) {
-    ImGui::PushFont(g_font_big);
-    ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), "%s", tr(t));
+    ImGui::Dummy(ImVec2(0, ImGui::GetFontSize() * 0.3f));
+    ImGui::PushFont(g_menu_font_semi ? g_menu_font_semi : g_font_big);
+    if (g_menu_font_semi) ImGui::SetWindowFontScale(15.0f / 14);
+    ImGui::TextUnformatted(tr(t));
+    ImGui::SetWindowFontScale(1);
     ImGui::PopFont();
     ImGui::Separator();
     ImGui::Spacing();
@@ -668,6 +708,10 @@ static const int k_upscale_mode_order[UPQ_COUNT] = {
     UPQ_NATIVE, UPQ_ULTRA, UPQ_QUALITY, UPQ_BALANCED, UPQ_PERFORMANCE, UPQ_ULTRA_PERFORMANCE, UPQ_DYNAMIC};
 extern "C" {
 #include "../nvn/output_scale.h"
+}
+// a mode's name: Native is DLAA with DLSS (NVIDIA's name for its 1x)
+static const char *upscale_mode_name(int q) {
+    return upscale_mode_is_dlaa(q) ? "DLAA" : k_upscale_modes[q];
 }
 
 #ifndef SW_METAL
@@ -732,6 +776,65 @@ static void tab_colour(void) {
 }
 #endif
 
+// Estimate expected GPU VRAM usage in MB from the active video settings so players can see how each option scales
+// memory before applying or raising settings above the console baseline.
+static int vram_estimate_mb(void) {
+    static const int rscale_pct[RSCALE_COUNT] = {50, 75, 100, 125, 150, 200};
+    int rs = g_settings.render_scale >= 0 && g_settings.render_scale < RSCALE_COUNT ? rscale_pct[g_settings.render_scale] : 100;
+    float up_scale = 1.0f;
+    if (g_settings.upscaler != UPSCALE_OFF) {
+        static const float up_mul[UPQ_COUNT] = {0.77f, 0.67f, 0.59f, 0.50f, 0.33f, 1.0f, 0.85f};
+        int uq = g_settings.upscale_quality >= 0 && g_settings.upscale_quality < UPQ_COUNT ? g_settings.upscale_quality : UPQ_QUALITY;
+        up_scale = up_mul[uq];
+    }
+    float px = (rs / 100.0f) * up_scale;
+    int rt_mb = (int)lroundf(260.0f * px * px);
+    static const int shadow_mb[SHADOW_COUNT] = {24, 45, 100, 400, 6};  // Console, High, Ultra, Extreme(Savage), Potato
+    int sm = g_settings.shadow_res >= 0 && g_settings.shadow_res < SHADOW_COUNT ? shadow_mb[g_settings.shadow_res] : 24;
+    int aa_mb = g_settings.antialias == AA_TAA ? 80 : g_settings.antialias == AA_SMAA ? 30 : 0;
+    int fg_mb = g_settings.frame_gen ? 150 : 0;
+    int text_mb = g_settings.sharper_text == 4 ? 160 : g_settings.sharper_text == 2 ? 40 : 0;
+    int menu_mb = g_settings.sharper_menus == 4 ? 120 : g_settings.sharper_menus == 2 ? 30 : 0;
+    static const int dd_mb[DRAWDIST_COUNT] = {0, 80, 180, -80};
+    int dd = g_settings.draw_distance >= 0 && g_settings.draw_distance < DRAWDIST_COUNT ? dd_mb[g_settings.draw_distance] : 0;
+    int grass_mb = !g_settings.grass ? -30 : (g_settings.grass_distance == GRASS_DIST_HIGH ? 30 : 0);
+    int hdr_mb = g_settings.hdr == HDR_ON ? 60 : 0;
+    int total = 1350 + rt_mb + sm + aa_mb + fg_mb + text_mb + menu_mb + dd + grass_mb + hdr_mb;
+    return total < 512 ? 512 : total;
+}
+
+static void draw_vram_bar(void) {
+    int est_mb = vram_estimate_mb();
+    int total_mb = 0, budget_mb = 0;
+#ifndef SW_METAL
+    vram_query_mb(&total_mb, &budget_mb);
+#endif
+    if (total_mb <= 0) {
+        PerfStats ps = {};
+        perfmon_snapshot(&ps);
+        if (ps.vram_total_mb > 0) total_mb = (int)lroundf(ps.vram_total_mb);
+    }
+    int cap_mb = budget_mb > 0 ? budget_mb : total_mb;
+    float frac = cap_mb > 0 ? (float)est_mb / (float)cap_mb : 0.0f;
+    float bar = frac > 1.0f ? 1.0f : frac < 0.0f ? 0.0f : frac;
+    ImVec4 fill = frac > 0.90f ? ImVec4(0.86f, 0.24f, 0.20f, 1.0f)
+                : frac > 0.70f ? ImVec4(0.90f, 0.66f, 0.18f, 1.0f)
+                               : ImVec4(0.24f, 0.72f, 0.42f, 1.0f);
+    char label[128];
+    if (cap_mb > 0)
+        snprintf(label, sizeof label, tr("Estimated VRAM: %d / %d MB (%d%%)"), est_mb, cap_mb, (int)lroundf(frac * 100.0f));
+    else
+        snprintf(label, sizeof label, tr("Estimated VRAM: ~%d MB"), est_mb);
+    ImGui::Spacing();
+    ImGui::PushStyleColor(ImGuiCol_PlotHistogram, fill);
+    ImGui::ProgressBar(cap_mb > 0 ? bar : 0.0f, ImVec2(-FLT_MIN, 0.0f), label);
+    ImGui::PopStyleColor();
+    if (cap_mb > 0 && frac > 0.90f)
+        ImGui::TextColored(ImVec4(0.95f, 0.42f, 0.36f, 1.0f), "%s",
+                           tr("Near or above available video memory; lower Shadow resolution or Render scale if performance drops."));
+    ImGui::Spacing();
+}
+
 static void tab_display(void) {
     float scale = ImGui::GetFontSize() / 34;
     opt_begin("##video", scale);
@@ -748,6 +851,7 @@ static void tab_display(void) {
                        "field). Original: as on the console. High and Savage: further and sharper, for faster PCs.", false))
             graphics_preset_apply(cur);
     }
+    draw_vram_bar();
     bool fs = g_settings.fullscreen;
     if (opt_toggle("Fullscreen", &fs, false, "Fills the screen. Also: F11, Alt+Enter or Cmd+Ctrl+F.")) {
         g_settings.fullscreen = fs;
@@ -868,12 +972,16 @@ static void tab_display(void) {
                        "How big the hearts, stamina, minimap and the rest of the HUD are. Each part stays in its corner.", false))
             g_settings.hud_size = sizes[cur];
     }
+    opt_toggle("Dynamic HUD", &g_settings.dynamic_hud, false,
+               "Hides the HUD while exploring and shows it for 5 seconds when Link takes damage.");
     {
         float tsz = (float)g_settings.menu_text_size;
         if (opt_slider("Overlay text size", &tsz, 80, 150, 5, 100, "%g%%",
                        "Scale of the text and controls in this F1 overlay."))
             g_settings.menu_text_size = (int)lroundf(tsz);
     }
+    opt_toggle("Remember menu position", &g_settings.menu_remember_pos, false,
+               "Keep the selected option and scroll position when reopening this F1 overlay.");
     {   // Menu cursor speed
         static const int speeds[] = MENU_SPEED_CHOICES;
         enum { NV = sizeof speeds / sizeof speeds[0] };
@@ -998,7 +1106,8 @@ static void tab_display(void) {
                                               "graphics cards on Windows. Sharpening sets its own sharpening.");
         uds += std::string("\n\n") + tr("NVIDIA DLSS: like FSR 3, but NVIDIA's machine learning rebuilds the image. For NVIDIA "
                                           "RTX graphics cards on Windows, with NVIDIA's DLSS library, which Savage Wind "
-                                          "Configuration downloads.");
+                                          "Configuration downloads.") +
+               " " + tr("Its DLAA mode keeps the full resolution and only smooths edges.");  // (own key: the one above keeps its translations)
         if (upscaler_available(UPSCALE_XESS))  // (its own paragraph: the ones above keep their translations)
             uds += std::string("\n\n") + tr("Intel XeSS: like FSR 3, but Intel's machine learning rebuilds the image. It runs on "
                                               "every graphics card with DP4a (any recent GPU), with libxess.dll next to the game. "
@@ -1015,7 +1124,8 @@ static void tab_display(void) {
         static int shown = -1;
         int udef = 0;  // (the reset value: UPSCALE_DEFAULT)
         for (int i = 0; i < NU; i++) if (ups_value[i] == UPSCALE_DEFAULT) udef = i;
-        if (opt_choice_avail("Upscaler", &ui, &shown, ups, avail, NU, udef, ud)) g_settings.upscaler = ups_value[ui];
+        if (opt_choice_avail("Upscaler", &ui, &shown, ups, avail, NU, udef, ud))
+            g_settings.upscaler = ups_value[ui], render_scale_fit();  // (FSR 3 / 4, XeSS, DLSS: up to 100%)
         // its mode (AMD's scale factors, or Dynamic: the dynamic resolution), one step in; greyed when the upscaler
         // is off
         bool modes_ok = upscale_modes_available();
@@ -1026,8 +1136,8 @@ static void tab_display(void) {
         int mi = 2, mdef = 2;  // UPQ_QUALITY's position in k_upscale_mode_order
         for (int i = 0; i < nm; i++) {
             int q = k_upscale_mode_order[i];
-            mode_names[i] = modes_ok ? tr(k_upscale_modes[q])
-                                     : std::string(tr(k_upscale_modes[q])) + " " + tr("(coming soon)");
+            mode_names[i] = modes_ok ? tr(upscale_mode_name(q))
+                                     : std::string(tr(upscale_mode_name(q))) + " " + tr("(coming soon)");
             mn[i] = mode_names[i].c_str();
             mavail[i] = modes_ok && upscale_mode_offered(q);
             if (q == g_settings.upscale_quality) mi = i;
@@ -1037,9 +1147,15 @@ static void tab_display(void) {
         renderer_get_scene_scale(&sx, &sy);
         char rendering[100];
         snprintf(rendering, sizeof rendering, tr("Rendering at %.0f x %.0f."), 1600.0 * sx, 900.0 * sy);
-        std::string md = std::string(tr("How much smaller the game renders before the upscaler brings it to the window, "
-                                        "on each side: Native 1x (FSR 3/4), Ultra Quality 1.3x, Quality 1.5x, Balanced "
-                                        "1.7x, Performance 2x, Ultra Performance 3x. Smaller is faster and softer.")) +
+        // (the first mode by the name the row gives it: DLAA with DLSS)
+        std::string md = std::string(upscale_mode_is_dlaa(UPQ_NATIVE)
+                                         ? tr("How much smaller the game renders before the upscaler brings it to the "
+                                              "window, on each side: DLAA 1x, Ultra Quality 1.3x, Quality 1.5x, Balanced "
+                                              "1.7x, Performance 2x, Ultra Performance 3x. Smaller is faster and softer.")
+                                         : tr("How much smaller the game renders before the upscaler brings it to the "
+                                              "window, on each side: Native 1x (FSR 3, FSR 4 and XeSS), Ultra Quality "
+                                              "1.3x, Quality 1.5x, Balanced 1.7x, Performance 2x, Ultra Performance 3x. "
+                                              "Smaller is faster and softer.")) +
                          "\n\n" + tr("Dynamic: renders the 3D scene smaller when frames are slow, sharper when they "
                                      "aren't; stays full size where that gains nothing.") +
                          "\n\n" + (modes_ok ? rendering : tr("Coming in a later version."));
@@ -1047,7 +1163,7 @@ static void tab_display(void) {
         if (g_settings.upscaler == UPSCALE_OFF) opt_disable_next();
         static int mshown = -1;
         if (opt_choice_avail("Upscaler mode", &mi, &mshown, mn, mavail, nm, mdef, md.c_str()))
-            g_settings.upscale_quality = k_upscale_mode_order[mi];
+            g_settings.upscale_quality = k_upscale_mode_order[mi], render_scale_fit();  // (Native, DLAA: 100%)
         opt_indent(-1);
     }
 #ifdef SW_METAL
@@ -1063,21 +1179,45 @@ static void tab_display(void) {
                            "edges and blends only along them, so textures stay sharp. Most useful with an upscaler.")) +
             " " + tr("TAA: blends each frame with the ones before it, following the game's motion, so edges stay "
                      "smooth and stop shimmering; slightly softer, use it with Sharpening.");
-        int row = settings_aa_row();
-        if (opt_choice("Anti-aliasing", &row, aa, AA_ROW_COUNT, AA_ROW_FXAA, d.c_str())) settings_aa_row_set(row);
+        if (rt_temporal_upscaler()) {  // (FSR 3 / 4, XeSS, DLSS smooth edges themselves: the row shows the upscaler, greyed)
+            const char *one[] = {rt_temporal_upscaler_name()};
+            int z = 0;
+            d += std::string(" ") + tr("Off while FSR 3, FSR 4, XeSS or DLSS is on: they smooth edges themselves.");
+            opt_disable_next();
+            opt_choice("Anti-aliasing", &z, one, 1, 0, d.c_str());
+        } else {
+            int row = settings_aa_row();
+            if (opt_choice("Anti-aliasing", &row, aa, AA_ROW_COUNT, AA_ROW_FXAA, d.c_str())) settings_aa_row_set(row);
+        }
     }
     // the wet lighting passes' sun glare (maxwell/translate.c maxwell_wet_lighting)
     opt_toggle("Wet grass fix", &g_settings.wet_fix, false,
                "In rain with the sun out, the game's wet lighting blows grass and roofs out to white. On: most of that "
                "glare goes, and the grass keeps its colour and a soft sheen. Applies from the next start.");
+    {   // the night sky's stars (maxwell/translate.c maxwell_stars): their translations, made at the start
+        static const char *const stars[STARS_COUNT] = {"Original", "Bright", "Brighter", "Brightest"};
+        opt_choice("Stars", &g_settings.stars, stars, STARS_COUNT, STARS_BRIGHTEST,
+                   "How bright the night sky's stars are. Original: as the game draws them. From the next start.", false);
+    }
 #endif
     {   // supersampling (nvn/output_scale.c): applies at once
+        // (FSR 3 / 4, XeSS, DLSS: up to 100%, in Native and DLAA 100%: output_scale.c render_scale_offered; the sentence
+        //  on its own, the first keeps its translations)
         static const char *const rscale[] = {"50%", "75%", "100%", "125%", "150%", "200%"};
-        opt_choice("Render scale", &g_settings.render_scale, rscale, RSCALE_COUNT, RSCALE_100,
-                   "Below 100% the game renders at a lower resolution than the window and is scaled up to it: faster, "
-                   "but blurrier (50% is a quarter of the pixels, for weak graphics cards). Above 100% it renders at a "
-                   "higher resolution and is scaled down to it, the cleanest way to smooth edges and shimmer. 200% is "
-                   "4x the pixels: for fast graphics cards.", false);
+        render_scale_fit();  // (a value stored before shows as the 100% it runs at)
+        bool ravail[RSCALE_COUNT];
+        for (int i = 0; i < RSCALE_COUNT; i++) ravail[i] = render_scale_offered(i);
+        std::string rd = tr("Below 100% the game renders at a lower resolution than the window and is scaled up to it: "
+                            "faster, but blurrier (50% is a quarter of the pixels, for weak graphics cards). Above 100% "
+                            "it renders at a higher resolution and is scaled down to it, the cleanest way to smooth edges "
+                            "and shimmer. 200% is 4x the pixels: for fast graphics cards.");
+        if (rt_temporal_upscaler())
+            rd += std::string(" ") + tr("With FSR 3, FSR 4, XeSS or DLSS it stops at 100%, because they can't use an "
+                                        "image bigger than the window. In Native and DLAA modes it's always 100%.");
+        static int rshown = -1;
+        if (opt_choice_avail("Render scale", &g_settings.render_scale, &rshown, rscale, ravail, RSCALE_COUNT, RSCALE_100,
+                             rd.c_str(), false))
+            render_scale_chosen();
     }
 #ifndef SW_METAL
     {   // Anisotropic filtering and sharpening (Vulkan: vulkan/textures.c sampler_aniso, vulkan/exec.c scene_post)
@@ -1086,28 +1226,51 @@ static void tab_display(void) {
                    "Keeps the textures of ground, paths and walls sharp where you look along them into the distance. "
                    "Off: the game's own filtering, as on the console. 16x is the sharpest and costs very little on a PC "
                    "graphics card.", false);
-        static const char *const tex_lod[] = {"Default", "Sharp", "Sharper"};
-        opt_choice("Texture sharpness", &g_settings.tex_lod_bias, tex_lod, 3, 0,
+        static const char *const tex_lod[] = {"Default", "Sharp", "Sharper", "Ultra"};
+        opt_choice("Texture sharpness", &g_settings.tex_lod_bias, tex_lod, TEX_LOD_COUNT, 0,
                    "Pulls forward mipmap levels on 3D textures for increased clarity on surfaces and distant objects. "
-                   "Sharp uses a -0.5 bias; Sharper uses -1.0.", false);
+                   "Sharp uses a -0.5 bias, Sharper uses -1.0, and Ultra uses -1.5.", false);
         static const char *const sharp[] = {"Off", "10%", "20%", "30%", "40%", "50%", "60%", "70%", "80%", "90%", "100%"};
         opt_choice("Sharpening (AMD CAS)", &g_settings.sharpening, sharp, 11, 0,
                    "AMD FidelityFX CAS sharpens the 3D image after the upscaler (or at the window's resolution with the "
                    "upscaler off), before the HUD is drawn over it: edges get crisper without halos. Most useful with "
                    "AMD FSR 1.", false);
-        // AMD FSR 3 frame generation (vulkan/framegen.cpp; the frame rate counts the presented frames: framepace.c)
-        static std::string fg_desc;
-        fg_desc = std::string(tr("AMD FSR 3 makes a frame between each two the game draws: about twice the frames on "
-                                 "screen. The frame rate above counts them all, so the game itself draws half of it "
-                                 "(60 with 120) and the controls answer as at that rate, a little later. In play only: "
-                                 "the menus and the map show the game's own frames. Fast moves can leave faint smears "
-                                 "around Link and what moves on its own."));
+        // Frame generation: AMD FSR 3 (vulkan/framegen.cpp) or NVIDIA DLSS (vulkan/dlss.c, greyed off RTX 40
+        // and later); the frame rate counts the presented frames (framepace.c)
+        std::string fg_dlss = frame_gen_available(FG_DLSS) ? std::string(tr("NVIDIA DLSS")) :
+                              std::string(tr("NVIDIA DLSS")) + " " +
+                                  tr(dlss_fetch_missing() ? "(download it in Savage Wind Configuration)" : "(NVIDIA RTX 40 and later)");
+        const char *fgn[] = {"Off", "AMD FSR 3", fg_dlss.c_str()};
+        bool fg_avail[FG_COUNT];
+        for (int i = 0; i < FG_COUNT; i++) fg_avail[i] = frame_gen_available(i);
+        static int fg_shown = -1;
+        std::string fg_desc = tr("Makes a frame between each two the game draws: about twice the frames on screen. The "
+                         "frame rate above counts them all, so the game itself draws half of it (60 with 120) and the "
+                         "controls answer as at that rate, a little later. In play only: the menus and the map show "
+                         "the game's own frames. AMD FSR 3 runs on any graphics card; fast moves can leave faint "
+                         "smears around Link and what moves on its own. NVIDIA DLSS: NVIDIA's AI frame generation, "
+                         "on NVIDIA RTX 40 and later graphics cards.");
         if (dynamic_fg_no_gain())  // (not the upscaler's Dynamic mode: this is a hint, nothing is switched off)
             fg_desc += std::string("\n\n") + tr("It is not adding frames here: the upscaler's Dynamic mode would "
                                                 "switch it off automatically.");
         else if (dynamic_fg_disabled())
             fg_desc += std::string("\n\n") + tr("The upscaler's Dynamic mode switched it off: it had no net gain.");
-        opt_toggle("Frame generation (AMD FSR 3)", &g_settings.frame_gen, false, fg_desc.c_str());
+        opt_choice_avail("Frame generation", &g_settings.frame_gen, &fg_shown, fgn, fg_avail, FG_COUNT, FG_OFF,
+                         fg_desc.c_str());
+        // DLSS's multi frame generation: 3x and 4x where the GPU makes that many (RTX 50); greyed with the others
+        const char *multn[] = {"2x", "3x", "4x"};
+        bool mult_avail[FG_MULT_MAX - FG_MULT_MIN + 1];
+        for (int i = 0; i <= FG_MULT_MAX - FG_MULT_MIN; i++) mult_avail[i] = frame_gen_mult_available(FG_DLSS, FG_MULT_MIN + i);
+        int mi = (g_settings.frame_gen_mult >= FG_MULT_MIN ? g_settings.frame_gen_mult : FG_MULT_MIN) - FG_MULT_MIN;
+        static int mult_shown = -1;
+        if (g_settings.frame_gen != FG_DLSS) opt_disable_next();
+        if (opt_choice_avail("Frame generation multiplier", &mi, &mult_shown, multn, mult_avail,
+                             FG_MULT_MAX - FG_MULT_MIN + 1, 0,
+                             "NVIDIA DLSS only: the frames on screen for each the game draws. 3x and 4x (NVIDIA RTX 50 "
+                             "and later) make two or three frames between each two: the game draws a third or a "
+                             "quarter of the frame rate above (40 or 30 with 120), and the controls answer at that "
+                             "rate. Best with a high refresh rate display."))
+            g_settings.frame_gen_mult = FG_MULT_MIN + mi;
     }
 #endif
     opt_toggle("Asynchronous shaders", &g_settings.async_shaders, true,
@@ -1275,8 +1438,8 @@ static void tab_display(void) {
                     g_settings.hdr_vanilla_saturation = (int)lroundf(vanilla_sat);
                 hdr_sub();
                 float bloom = (float)g_settings.hdr_bloom;
-                if (opt_slider("HDR bloom strength", &bloom, 0, 100, 1, 100, "%g %%",
-                               "How much glow around bright objects is kept. 100% is the game's own bloom; 0% removes it."))
+                if (opt_slider("HDR bloom strength", &bloom, 0, 200, 5, 100, "%g %%",
+                               "How much glow around bright objects is kept. 100% is the game's own bloom; above it, stronger; 0% removes it."))
                     g_settings.hdr_bloom = (int)lroundf(bloom);
                 psy_sub();
                 static const char *const clamp_names[] = {"BT.709", "BT.2020"};
@@ -1316,6 +1479,15 @@ static void tab_display(void) {
     opt_toggle("Depth of field", &g_settings.depth_of_field, true, "The game blurs the far distance a little. Off: sharp "
                "out to the horizon, a little faster.");
     opt_toggle("Grass", &g_settings.grass, true, "Grass blades and ground cover. Off: bare terrain, faster.");
+    {
+        static const char *const gd_names[GRASS_DIST_COUNT] = {"Follow draw distance", "Potato", "Original", "Medium", "High"};
+        opt_indent(1);
+        if (!g_settings.grass) opt_disable_next();
+        opt_choice("Grass distance", &g_settings.grass_distance, gd_names, GRASS_DIST_COUNT, GRASS_DIST_FOLLOW,
+                   "How far out grass blades and ground cover are drawn. Follow draw distance matches Draw distance; "
+                   "High extends grass to about 2.45x without raising actor limits.", false);
+        opt_indent(-1);
+    }
     opt_toggle("Lens flare", &g_settings.lens_flare, true, "Sun glare and lens flare. Off: no sun flare.");
     if (gamelib_compat())  // (runtime/gamelib.h: a CPU without FMA instructions; simd.h simd_fma_unfused)
         opt_toggle("Fast math", &g_settings.fast_fma, true, "Your CPU has no FMA instructions, so the game's math runs "
@@ -1336,14 +1508,14 @@ static void tab_display(void) {
         enum { NH = sizeof haze / sizeof haze[0] };
         static char buf[NH][16];
         const char *names[NH];
-        int cur = NH - 1;
+        int cur = 2;  // 100%
         for (int i = 0; i < NH; i++) {
             snprintf(buf[i], sizeof buf[i], "%d%%", haze[i]);
             names[i] = buf[i];
             if (haze[i] == g_settings.haze) cur = i;
         }
-        if (opt_choice("Haze", &cur, names, NH, NH - 1, "How hazy the air is. Lower: clearer distances. It takes effect "
-                       "the next time you start the game.", false))
+        if (opt_choice("Haze", &cur, names, NH, 2, "How hazy the air is. Lower: clearer distances; above 100%: denser "
+                       "atmosphere. It takes effect the next time you start the game.", false))
             g_settings.haze = haze[cur];
     }
 #ifndef SW_METAL
@@ -1363,6 +1535,11 @@ static void tab_audio(void) {
     if (opt_slider("Shrine sensor volume", &sensor_pct, 0, 100, 10, 100, "%g%%",
                    "Volume of the Sheikah Slate sensor beeps. 0% silences the sensor.")) {
         g_settings.shrine_sensor_volume = (int)lroundf(sensor_pct);
+    }
+    float music_pct = (float)g_settings.music_volume;
+    if (opt_slider("Music volume", &music_pct, 0, 100, 10, 100, "%g%%",
+                   "Volume of the game's music. Sound effects and voices keep their volume. 0% turns the music off.")) {
+        g_settings.music_volume = (int)lroundf(music_pct);
     }
     static const char *const audio_out[AUDIO_OUT_COUNT] = {"Stereo", "Surround 5.1", "3D Headphones"};
     opt_choice("Audio output", &g_settings.audio_output, audio_out, AUDIO_OUT_COUNT, AUDIO_OUT_STEREO,
@@ -1389,7 +1566,98 @@ extern "C" void test_warp_hold_hour(float hour);
 extern "C" float test_warp_hour(bool *held);
 #include "../blood_moon.h"
 
+// Damage taken, Damage dealt, Stamina drain (Accessibility's rows: game_options.mm k_damage, settings.h DAMAGE_CHOICES)
+static void cheats_percent(int which) {  // 0: Damage taken, 1: Damage dealt, 2: Stamina drain
+    static const int damage[] = DAMAGE_CHOICES;
+    static const char *const damage_names[] = {"25%", "50%", "75%", "100%", "150%", "200%", "300%", "400%"};
+    enum { ND = sizeof damage / sizeof damage[0] };
+    static_assert(sizeof damage_names / sizeof damage_names[0] == ND, "a name for each damage choice");
+    int &setting = which == 1 ? g_settings.damage_dealt : which == 2 ? g_settings.stamina_drain : g_settings.damage_taken;
+    int d = 3;
+    for (int i = 0; i < ND; i++) if (setting == damage[i]) d = i;
+    if (opt_choice(which == 1 ? "Damage dealt" : which == 2 ? "Stamina drain" : "Damage taken", &d, damage_names, ND, 3,
+                   which == 1   ? "How much damage enemies take. 100% is the game's own."
+                   : which == 2 ? "How fast stamina drains. 100% is the game's own."
+                                : "How much damage Link takes. 100% is the game's own.", false))
+        setting = damage[d];
+}
+
+// The cheat rows, in sections by what they change (tab_cheats adds the Map and Add items sections after them)
 static void cheats_options(void) {
+    opt_section("Link");
+    opt_toggle("God mode", &g_settings.god_mode, false,
+               "Link takes no damage.");
+    {
+        static char heart_buf[16];
+        if (opt_text("Set hearts", heart_buf, sizeof heart_buf, "",
+                     "Sets your heart containers to an exact number (3 to 30).")) {
+            char *end;
+            long n = strtol(heart_buf, &end, 10);
+            if (heart_buf[0] && end != heart_buf && !*end && n >= 3 && n <= 30 && hearts_set((int32_t)n)) {
+                std::string s = std::to_string(n);
+                memcpy(heart_buf, s.c_str(), s.size() + 1);
+            } else
+                heart_buf[0] = 0;
+        }
+    }
+    cheats_percent(0);
+    opt_toggle("Infinite stamina", &g_settings.infinite_stamina, false,
+               "The stamina wheel never runs out.");
+    cheats_percent(2);
+    opt_toggle("Silent Link", &g_settings.silent_link, false,
+               "Link stays quiet, so enemies do not hear him.");
+    opt_toggle("Free sprint out of combat", &g_settings.free_sprint, false,
+               "Sprinting takes no stamina while no enemy is fighting you. Once the battle music starts, sprinting "
+               "costs stamina again.");
+    {   // the four champion abilities: a row that opens to their four switches
+        static bool open = false;
+        if (opt_action("Unlock champion abilities", open ? "-" : "+",
+                       "The four champion abilities stay usable everywhere, from the start of the game. They cannot be "
+                       "switched off in the pause menu.", true))
+            open = !open;
+        if (open) {
+            opt_indent(1);
+            opt_toggle("Revali's Gale", &g_settings.hero_soul_wind, false,
+                       "Also usable in shrines and in the Trial of the Sword.");
+            opt_toggle("Urbosa's Fury", &g_settings.hero_soul_electric, false,
+                       "Also usable in shrines and in the Trial of the Sword.");
+            opt_toggle("Daruk's Protection", &g_settings.hero_soul_fire, false,
+                       "Also usable in shrines and in the Trial of the Sword.");
+            opt_toggle("Mipha's Grace", &g_settings.hero_soul_water, false,
+                       "Also usable in shrines and in the Trial of the Sword.");
+            opt_indent(-1);
+        }
+    }
+
+    opt_section("Combat");
+    opt_toggle("One-hit kill", &g_settings.one_hit_kill, false, "Enemies go down in one hit.");
+    cheats_percent(1);
+    {   // (Accessibility's row: game_options.mm k_wear)
+        static const int wear[] = {0, 12, 17, 20, 25, 33, 50, 100, 150, 200, 250, 300};
+        static const char *const wear_names[] = {"Fairy", NULL, NULL, NULL, NULL, NULL, "Peter Pan",
+                                                 "Hylian", "Hero", "Master", "Legend", "Dude, are you ok?"};
+        static const char *const wear_times[] = {"0x", "0.12x", "0.17x", "0.2x", "0.25x", "0.33x", "0.5x", "1x", "1.5x",
+                                                 "2x", "2.5x", "3x"};
+        enum { NW = sizeof wear / sizeof wear[0] };
+        static_assert(sizeof wear_names / sizeof wear_names[0] == NW && sizeof wear_times / sizeof wear_times[0] == NW,
+                      "a name and a factor for each wear choice");  // (i18n-skip)
+        // (each with how much it wears, as the game's Options page shows it: "Hero (1.5x)", not the name alone)
+        std::string labels[NW];
+        const char *label_ptrs[NW];
+        for (int i = 0; i < NW; i++) {
+            labels[i] = wear_names[i] ? std::string(tr(wear_names[i])) + " (" + wear_times[i] + ")" : wear_times[i];
+            label_ptrs[i] = labels[i].c_str();
+        }
+        int w = 7;
+        for (int i = 0; i < NW; i++) if (g_settings.weapon_wear == wear[i]) w = i;
+        if (opt_choice_item("Weapon wear", &w, label_ptrs, NW, 7,
+                            "How fast weapons, bows and shields wear out. Fairy: never. Hylian: the game's own.", false, true))
+            g_settings.weapon_wear = wear[w], g_settings.no_weapon_wear = wear[w] == 0;
+    }
+    opt_toggle("Infinite arrows", &g_settings.infinite_arrows, false,
+               "Shooting a bow uses up no arrows. You still need one to shoot.");
+
+    opt_section("Rupees and pickups");
     opt_toggle("Infinite rupees", &g_settings.infinite_rupees, false,
                "Keeps your wallet at 9999 rupees, topped up every few seconds.");
     {
@@ -1406,50 +1674,14 @@ static void cheats_options(void) {
                 rupee_buf[0] = 0;
         }
     }
-    opt_toggle("God mode", &g_settings.god_mode, false,
-               "Link takes no damage.");
-    opt_toggle("Infinite stamina", &g_settings.infinite_stamina, false,
-               "The stamina wheel never runs out.");
-    opt_toggle("One-hit kill", &g_settings.one_hit_kill, false, "Enemies go down in one hit.");
-    opt_toggle("Infinite arrows", &g_settings.infinite_arrows, false,
-               "Shooting a bow uses up no arrows. You still need one to shoot.");
-    {   // (Accessibility's rows: game_options.mm k_wear and DAMAGE_CHOICES)
-        static const int wear[] = {0, 50, 100, 150, 200, 250, 300};
-        static const char *const wear_names[] = {"Fairy", "Peter Pan", "Hylian", "Hero", "Master", "Legend",
-                                                 "Dude, are you ok?"};
-        enum { NW = sizeof wear / sizeof wear[0] };
-        int w = 2;
-        for (int i = 0; i < NW; i++) if (g_settings.weapon_wear == wear[i]) w = i;
-        if (opt_choice("Weapon wear", &w, wear_names, NW, 2,
-                       "How fast weapons, bows and shields wear out. Fairy: never. Hylian: the game's own.", false))
-            g_settings.weapon_wear = wear[w], g_settings.no_weapon_wear = wear[w] == 0;
-        static const int damage[] = DAMAGE_CHOICES;
-        static const char *const damage_names[] = {"25%", "50%", "75%", "100%", "150%", "200%", "300%", "400%"};
-        enum { ND = sizeof damage / sizeof damage[0] };
-        static_assert(sizeof damage_names / sizeof damage_names[0] == ND, "a name for each damage choice");
-        for (int dealt = 0; dealt < 2; dealt++) {
-            int &setting = dealt ? g_settings.damage_dealt : g_settings.damage_taken;
-            int d = 3;
-            for (int i = 0; i < ND; i++) if (setting == damage[i]) d = i;
-            if (opt_choice(dealt ? "Damage dealt" : "Damage taken", &d, damage_names, ND, 3,
-                           dealt ? "How much damage enemies take. 100% is the game's own."
-                                 : "How much damage Link takes. 100% is the game's own.", false))
-                setting = damage[d];
-        }
-    }
-    {
-        static char heart_buf[16];
-        if (opt_text("Set hearts", heart_buf, sizeof heart_buf, "",
-                     "Sets your heart containers to an exact number (3 to 30).")) {
-            char *end;
-            long n = strtol(heart_buf, &end, 10);
-            if (heart_buf[0] && end != heart_buf && !*end && n >= 3 && n <= 30 && hearts_set((int32_t)n)) {
-                std::string s = std::to_string(n);
-                memcpy(heart_buf, s.c_str(), s.size() + 1);
-            } else
-                heart_buf[0] = 0;
-        }
-    }
+    static const char *const mults[] = {"Off", "2x", "4x", "8x"};
+    static const int mult_vals[] = {1, 2, 4, 8};
+    int mult_idx = g_settings.item_multiplier == 8 ? 3 : g_settings.item_multiplier == 4 ? 2 : g_settings.item_multiplier == 2 ? 1 : 0;
+    opt_dropdown("Item pickup multiplier", &mult_idx, mults, 4, 0,
+                 "Multiplies stackable items you pick up (materials, monster parts, arrows).");
+    g_settings.item_multiplier = mult_vals[mult_idx];
+
+    opt_section("World");
     static const char *const weather[WEATHER_COUNT] = {"Automatic", "No rain", "No thunderstorms", "Clear", "Cloudy",
                                                        "Rain", "Heavy rain", "Snow", "Heavy snow", "Thunderstorm",
                                                        "Thunder rain", "Rain in sunshine"};  // (settings.h weather)
@@ -1479,15 +1711,8 @@ static void cheats_options(void) {
         if (told) hint(tr(told == 1 ? "The blood moon starts once you close this menu."
                                     : "A blood moon can only start in the open world."));
     }
-    static const char *const mults[] = {"Off", "2x", "4x", "8x"};
-    static const int mult_vals[] = {1, 2, 4, 8};
-    int mult_idx = g_settings.item_multiplier == 8 ? 3 : g_settings.item_multiplier == 4 ? 2 : g_settings.item_multiplier == 2 ? 1 : 0;
-    opt_dropdown("Item pickup multiplier", &mult_idx, mults, 4, 0,
-                 "Multiplies stackable items you pick up (materials, monster parts, arrows).");
-    g_settings.item_multiplier = mult_vals[mult_idx];
-    opt_toggle("Free sprint out of combat", &g_settings.free_sprint, false,
-               "Sprinting takes no stamina while no enemy is fighting you. Once the battle music starts, sprinting "
-               "costs stamina again.");
+
+    opt_section("Travel");
     opt_toggle("Sure-footed horse", &g_settings.sure_footed, false,
                "A running horse no longer stops dead and rears when it runs into something."
                " It no longer stops at cliff edges either.");
@@ -1669,6 +1894,26 @@ static std::string item_desc(const GameItem *it) {
     return d + "\n\n" + it->actor;
 }
 
+// Cheats > Collectible hints on the map (runtime/collectibles.h): the switch. The hints themselves are drawn over the
+// game's map (collect_map_draw) while D-pad Down is held.
+static void cheats_collectibles(void) {
+    bool map_ok = !strcmp(g_game_version, "1.9.0");  // (the map's offsets are 1.9.0's)
+    if (!map_ok) opt_disable_next();
+    int key = g_bind_key[BIND_DOWN];  // (the keyboard's key for D-pad Down, as bound in Controls)
+    char desc[768];
+    if (key) snprintf(desc, sizeof desc, tr("Hold D-pad Down or %s on the game's map to see faint circles around the Korok "
+                                            "seeds and shrines you haven't found yet, and how many the region under the "
+                                            "cursor has. Only in regions whose tower you have activated."),
+                      tr(bind_key_label(key)));
+    opt_toggle("Collectible hints on the map", &g_settings.collectibles_map, false,
+               !map_ok ? "Faint circles around the Korok seeds and shrines you haven't found yet, on the game's map. "
+                         "Needs version 1.9.0 of the game."
+               : key ? desc
+                     : "Hold D-pad Down on the game's map to see faint circles around the Korok seeds and shrines you "
+                       "haven't found yet, and how many the region under the cursor has. Only in regions whose tower "
+                       "you have activated.");
+}
+
 // The Cheats tab (in game only): any of the game's items, in any amount, into the pouch through the game's own item
 // get (runtime/items.h; the console's give command does the same). Cheats, and labelled so: the game's own menus
 // stay as they are.
@@ -1679,8 +1924,15 @@ static void tab_cheats(void) {
     static char notice[160];
     static unsigned waiting;  // the request the notice waits to tell the result of
     opt_begin("##cheats", ImGui::GetFontSize() / 34);
-    opt_section(tr("Cheats"));
     cheats_options();
+    opt_section("Map");
+    cheats_collectibles();
+    // every place the map has a marker for (runtime/place_display.c: its count, travel bit and colour)
+    opt_toggle("Show shrines and towers", &g_settings.show_all_places, false,
+               "Shows every shrine, tower, stable and ancient lab on the map, and makes the shrines, towers and "
+               "labs travel destinations (a stable is shown but never travelled to). Nothing is saved and no "
+               "tower is activated, so the map fog stays as it is.");
+    opt_section("Add items");
     hint(tr("These are cheats: they put items in your pouch. The list comes from your game files; nothing of the game is shipped."));
     if (!items_available()) {
         hint(tr("Items are added in game only."));
@@ -1692,7 +1944,7 @@ static void tab_cheats(void) {
     enum { C_NONE, C_WEAPON, C_BOW, C_SHIELD, C_ARROW, C_ARMOR, C_MATERIAL, C_CRITTER, C_ALL, C_COUNT };
     static const char *cats[C_COUNT] = {"Choose a category", "Weapons", "Bows", "Shields", "Arrows", "Armour", "Materials",
                                         "Critters and fairies", "All"};
-    opt_text(tr("Search"), search, sizeof search, "", tr("Only the items whose name or actor contains this text."));
+    opt_text(tr("Search"), search, sizeof search, "", tr("Only the items whose name, actor or pinyin contains this text ('luyu' finds 鲈鱼)."));
     opt_dropdown(tr("Category"), &cat, cats, C_COUNT, C_NONE, tr("The items of one kind."));
     opt_slider(tr("Amount"), &amount, 1, 99, 1, 1, "%g",
                tr("How many the Add button puts in the pouch. Stacks (arrows, materials) take them at once."));
@@ -1715,7 +1967,7 @@ static void tab_cheats(void) {
               : it->cat == ITEMCAT_SHIELD ? C_SHIELD : it->cat == ITEMCAT_ARROW ? C_ARROW
               : it->cat == ITEMCAT_ARMOR ? C_ARMOR : C_MATERIAL;
         if (cat != C_NONE && cat != C_ALL && c != cat) continue;
-        if (search[0] && !has_text(it->name, search) && !has_text(it->actor, search)) continue;
+        if (search[0] && !items_matches(i, search)) continue;
         // (only a row on screen can be hovered or selected: the list is long, its other rows need no description)
         bool seen = ImGui::IsRectVisible(ImVec2(ImGui::GetContentRegionAvail().x, ImGui::GetFontSize() * 1.9f));
         if (opt_action(it->name, tr("Add"), seen ? item_desc(it).c_str() : NULL, false)) {
@@ -1915,23 +2167,397 @@ static void perf_cell(const char *fmt, float v) {
     if (v < 0) ImGui::TextDisabled("-");
     else ImGui::Text(fmt, v);
 }
+// ------------------------------------------------------------------ Collectible hints on the map (runtime/collectibles.h)
+// Cheats > Collectible hints on the map. While D-pad Down is held on the game's map (the raw input BIND_DOWN, so it
+// follows the player's binding; the map itself does nothing with the d-pad), soft circles fade in around the Korok seeds
+// and shrines not found yet in the regions whose tower is activated, and the region under the map's cursor shows its
+// counts top right, in the style of the game's own "Current Location" label. A real spot is somewhere inside its circle
+// (an offset fixed per item), not at its centre. Drawn only: the points come from the reader's last read, taken again a
+// few times a second. While the map is up, a prompt for it ("Hints" and the button) sits on the map's own prompt bar.
+// Numbers in the panel are in a 2560x1440 picture's pixels (the mockups'), times u; its text is about a tenth larger than
+// the mockups' Fira Sans, as the game's own font is narrower.
+#define COLLECT_R 70.f        // a hint circle's radius, in world units
+#define COLLECT_FADE_S .25f   // the fade in and out, seconds
+extern "C" uint64_t input_buttons_now(void);  // (runtime/hle/input.c)
+static float g_collect_alpha;  // the hints' fade: 0 hidden .. 1 shown
+
+static bool collect_map_held(void) { return (input_buttons_now() >> BIND_DOWN) & 1; }
+
+// The map is up with the option on, and the hints can show: the records are being read or have been (not game files
+// without the Korok seeds and shrines as expected, nor records that couldn't be read). Polled even then, so they are
+// read while the map is up, there when the button is held, and a failed read is tried again.
+static bool collect_map_on(CollectMapView *v, bool *ready) {
+    if (!collectibles_map_view(v)) return false;
+    CollectState s = collectibles_poll();
+    *ready = s == COLLECT_READY;
+    return s == COLLECT_READING || s == COLLECT_READY;
+}
+
+static bool collect_map_shown(void) {
+    CollectMapView v;
+    bool ready;
+    if (!collect_map_on(&v, &ready)) {
+        g_collect_alpha = 0;
+        return false;
+    }
+    return true;  // (the prompt shows while the map is up)
+}
+
+static ImU32 collect_col(int r, int g, int b, float a) { return IM_COL32(r, g, b, (int)(fminf(fmaxf(a, 0), 1) * 255 + .5f)); }
+
+// A hint's centre, from the real spot: fixed per item (seeded by its flag's hash), up to 0.75 of the radius away
+static void collect_offset(uint32_t seed, float *dx, float *dz) {
+    uint32_t h = seed;  // (murmur3's finaliser: neighbouring hashes land far apart)
+    h ^= h >> 16, h *= 0x85ebca6bu, h ^= h >> 13, h *= 0xc2b2ae35u, h ^= h >> 16;
+    float a = (h & 0xffff) / 65536.f * 6.2831853f, d = COLLECT_R * .75f * sqrtf((h >> 16) / 65536.f);
+    *dx = d * cosf(a), *dz = d * sinf(a);
+}
+
+// A soft disc: strongest in the middle, falling as (1 - d)^0.8 to a third, kept at that third to the edge (the chosen
+// mockup's fill). Rings of vertices with their own alpha; overlapping discs add up.
+static void collect_disc(ImDrawList *dl, ImVec2 c, float r, int cr, int cg, int cb, float a) {
+    static const float ring[] = {.25f, .5f, .747f, .97f, 1}, fall[] = {.794f, .574f, .333f, .333f, 0};
+    const int rings = 5, seg = (int)fminf(48, fmaxf(16, r * .4f));
+    float cs[48], sn[48];
+    for (int i = 0; i < seg; i++) cs[i] = cosf(i * 6.2831853f / seg), sn[i] = sinf(i * 6.2831853f / seg);
+    ImVec2 uv = dl->_Data->TexUvWhitePixel;
+    dl->PrimReserve(seg * 3 + (rings - 1) * seg * 6, 1 + rings * seg);
+    unsigned base = dl->_VtxCurrentIdx;
+    dl->PrimWriteVtx(c, uv, collect_col(cr, cg, cb, a));
+    for (int k = 0; k < rings; k++)
+        for (int i = 0; i < seg; i++)
+            dl->PrimWriteVtx(ImVec2(c.x + cs[i] * r * ring[k], c.y + sn[i] * r * ring[k]), uv, collect_col(cr, cg, cb, a * fall[k]));
+    for (int i = 0; i < seg; i++) {
+        int j = (i + 1) % seg;
+        dl->PrimWriteIdx((ImDrawIdx)base), dl->PrimWriteIdx((ImDrawIdx)(base + 1 + i)), dl->PrimWriteIdx((ImDrawIdx)(base + 1 + j));
+    }
+    for (int k = 0; k + 1 < rings; k++)
+        for (int i = 0; i < seg; i++) {
+            unsigned j = (i + 1) % seg, in = base + 1 + k * seg, out = in + seg;
+            dl->PrimWriteIdx((ImDrawIdx)(in + i)), dl->PrimWriteIdx((ImDrawIdx)(out + i)), dl->PrimWriteIdx((ImDrawIdx)(out + j));
+            dl->PrimWriteIdx((ImDrawIdx)(in + i)), dl->PrimWriteIdx((ImDrawIdx)(out + j)), dl->PrimWriteIdx((ImDrawIdx)(in + j));
+        }
+}
+
+// A flat disc, its edge feathered over the outer 6% (the ground dimmed under a hint on light ground)
+static void collect_flat(ImDrawList *dl, ImVec2 c, float r, int cr, int cg, int cb, float a) {
+    const int seg = (int)fminf(48, fmaxf(16, r * .4f));
+    ImVec2 uv = dl->_Data->TexUvWhitePixel;
+    dl->PrimReserve(seg * 3 + seg * 6, 1 + 2 * seg);
+    unsigned base = dl->_VtxCurrentIdx;
+    dl->PrimWriteVtx(c, uv, collect_col(cr, cg, cb, a));
+    for (int k = 0; k < 2; k++)
+        for (int i = 0; i < seg; i++) {
+            float t = i * 6.2831853f / seg, rr = r * (k ? 1 : .94f);
+            dl->PrimWriteVtx(ImVec2(c.x + cosf(t) * rr, c.y + sinf(t) * rr), uv, collect_col(cr, cg, cb, k ? 0 : a));
+        }
+    for (int i = 0; i < seg; i++) {
+        unsigned j = (i + 1) % seg, in = base + 1, out = in + seg;
+        dl->PrimWriteIdx((ImDrawIdx)base), dl->PrimWriteIdx((ImDrawIdx)(in + i)), dl->PrimWriteIdx((ImDrawIdx)(in + j));
+        dl->PrimWriteIdx((ImDrawIdx)(in + i)), dl->PrimWriteIdx((ImDrawIdx)(out + i)), dl->PrimWriteIdx((ImDrawIdx)(out + j));
+        dl->PrimWriteIdx((ImDrawIdx)(in + i)), dl->PrimWriteIdx((ImDrawIdx)(out + j)), dl->PrimWriteIdx((ImDrawIdx)(in + j));
+    }
+}
+
+// How light the ground is under a hint centred on world (x, z) with radius `rad` (world units): CIELAB L* of the mean
+// colour inside it in the presenter's copy of the game image, the map's canvas only (-1: not in that copy). The copy
+// shows the layout's 1280x720 units centred, fitted to it as the screen fits them (collectibles.h CollectGround).
+static float collect_ground_light(const CollectGround &g, float x, float z, float rad) {
+    static float lin[256];
+    if (lin[255] == 0)
+        for (int i = 0; i < 256; i++) {
+            float c = i / 255.f;
+            lin[i] = c > .04045f ? powf((c + .055f) / 1.055f, 2.4f) : c / 12.92f;
+        }
+    const CollectMapView &v = g.view;
+    float s = fminf(g.w / 1280.f, g.h / 720.f), lx = x * v.scale[0] * v.zoom + v.translate[0];
+    float ly = -z * v.scale[1] * v.zoom + v.translate[1], r = rad * v.scale[0] * v.zoom * s;
+    float cx = g.w * .5f + lx * s, cy = g.h * .5f - ly * s;
+    int x0 = (int)fmaxf(floorf(cx - r), floorf(g.w * .5f - v.half[0] * s)), x1 = (int)fminf(ceilf(cx + r), ceilf(g.w * .5f + v.half[0] * s));
+    int y0 = (int)fmaxf(floorf(cy - r), floorf(g.h * .5f - v.half[1] * s)), y1 = (int)fminf(ceilf(cy + r), ceilf(g.h * .5f + v.half[1] * s));
+    x0 = x0 < 0 ? 0 : x0, y0 = y0 < 0 ? 0 : y0, x1 = x1 > g.w ? g.w : x1, y1 = y1 > g.h ? g.h : y1;
+    unsigned sum[3] = {0, 0, 0}, n = 0;
+    for (int py = y0; py < y1; py++)
+        for (int px = x0; px < x1; px++) {
+            float dx = px + .5f - cx, dy = py + .5f - cy;
+            if (dx * dx + dy * dy >= r * r) continue;
+            const uint8_t *q = g.rgba + ((size_t)py * g.w + px) * 4;
+            sum[0] += q[0], sum[1] += q[1], sum[2] += q[2], n++;
+        }
+    if (n < 4) return -1;
+    float lum = 0;
+    for (int c = 0; c < 3; c++) {
+        float m = (float)sum[c] / n;
+        int i = (int)m;
+        float f = i < 255 ? lin[i] + (lin[i + 1] - lin[i]) * (m - i) : lin[255];
+        lum += f * (c == 0 ? .2126f : c == 1 ? .7152f : .0722f);
+    }
+    return lum > .008856f ? 116 * cbrtf(lum) - 16 : 903.3f * lum;
+}
+
+// A haze: col inside a..b, fading to nothing over `feather` around it (the panel's soft dark backing)
+static void collect_haze(ImDrawList *dl, ImVec2 a, ImVec2 b, float feather, ImU32 col) {
+    ImVec2 uv = dl->_Data->TexUvWhitePixel;
+    ImVec2 in[4] = {a, ImVec2(b.x, a.y), b, ImVec2(a.x, b.y)};
+    ImVec2 out[4] = {ImVec2(a.x - feather, a.y - feather), ImVec2(b.x + feather, a.y - feather),
+                     ImVec2(b.x + feather, b.y + feather), ImVec2(a.x - feather, b.y + feather)};
+    dl->PrimReserve(5 * 6, 8);
+    unsigned base = dl->_VtxCurrentIdx;
+    for (int i = 0; i < 4; i++) dl->PrimWriteVtx(in[i], uv, col);
+    for (int i = 0; i < 4; i++) dl->PrimWriteVtx(out[i], uv, col & ~IM_COL32_A_MASK);
+    static const int quads[5][4] = {{0, 1, 2, 3}, {0, 1, 5, 4}, {1, 2, 6, 5}, {2, 3, 7, 6}, {3, 0, 4, 7}};
+    for (auto &q : quads) {
+        dl->PrimWriteIdx((ImDrawIdx)(base + q[0])), dl->PrimWriteIdx((ImDrawIdx)(base + q[1])), dl->PrimWriteIdx((ImDrawIdx)(base + q[2]));
+        dl->PrimWriteIdx((ImDrawIdx)(base + q[0])), dl->PrimWriteIdx((ImDrawIdx)(base + q[2])), dl->PrimWriteIdx((ImDrawIdx)(base + q[3]));
+    }
+}
+
+// The game's own font for a text when it has every letter of it (quick_hint_font.mm loads it from the player's files),
+// else the menu's
+static ImFont *collect_font(const char *text, ImFont *fallback) {
+    if (!g_hint_font) return fallback;
+    for (const char *p = text; *p;) {
+        unsigned code;
+        int n = ImTextCharFromUtf8(&code, p, nullptr);
+        if (!n) break;
+        p += n;
+        if (!g_hint_font->FindGlyphNoFallback((ImWchar)code)) return fallback;
+    }
+    return g_hint_font;
+}
+
+// Text slanted as the game's italic (quick_inventory_hint_draw; slant 0: upright), with a glow: faint copies of it
+// around. Its width.
+static float collect_text(ImDrawList *dl, ImFont *font, float size, ImVec2 pos, ImU32 col, ImU32 glow, float glow_r,
+                          const char *text, float slant = .18f) {
+    auto draw = [&](ImVec2 p, ImU32 c) {
+        int start = dl->VtxBuffer.Size;
+        dl->AddText(font, size, p, c, text);
+        float base = p.y + size * .8f;
+        for (int j = start; slant && j < dl->VtxBuffer.Size; j++) dl->VtxBuffer[j].pos.x += (base - dl->VtxBuffer[j].pos.y) * slant;
+    };
+    if (glow & IM_COL32_A_MASK)
+        for (int ring = 1; ring <= 2; ring++)
+            for (int k = 0; k < 10; k++) {
+                float t = (k + ring * .5f) * 6.2831853f / 10, d = glow_r * ring * .5f;
+                draw(ImVec2(pos.x + cosf(t) * d, pos.y + sinf(t) * d), glow);
+            }
+    draw(pos, col);
+    return font->CalcTextSizeA(size, FLT_MAX, 0, text).x;
+}
+
+// Our own icons (not the game's): a leaf for the Korok seeds, a temple front for the shrines; centre c, size s
+static void collect_leaf(ImDrawList *dl, ImVec2 c, float s, ImU32 col) {
+    const float ca = cosf(-.6109f), sa = sinf(-.6109f);  // (tilted 35 degrees)
+    auto at = [&](float w, float t) { return ImVec2(c.x + (w * ca - t * sa) * s, c.y + (w * sa + t * ca) * s); };
+    ImVec2 pts[42];
+    for (int i = 0; i < 21; i++) {
+        float t = -1 + i / 10.f, w = .48f * sqrtf(fmaxf(0, 1 - t * t)) * (1.15f - .3f * t);
+        pts[i] = at(w, t), pts[41 - i] = at(-w, t);
+    }
+    dl->AddConvexPolyFilled(pts, 42, col);
+    dl->AddLine(at(0, -.8f), at(0, 1.f), IM_COL32(4, 22, 34, (col >> IM_COL32_A_SHIFT) & 0xff), fmaxf(1.5f, s / 7));
+    dl->AddLine(at(0, 1.f), at(0, 1.5f), col, fmaxf(1.5f, s / 5));
+}
+
+static void collect_temple(ImDrawList *dl, ImVec2 c, float s, ImU32 col) {
+    float w = fmaxf(1.5f, s / 4.5f);
+    dl->AddTriangleFilled(ImVec2(c.x - s, c.y - .45f * s), ImVec2(c.x, c.y - s), ImVec2(c.x + s, c.y - .45f * s), col);
+    dl->AddRectFilled(ImVec2(c.x - .7f * s, c.y - .35f * s), ImVec2(c.x - .7f * s + w, c.y + .7f * s), col);
+    dl->AddRectFilled(ImVec2(c.x + .7f * s - w, c.y - .35f * s), ImVec2(c.x + .7f * s, c.y + .7f * s), col);
+    dl->AddRectFilled(ImVec2(c.x - .18f * s, c.y - .1f * s), ImVec2(c.x + .18f * s, c.y + .7f * s), col);
+    dl->AddRectFilled(ImVec2(c.x - s, c.y + .75f * s), ImVec2(c.x + s, c.y + .75f * s + w), col);
+}
+
+static void collect_check(ImDrawList *dl, ImVec2 c, float s, ImU32 col, float w) {
+    ImVec2 pts[3] = {ImVec2(c.x - s, c.y), ImVec2(c.x - .35f * s, c.y + .65f * s), ImVec2(c.x + s, c.y - .8f * s)};
+    dl->AddPolyline(pts, 3, col, 0, w);
+}
+
+// The tower region under the map's cursor: its name, a fading underline, and its Korok seeds and shrines found, top
+// right inside the map's canvas (over its top edge: clear of the slate's frame). A region with everything found turns
+// to a dusty blue with a check after its name.
+static void collect_panel(ImDrawList *dl, int region, const CollectCounts &c, float x, float y, float u, float alpha) {
+    static const char *named;  // (the menu's font is given the letters of each new name, for a name the game's lacks)
+    const char *name = collectibles_region_name(region);
+    if (!name) return;
+    if (name != named) ui_register_glyphs(name), named = name;
+    bool done = c.koroks == c.koroks_total && c.shrines_found == c.shrines_total;
+    ImU32 text = done ? collect_col(150, 185, 200, alpha) : collect_col(238, 250, 255, alpha);
+    ImU32 glow = done ? collect_col(30, 90, 130, .16f * alpha) : collect_col(40, 170, 255, .2f * alpha);
+    ImU32 line = done ? collect_col(150, 185, 200, .82f * alpha) : collect_col(120, 225, 255, .82f * alpha);
+    ImU32 icon = done ? collect_col(150, 185, 200, alpha) : collect_col(120, 225, 255, alpha);
+    ImU32 row_glow = done ? 0 : collect_col(40, 170, 255, .1f * alpha);
+    for (int k = 0; k < 3; k++)  // (layers: a soft edge with round corners, as a blurred box)
+        collect_haze(dl, ImVec2(x + (20 - 10 * k) * u, y + (30 - 10 * k) * u), ImVec2(x + (510 + 10 * k) * u, y + (190 + 10 * k) * u),
+                     (30 + 30 * k) * u, collect_col(0, 10, 20, .26f * alpha));
+    ImFont *big = collect_font(name, g_menu_font_big);
+    float tw = collect_text(dl, big, 70 * u, ImVec2(x, y - 4 * u), text, glow, 9 * u, name);
+    if (done) {
+        collect_check(dl, ImVec2(x + tw + 40 * u, y + 40 * u), 18 * u, collect_col(30, 90, 130, .5f * alpha), 11 * u);
+        collect_check(dl, ImVec2(x + tw + 40 * u, y + 40 * u), 18 * u, text, 7 * u);
+    }
+    float x0 = x - 10 * u, x1 = x + 520 * u, q = (x1 - x0) * .25f, ly = y + 92 * u;
+    ImU32 none = line & ~IM_COL32_A_MASK;
+    dl->AddRectFilledMultiColor(ImVec2(x0, ly), ImVec2(x0 + q, ly + 2 * u), none, line, line, none);
+    dl->AddRectFilled(ImVec2(x0 + q, ly), ImVec2(x1 - q, ly + 2 * u), line);
+    dl->AddRectFilledMultiColor(ImVec2(x1 - q, ly), ImVec2(x1, ly + 2 * u), line, none, none, line);
+    const char *labels[2] = {tr("Korok seeds"), tr("Shrines")};
+    int found[2] = {c.koroks, c.shrines_found}, total[2] = {c.koroks_total, c.shrines_total};
+    for (int i = 0; i < 2; i++) {
+        float ry = y + (120 + i * 58) * u;
+        if (i == 0) collect_leaf(dl, ImVec2(x + 22 * u, ry + 24 * u), 17 * u, icon);
+        else collect_temple(dl, ImVec2(x + 22 * u, ry + 24 * u), 17 * u, icon);
+        collect_text(dl, collect_font(labels[i], g_menu_font), 44 * u, ImVec2(x + 62 * u, ry - 2 * u), text, row_glow, 5 * u,
+                     labels[i]);
+        char v[32];
+        snprintf(v, sizeof v, "%d / %d", found[i], total[i]);
+        ImFont *f = collect_font(v, g_menu_font);
+        float vw = f->CalcTextSizeA(44 * u, FLT_MAX, 0, v).x;
+        collect_text(dl, f, 44 * u, ImVec2(x + 520 * u - vw, ry - 2 * u), text, row_glow, 5 * u, v);
+    }
+}
+
+// The hints' prompt on the map's prompt bar, left of its first prompt and in its look (upright cyan text with a glow,
+// then the button): "Hints" and the game's own D-pad Down icon, which nvn/glyphs.c redraws for the player's binding and
+// device as it does the bar's own icons. Without the game's icons: the bound key or button by name, in a badge.
+static void collect_prompt(ImDrawList *dl, const CollectMapView &v, float cx, float cy, float s, float u) {
+    if (v.bar[2] < v.bar[0]) return;
+    const char *label = tr("Hints");
+    ImFont *font = collect_font(label, g_menu_font);
+    float fs = 38 * u, y = cy - (v.bar[1] + v.bar[3]) * .5f * s, tw = font->CalcTextSizeA(fs, FLT_MAX, 0, label).x;
+    ImU32 cyan = IM_COL32(45, 192, 255, 255);
+    char name[64] = "";
+    float iw = 36 * u;
+    if (!g_hint_buttons) {
+        bool keyboard = input_last_device() == DEVICE_KEYBOARD;
+        snprintf(name, sizeof name, "%s", keyboard ? tr(bind_key_label(g_bind_key[BIND_DOWN]))
+                                                   : tr(bind_pad_label(g_bind_pad[BIND_DOWN], input_pad_family())));
+        iw = fmaxf(iw, g_menu_font->CalcTextSizeA(fs * .7f, FLT_MAX, 0, name).x + 16 * u);
+    }
+    // where the leftmost prompt's label starts: its picture's right edge less the padding, its button and the gap before
+    // it (10, 21.5 and 7 units), and the label's width (the game's font at our size measures as the bar draws it)
+    float lw = v.bar_text[0] ? collect_font(v.bar_text, g_menu_font)->CalcTextSizeA(fs, FLT_MAX, 0, v.bar_text).x : 40 * s;
+    float x = cx + (v.bar[2] - 10 - 21.5f - 7) * s - lw - 94 * u - (tw + 19 * u + iw);
+    collect_text(dl, font, fs, ImVec2(x, y - fs * .5f - 2 * u), cyan, IM_COL32(45, 192, 255, 14), 5 * u, label, 0);
+    float ix = x + tw + 19 * u;
+    if (g_hint_buttons) {
+        dl->AddText(g_hint_buttons, 64 * u, ImVec2(ix - 7 * u, y - 32 * u), cyan, "\xee\x81\xa1");  // (U+E061: D-pad Down)
+    } else {
+        dl->AddRectFilled(ImVec2(ix, y - 18 * u), ImVec2(ix + iw, y + 18 * u), cyan, 6 * u);
+        ImVec2 ts = g_menu_font->CalcTextSizeA(fs * .7f, FLT_MAX, 0, name);
+        dl->AddText(g_menu_font, fs * .7f, ImVec2(ix + (iw - ts.x) * .5f, y - ts.y * .5f), IM_COL32(4, 22, 34, 255), name);
+    }
+}
+
+static void collect_map_draw(ImGuiIO &io) {
+    CollectMapView v;
+    bool ready;
+    if (!collect_map_on(&v, &ready)) return;
+    float dt = fminf(fmaxf(io.DeltaTime, 0), 1 / 30.f);
+    g_collect_alpha = fminf(fmaxf(g_collect_alpha + (ready && collect_map_held() ? dt : -dt) / COLLECT_FADE_S, 0), 1);
+    float s = fminf(io.DisplaySize.x / 1280.f, io.DisplaySize.y / (720.f + 2 * output_ui_extra_y())), u = s * .5f;
+    float cx = io.DisplaySize.x * .5f, cy = io.DisplaySize.y * .5f, k0 = v.scale[0] * v.zoom, k1 = v.scale[1] * v.zoom;
+    ImDrawList *dl = ImGui::GetBackgroundDrawList();
+    collect_prompt(dl, v, cx, cy, s, u);
+    if (g_collect_alpha <= 0) return;
+    float a = g_collect_alpha * g_collect_alpha * (3 - 2 * g_collect_alpha);  // (eased)
+    static CollectPoint pts[1024];
+    static int n;
+    static double taken;
+    // On light ground (Eldin's rock, snow) a hint is drawn stronger: the ground under it dimmed, the fill raised. k (0..1)
+    // from the ground's lightness in the presenter's copy of the game image: none up to L* 36, full from 42 (green
+    // ground, fields and water measured 17-36 under the hints, Goron City 42-50, Hateno's snowfield 41-49). It eases
+    // toward the latest copy's value; a hint the copy doesn't show keeps its last.
+    static float k_to[1024], k_now[1024];
+    static uint32_t k_seed[1024];
+    static unsigned k_gen;
+    double now = SDL_GetTicks() / 1000.0;
+    if (now - taken > 0.25) {
+        n = collectibles_missing(pts, (int)(sizeof pts / sizeof *pts)), taken = now;
+        for (int i = 0; i < n; i++)
+            if (k_seed[i] != pts[i].seed) k_seed[i] = pts[i].seed, k_to[i] = k_now[i] = -1, k_gen = 0;
+    }
+    collectibles_ground_ask(&v);
+    CollectGround ground;
+    if (collectibles_ground(&ground) && ground.gen != k_gen) {
+        k_gen = ground.gen;
+        for (int i = 0; i < n; i++) {
+            float dx, dz;
+            collect_offset(pts[i].seed, &dx, &dz);
+            float l = collect_ground_light(ground, pts[i].x + dx, pts[i].z + dz, COLLECT_R);
+            if (l >= 0) k_to[i] = fminf(fmaxf((l - 36) / 6, 0), 1);
+        }
+    }
+    for (int i = 0; i < n; i++) {
+        if (k_to[i] < 0) continue;
+        // (the first value: shown as is while the hints fade in; a hint first measured later, panned or zoomed into view,
+        // eases in from none like any change)
+        if (k_now[i] < 0) k_now[i] = g_collect_alpha < 1 ? k_to[i] : 0;
+        k_now[i] += fminf(fmaxf(k_to[i] - k_now[i], -dt / .25f), dt / .25f);
+    }
+    auto screen = [&](float x, float z) { return ImVec2(cx + (x * k0 + v.translate[0]) * s, cy - (-z * k1 + v.translate[1]) * s); };
+    ImVec2 lo(cx - v.half[0] * s, cy - v.half[1] * s), hi(cx + v.half[0] * s, cy + v.half[1] * s);
+    dl->PushClipRect(lo, hi, true);
+    float r = COLLECT_R * k0 * s, near = COLLECT_R * COLLECT_R;
+    const char *label = NULL;  // (the kind of the circle under the cursor nearest its centre)
+    for (int i = 0; i < n; i++) {
+        float dx, dz;
+        collect_offset(pts[i].seed, &dx, &dz);
+        float x = pts[i].x + dx, z = pts[i].z + dz;
+        ImVec2 p = screen(x, z);
+        if (p.x < lo.x - r || p.x > hi.x + r || p.y < lo.y - r || p.y > hi.y + r) continue;
+        float k = k_now[i] > 0 ? k_now[i] : 0;
+        if (k > 0) collect_flat(dl, p, r, 20, 16, 12, .45f * k * a);
+        if (pts[i].kind == COLLECT_KOROK) collect_disc(dl, p, r, 235, 240, 215, (.30f + .10f * k) * a);
+        else collect_disc(dl, p, r, 255, 175, 80, (.42f + .10f * k) * a);
+        float cdx = v.cursor[0] - x, cdz = v.cursor[1] - z, d = cdx * cdx + cdz * cdz;
+        if (d < near) near = d, label = pts[i].kind == COLLECT_KOROK ? "Korok seed" : "Shrine";
+    }
+    if (label) {  // (beside the cursor's frame, right: the game's own label for a place goes left)
+        ImVec2 c = screen(v.cursor[0], v.cursor[1]);
+        label = tr(label);
+        collect_text(dl, collect_font(label, g_menu_font), 36 * u, ImVec2(c.x + 95 * u, c.y - 22 * u),
+                     collect_col(238, 250, 255, a), collect_col(40, 170, 255, .16f * a), 6 * u, label);
+    }
+    dl->PopClipRect();
+    int region = collectibles_region_at(v.cursor[0], v.cursor[1]);
+    CollectCounts c;
+    if (region >= 0 && collectibles_counts(region, &c) && c.tower)
+        collect_panel(dl, region, c, cx + 420 * u, lo.y + 10 * u, u, a);
+}
+
 // ------------------------------------------------------------------ photo mode (hle/freecam.c, hle/photo.c)
 // While the free camera is on: a strip at the bottom with its keys (or the controller's). A picture saved: a notice
 // with a thumbnail in the bottom-right corner for a few seconds. Neither is in the picture (that is the game image).
 extern "C" bool freecam_active(void);
+extern "C" bool freecam_path_playing(void);
+extern "C" bool freecam_path_loop(void);
+extern "C" int freecam_keyframe_count(void);
+extern "C" float freecam_path_duration(void);
 extern "C" int photo_saved_seq(const char **path);
 static void photo_overlay_draw(ImGuiIO &io, float scale) {
     ImDrawList *dl = ImGui::GetForegroundDrawList();
-    if (freecam_active()) {
+    if (freecam_active() && !freecam_path_playing()) {
         const char *keys = input_last_device() == DEVICE_PAD
             ? tr("Both stick clicks: exit   Left stick: move   ZR / ZL: up, down   D-pad up: filter   D-pad left / right: hour   D-pad down: picture")
             : tr("Home: exit   W A S D: move   E / Q: up, down   Shift / Ctrl: faster, slower   F8: filter   [ ]: hour   F7: picture");
+        int nkf = freecam_keyframe_count();
+        char path_line[256];
+        if (input_last_device() == DEVICE_PAD)
+            snprintf(path_line, sizeof path_line, tr("Y: add keyframe (%d)   X: play path (%.1fs)   B: remove keyframe"), nkf, freecam_path_duration());
+        else
+            snprintf(path_line, sizeof path_line, tr("K: keyframe (%d)   Backspace: undo   C: clear   P: play (%.1fs)   O: loop (%s)   -/+: speed"),
+                     nkf, freecam_path_duration(), tr(freecam_path_loop() ? "On" : "Off"));
         float fs = ImGui::GetFontSize() * 0.8f;
-        ImVec2 ts = ImGui::GetFont()->CalcTextSizeA(fs, FLT_MAX, 0, keys);
-        float pad = 10 * scale, y = io.DisplaySize.y - ts.y - 3 * pad;
-        ImVec2 a((io.DisplaySize.x - ts.x) * 0.5f - pad, y - pad), b((io.DisplaySize.x + ts.x) * 0.5f + pad, y + ts.y + pad);
+        ImVec2 ts1 = ImGui::GetFont()->CalcTextSizeA(fs, FLT_MAX, 0, keys);
+        ImVec2 ts2 = ImGui::GetFont()->CalcTextSizeA(fs, FLT_MAX, 0, path_line);
+        float w = ts1.x > ts2.x ? ts1.x : ts2.x, h = ts1.y + ts2.y + 4 * scale;
+        float pad = 10 * scale, y = io.DisplaySize.y - h - 3 * pad;
+        ImVec2 a((io.DisplaySize.x - w) * 0.5f - pad, y - pad), b((io.DisplaySize.x + w) * 0.5f + pad, y + h + pad);
         dl->AddRectFilled(a, b, IM_COL32(0, 0, 0, 150), 6 * scale);
-        dl->AddText(ImGui::GetFont(), fs, ImVec2(a.x + pad, y), IM_COL32(240, 240, 230, 255), keys);
+        dl->AddText(ImGui::GetFont(), fs, ImVec2((io.DisplaySize.x - ts1.x) * 0.5f, y), IM_COL32(240, 240, 230, 255), keys);
+        dl->AddText(ImGui::GetFont(), fs, ImVec2((io.DisplaySize.x - ts2.x) * 0.5f, y + ts1.y + 4 * scale), IM_COL32(210, 210, 200, 255), path_line);
     }
     static int seen = -1;
     static uint64_t tex;
@@ -1988,6 +2614,17 @@ static void perf_overlay_draw(ImGuiIO &io, float scale) {
     // top right: BOTW keeps its hearts and stamina top left, its map and gauges bottom right
     ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x - 16 * scale, 16 * scale), 0, ImVec2(1, 0));
     ImGui::SetNextWindowBgAlpha(0.6f);
+    // Its own compact look, Alpha 6's: the menus' SWMM+ style (ui_theme.h) spreads the table's columns (CellPadding 8)
+    // and dims its grey lines too far to read over the game, which made F10's full mode twice as wide and half legible
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(28 * scale, 24 * scale));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 14 * scale);
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(14 * scale, 12 * scale));
+    ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(4 * scale, 2 * scale));
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.06f, 0.09f, 0.08f, 0.94f));
+    ImGui::PushStyleColor(ImGuiCol_TextDisabled, ImVec4(0.62f, 0.64f, 0.58f, 1));
+    ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.13f, 0.19f, 0.16f, 1));
+    ImGui::PushStyleColor(ImGuiCol_PlotLines, ImVec4(0.61f, 0.61f, 0.61f, 1));
+    struct StylePop { ~StylePop() { ImGui::PopStyleColor(4); ImGui::PopStyleVar(4); } } style_pop;  // (after End, on every path)
     ImGui::Begin("##perf", NULL, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
                                      ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoFocusOnAppearing);
     ImGui::SetWindowFontScale(0.72f);
@@ -2038,10 +2675,12 @@ static void perf_overlay_draw(ImGuiIO &io, float scale) {
         line += std::string(" ") + (q >= 0 && q < UPQ_COUNT ? std::string(tr(k_upscale_modes[q])) + " " : "") + f + "x";
     } else if (q == UPQ_DYNAMIC) {
         line += std::string(" ") + tr("Dynamic");
+    } else if (up == UPSCALE_DLSS && upscale_mode_is_dlaa(q)) {
+        line += std::string(" ") + tr("DLAA");
     }
     // (FSR 3 / 4 and DLSS anti-alias the scene themselves: the setting does nothing then)
     int aa = rt_antialias();
-    line += std::string(" | ") + tr("Anti-aliasing") + ": " + (rt_fsr4() ? tr("FSR 4") : rt_fsr3() ? tr("FSR 3") : rt_dlss() ? tr("DLSS") : rt_xess() ? tr("XeSS") : aa == AA_TAA ? tr("TAA") : aa == AA_SMAA ? tr("SMAA") : g_settings.game_fxaa ? "FXAA" : tr("Off"));
+    line += std::string(" | ") + tr("Anti-aliasing") + ": " + (rt_temporal_upscaler() ? tr(rt_temporal_upscaler_name()) : aa == AA_TAA ? tr("TAA") : aa == AA_SMAA ? tr("SMAA") : g_settings.game_fxaa ? "FXAA" : tr("Off"));
     ImGui::TextDisabled("%s", line.c_str());
     line.clear();
 #ifndef SW_METAL
@@ -2093,7 +2732,7 @@ static void keyboard_draw(ImGuiIO &io, float scale) {
     ImGui::Begin("##kbd", NULL, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
                                     ImGuiWindowFlags_AlwaysAutoResize);
     ImGui::PushFont(g_font_big);
-    ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), "%s", tr("Enter your name"));
+    ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(UI_ACCENT_LIGHT), "%s", tr("Enter your name"));
     ImGui::PopFont();
     static bool was_open, was_pad;
     bool pad = g_last_pad.load(), appearing = !was_open || pad != was_pad;  // (switching device: focus the new one)
@@ -2166,7 +2805,7 @@ static void size_list_draw(ImGuiIO &io, float scale) {
         }
         bool hot = ImGui::IsItemHovered() || ImGui::IsItemFocused();
         ImVec2 ts = ImGui::CalcTextSize(names[i]);
-        ImU32 col = i == cur ? IM_COL32(236, 194, 84, 255) : hot ? IM_COL32(255, 255, 255, 255) : IM_COL32(215, 213, 205, 255);
+        ImU32 col = i == cur ? UI_ACCENT_LIGHT : hot ? IM_COL32(255, 255, 255, 255) : IM_COL32(215, 213, 205, 255);
         ImGui::GetWindowDrawList()->AddText(ImVec2(p.x + (w - ts.x) * 0.5f, p.y + (row_h - ts.y) * 0.5f), col, names[i]);
         ImGui::PopID();
     }
@@ -2217,155 +2856,171 @@ extern "C" int menu_keyboard_run(const char *initial, int max_len, char *out, in
     return ok;
 }
 
-// The tab bar and its pages, into the current window: the in-game menu, and the start screen's Settings (in_game
-// false: nothing of the game is loaded yet - the tabs that need it are greyed out; prelaunch: the start screen's own
-// first tab, game files and fonts, drawn by launcher.mm).
-static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
-    // (id: the page; -1 = Prelaunch)
-    struct Tab { const char *name; int id; bool on; };
-    Tab tabs[12];
-    int ntabs = 0;
-    if (prelaunch) tabs[ntabs++] = {"Prelaunch", -1, true};
-    // (ids 5-7 were Link's Awakening tabs; the ids stay: test hooks)
-    static const char *names[] = {"Video", "Audio", "Language", "Saves", "amiibo", "", "", "", "Controls", "Quit", "Cheats", "Teleport",
-                                  "Mods"};
-    // Controls, Video, Audio, Language, amiibo, Saves, Mods, Cheats, Teleport, Quit
-    static const int order[] = {8, 0, 1, 2, 4, 3, 12, 10, 11, 9};
-    for (int i : order) {  // (Quit: in game only - the start screen has its own QUIT; Saves: on the start screen only,
-        if (i == 9 && prelaunch) continue;  //  the game must not be running while its saves change)
-        if (i == 3 && !prelaunch) continue;
-        // (Cheats, Teleport: in game only, and only when started with -dev or SAVAGEWIND_DEV=1: cheats are
-        // developer mode, as the console's give, tp and time)
-        if ((i == 10 || i == 11) && (!in_game || !control_enabled())) continue;
-        tabs[ntabs++] = {names[i], i, true};
+// The settings pages, with a sidebar (SWMM+'s layout, ui_theme.h): the in-game menu's, and the start screen's own
+// pages draw them one at a time (menu_page_draw, launcher.mm). (ids 5-7 were Link's Awakening tabs; the ids stay: test
+// hooks - SAVAGEWIND_MENU_TAB, SAVAGEWIND_LAUNCHER_SHOT=<frame>:settings:<id>)
+static const char *page_name(int id) {
+    switch (id) {
+    case 0: return "Video";
+    case 1: return "Audio";
+    case 2: return "Language";
+    case 3: return "Saves";
+    case 4: return "amiibo";
+    case 8: return "Controls";
+    case 9: return "Quit";
+    case 10: return "Cheats";
+    case 11: return "Teleport";
+    case 12: return "Mods";
+    case 13: return "Achievements";
     }
-    int cur = 0;  // g_tab / g_tab_request hold ids
-    for (int i = 0; i < ntabs; i++) if (tabs[i].id == g_tab) cur = i;
-    if (!tabs[cur].on) cur = 0;
-    // L/R (or Q/E) switch tabs, skipping greyed-out ones (not while typing: Q / E are letters then, and the on-screen
-    // keyboard has the controller)
+    return "";
+}
+
+// The settings group (Controls, Video, Audio, Language, amiibo): both sidebars show it under SETTINGS
+int menu_settings_pages(UiNavPage *out, int max) {
+    const UiNavPage pages[] = {{8, "Controls", ICON_GAMEPAD, 1, true}, {0, "Video", ICON_DESKTOP, 1, true},
+                               {1, "Audio", ICON_VOLUME, 1, true}, {2, "Language", ICON_GLOBE, 1, true},
+                               {4, "amiibo", ICON_STAR, 1, true}};
+    int n = 0;
+    for (const UiNavPage &p : pages)
+        if (n < max) out[n++] = p;
+    return n;
+}
+
+// The in-game menu's pages: Mods (and the developer pages), the settings, Quit at the bottom
+static int game_pages(UiNavPage *out) {
+    int n = 0;
+    out[n++] = {12, "Mods", ICON_PUZZLE, 0, true};
+    out[n++] = {13, "Achievements", ICON_TROPHY, 0, true};  // (runtime/ui/achievements_ui.mm)
+    // (Cheats, Teleport: only when started with -dev or SAVAGEWIND_DEV=1: cheats are developer mode, as the
+    // console's give, tp and time)
+    if (control_enabled()) out[n++] = {10, "Cheats", ICON_MAGIC, 0, true}, out[n++] = {11, "Teleport", ICON_LOCATION, 0, true};
+    n += menu_settings_pages(out + n, 8);
+    out[n++] = {9, "Quit", ICON_EXIT, 2, true};
+    return n;
+}
+
+static UiFonts menu_ui_fonts(void) {
+    UiFonts f;
+    f.body = g_menu_font, f.semibold = g_menu_font_semi ? g_menu_font_semi : g_menu_font, f.bold = g_menu_font_big;
+    return f;
+}
+
+// One page's content, into the current window (in_game: the game is running)
+static void page_body(int id, float scale, bool in_game) {
+    switch (id) {
+    case 0: tab_display(); break;
+    case 1: tab_audio(); break;
+    case 2: tab_language(in_game); break;
+    case 3: saves_tab_draw(); break;
+    case 4: tab_amiibo(); break;
+    case 8: tab_about(); break;
+    case 9: tab_quit(scale, in_game); break;
+    case 10: tab_cheats(); break;
+    case 11: tab_teleport(); break;
+    case 13: ach_ui_tab(); break;
+    case 12: {
+        bool want_restart = false;
+        mods_tab_draw(in_game, &want_restart);
+        if (want_restart) {
+            settings_save();
+            rt_request_reboot(1);
+            set_open(false);
+        }
+        break;
+    }
+    }
+}
+
+// The page into the current window: its title, then its content in a child window that scrolls. enter: the
+// controller's cursor goes into it (A on its sidebar item, or the page just opened on it).
+static void page_frame(int id, float scale, bool in_game, bool enter, void (*before)(int id, float scale) = NULL) {
+    float u = scale * 2;
+    UiFonts f = menu_ui_fonts();
+    ui_page_title(tr(page_name(id)), NULL, u, f);
+    if (before) before(id, scale);  // (the start screen's own part of a page: Mods' SWMM+ card)
+    ImGui::BeginChild("##page", ImVec2(0, 0), ImGuiChildFlags_None, ImGuiWindowFlags_NavFlattened);
+    if (enter) {
+        if (id == 8) {  // (pages without option rows: their first control; option-row pages: opt_focus_first)
+            opt_focus_first(false);
+            ImGui::SetKeyboardFocusHere();
+            ImGui::SetNavCursorVisible(true);
+        } else if (g_settings.menu_remember_pos) opt_restore_focus(true), opt_focus_first(true);
+        else opt_focus_first(true);
+    }
+    page_body(id, scale, in_game);
+    static const char *scroll_test = getenv("SAVAGEWIND_MENU_SCROLL");  // test hook: page scroll, 0..1
+    if (scroll_test) ImGui::SetScrollY(ImGui::GetScrollMaxY() * (float)atof(scroll_test));
+    ImGui::EndChild();
+    opt_focus_first(false);  // (a page without option rows: nothing took it)
+}
+
+// The start screen draws a settings page (launcher.mm: its sidebar is its own): in its fonts
+void menu_page_draw(int id, float scale, ImFont *font, ImFont *font_big, ImFont *font_semi, bool enter,
+                    void (*before)(int id, float scale)) {
+    ImFont *f0 = g_font, *f1 = g_font_big, *m0 = g_menu_font, *m1 = g_menu_font_big, *m2 = g_menu_font_semi;
+    g_font = g_menu_font = font, g_font_big = g_menu_font_big = font_big, g_menu_font_semi = font_semi;
+    g_tab = id;
+    page_frame(id, scale, false, enter, before);
+    g_font = f0, g_font_big = f1, g_menu_font = m0, g_menu_font_big = m1, g_menu_font_semi = m2;
+}
+
+// The in-game menu's body: the sidebar and the page. L / R (Q / E) go to the page before / after; A on a sidebar item
+// (or Right) goes into its page, B in a page back to the sidebar (true: that B was used here - it doesn't close the
+// menu).
+static bool shell_body(float scale, bool in_game) {
+    float u = scale * 2;
+    UiNavPage pages[16];
+    int n = game_pages(pages);
     if (g_tab_request_ext >= 0) { g_tab_request = g_tab_request_ext; g_tab_request_ext = -1; }
+    bool requested = g_tab_request != -2;
+    if (requested) g_tab = g_tab_request, g_tab_request = -2;
+    bool valid = false;
+    for (int i = 0; i < n; i++) valid |= pages[i].id == g_tab && pages[i].on;
+    if (!valid) g_tab = 8;  // (Controls, the first settings page)
     bool any_popup = ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId), typing = ui_text_busy();
-    static int focused_tab = -99;  // the tab the controller's cursor is on (from the frame before; -99: none)
+    static bool side_focus;  // (from the frame before)
+    int focus_page = -999;
+    bool enter = false;
     if (!any_popup && !typing) {
         int step = ImGui::IsKeyPressed(ImGuiKey_GamepadR1, false) || ImGui::IsKeyPressed(ImGuiKey_E, false) ? 1
                  : ImGui::IsKeyPressed(ImGuiKey_GamepadL1, false) || ImGui::IsKeyPressed(ImGuiKey_Q, false) ? -1 : 0;
         if (step) {
-            int i = cur;
-            do i = (i + step + ntabs) % ntabs; while (!tabs[i].on);
-            g_tab_request = tabs[i].id;
-            // the cursor on the tab bar goes along (left behind, A on it switched straight back; user 2026-10-11)
-            if (focused_tab != -99) g_focus_tab = tabs[i].id, g_focus_frames = 0;
+            g_tab = ui_sidebar_step(pages, n, g_tab, step);
+            if (side_focus) focus_page = g_tab;  // (the cursor goes along on the sidebar; in a page, the new page's)
+            else enter = true;
         }
     }
-    // Down with the cursor on the tab bar: the page's first row (option rows; other pages keep ImGui's own pick)
-    bool down_from_tab = focused_tab != -99 && ImGui::GetCurrentContext()->NavCursorVisible && !any_popup &&
-                         (ImGui::IsKeyPressed(ImGuiKey_GamepadDpadDown) || ImGui::IsKeyPressed(ImGuiKey_GamepadLStickDown) ||
-                          ImGui::IsKeyPressed(ImGuiKey_DownArrow));
-    opt_focus_first(down_from_tab);
-    if (ImGui::BeginTabBar("##tabs", ImGuiTabBarFlags_NoTabListScrollingButtons)) {
-        for (int k = 0; k < ntabs; k++) {
-            const Tab &t = tabs[k];
-            ImGuiTabItemFlags f = g_tab_request == t.id && t.on ? ImGuiTabItemFlags_SetSelected : 0;
-            char lbl[160];
-            snprintf(lbl, sizeof lbl, prelaunch ? " %s ###%s" : "  %s  ###%s", tr(t.name), t.name);  // (### : ID stays English)
-            ImGui::BeginDisabled(!t.on);
-            // focus (controller / keyboard): the tab lights up a little with a gold bar along its bottom, instead of
-            // ImGui's outline (it sits 4 px outside the tab and the tab bar's clipping could cut its top off on macOS)
-            // (focused_tab: from the frame before - colours go in before the tab is drawn)
-            bool lit = focused_tab == t.id && ImGui::GetCurrentContext()->NavCursorVisible;
-            ImGui::PushStyleColor(ImGuiCol_NavCursor, ImVec4(0, 0, 0, 0));
-            if (lit) {
-                ImGui::PushStyleColor(ImGuiCol_Tab, ImVec4(0.19f, 0.27f, 0.22f, 1));
-                ImGui::PushStyleColor(ImGuiCol_TabHovered, ImVec4(0.19f, 0.27f, 0.22f, 1));
-            }
-            if (g_focus_tab == -1 && !prelaunch) g_focus_tab = 8;  // (no Prelaunch in game: Controls, the first tab)
-            bool focus_here = g_focus_tab == t.id || (g_focus_tab == -100 && t.id == g_tab);
-            bool open = ImGui::BeginTabItem(lbl, NULL, f);
-            ImGui::PopStyleColor(lit ? 3 : 1);
-            if (focus_here) {  // the controller's cursor starts on this tab (SetKeyboardFocusHere skips tabs: no tab stop)
-                ImGui::SetFocusID(ImGui::GetItemID(), ImGui::GetCurrentWindow());
-                ImGui::SetNavCursorVisible(true);
-                // a few frames: the page's child window appearing makes ImGui pick its first widget once it's laid out
-                if (++g_focus_frames >= 4) g_focus_tab = -99, g_focus_frames = 0;
-                else g_focus_tab = t.id;
-            }
-            if (lit) {
-                ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
-                float h = 4 * scale > 2 ? 4 * scale : 2;
-                ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(a.x + 2, b.y - h), ImVec2(b.x - 2, b.y),
-                                                          IM_COL32(236, 194, 84, 255));  // (the menu's gold)
-            }
-            if (ImGui::IsItemFocused()) focused_tab = t.id;
-            else if (focused_tab == t.id) focused_tab = -99;
-            ImGui::EndDisabled();
-            if (open) {
-                g_tab = t.id;
-                ImGui::Spacing();
-                // the page's background reaches the ends of the line under the tabs (it sticks out half the window
-                // padding each side); the same half goes in as padding, so text and rows stay where they were on a
-                // wider card
-                float side = IM_TRUNC(ImGui::GetCurrentWindow()->WindowPadding.x * 0.5f);
-                float width = ImGui::GetContentRegionAvail().x + 2 * side;
-                float max_x = ImGui::GetCurrentWindow()->DC.CursorMaxPos.x;
-                ImVec2 at = ImGui::GetCursorScreenPos();
-                ImGui::SetCursorScreenPos(ImVec2(at.x - side, at.y));
-                ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(side, 0));
-                ImGui::BeginChild("##page", ImVec2(width, 0), ImGuiChildFlags_AlwaysUseWindowPadding,
-                                  ImGuiWindowFlags_NavFlattened);  // (the rest of the window: no hint line)
-                ImGui::PopStyleVar();
-                // Down from the tab bar, pages that aren't option rows (Prelaunch, Controls): their first control
-                // (option-row pages: opt_focus_first)
-                if (down_from_tab && (t.id == -1 || t.id == 8)) {
-                    opt_focus_first(false);
-                    ImGui::SetKeyboardFocusHere();
-                    ImGui::SetNavCursorVisible(true);
-                }
-                switch (t.id) {
-                case -1: prelaunch(scale); break;
-                case 0: tab_display(); break;
-                case 1: tab_audio(); break;
-                case 2: tab_language(in_game); break;
-                case 3: saves_tab_draw(); break;
-                case 4: tab_amiibo(); break;
-                case 8: tab_about(); break;
-                case 9: tab_quit(scale, in_game); break;
-                case 10: tab_cheats(); break;
-                case 11: tab_teleport(); break;
-                case 12: {
-                    bool want_restart = false;
-                    mods_tab_draw(in_game, &want_restart);
-                    if (want_restart) {
-                        settings_save();
-                        rt_request_reboot(1);
-                        set_open(false);
-                    }
-                    break;
-                }
-                }
-                static const char *scroll_test = getenv("SAVAGEWIND_MENU_SCROLL");  // test hook: page scroll, 0..1
-                if (scroll_test) ImGui::SetScrollY(ImGui::GetScrollMaxY() * (float)atof(scroll_test));
-                ImGui::EndChild();
-                // the wider card is paint only: don't let it extend the window's content (a horizontal wheel could pan it)
-                ImGui::GetCurrentWindow()->DC.CursorMaxPos.x = ImMax(max_x, ImGui::GetCurrentWindow()->ContentRegionRect.Max.x);
-                ImGui::EndTabItem();
-            }
-        }
-        g_tab_request = -2;
-        opt_focus_first(false);  // (a page without option rows: nothing took it)
-        ImGui::EndTabBar();
+    if (g_focus_tab != -99) {  // (the menu just opened: menu_tabs_focus)
+        if (g_focus_tab == -1 && !requested) g_tab = 8;  // (the first time: Controls, unless a page was asked for)
+        if (g_focus_tab == -1) g_focus_tab = -100;
+        focus_page = g_tab;
+        if (++g_focus_frames >= 4) g_focus_tab = -99, g_focus_frames = 0;
     }
-}
-
-void menu_tabs_draw(float scale, ImFont *font, ImFont *font_big, bool in_game, void (*prelaunch)(float)) {
-    ImFont *f0 = g_font, *f1 = g_font_big;
-    g_font = font, g_font_big = font_big;
-    ImGuiStyle saved = ImGui::GetStyle();  // the menu's look (the start screen has its own style)
-    style_init();
-    ImGui::GetStyle().ScaleAllSizes(scale);
-    tabs_body(scale, in_game, prelaunch);
-    ImGui::GetStyle() = saved;
-    g_font = f0, g_font_big = f1;
+    if (g_restore_on_open) g_restore_on_open = false, enter = true;  // (Options: remember the position)
+    static int focus_side_req = -999;
+    if (focus_side_req != -999) focus_page = focus_side_req, focus_side_req = -999;
+    ImVec2 avail = ImGui::GetContentRegionAvail();
+    int before = g_tab;
+    bool activated = false;
+    g_tab = ui_sidebar(pages, n, g_tab, u, ImVec2(176 * u, avail.y), &side_focus, focus_page, &activated);
+    if (activated && ImGui::GetCurrentContext()->NavCursorVisible) enter = true;
+    (void)before;
+    g_had_page_focus = !side_focus;
+    ImGui::SameLine(0, 0);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(24 * u, 18 * u));
+    ImGui::BeginChild("##content", ImVec2(0, avail.y), ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_NavFlattened);
+    ImGui::PopStyleVar();
+    page_frame(g_tab, scale, in_game, enter);
+    bool page_focus = ImGui::IsWindowFocused(ImGuiFocusedFlags_ChildWindows);
+    ImGui::EndChild();
+    // B / Esc in a page with the controller's cursor: back to its sidebar item
+    if (!any_popup && !typing && page_focus && !side_focus && ImGui::GetCurrentContext()->NavCursorVisible &&
+        (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) || ImGui::IsKeyPressed(ImGuiKey_Escape, false))) {
+        focus_side_req = g_tab;
+        return true;
+    }
+    return false;
 }
 
 // Logging build (SAVAGEWIND_ACTLOG=1): the actions the game says are pressed / held, live, so a play session can be read off
@@ -2380,7 +3035,7 @@ static void act_overlay_draw(ImGuiIO &io, float scale) {
     ImGui::SetNextWindowBgAlpha(0.7f);
     ImGui::Begin("##actlog", NULL, fl);
     ImGui::SetWindowFontScale(0.72f);
-    ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), "Actions the game asks for (also in the log)");
+    ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(UI_ACCENT_LIGHT), "Actions the game asks for (also in the log)");
     if (!n) ImGui::TextDisabled("press something");
     for (int i = 0; i < n; i++) {
         const ActLogRow &r = rows[i];
@@ -2492,7 +3147,8 @@ static bool menu_draws(bool *pointer_hover = NULL, float *pointer_box = NULL, bo
     if (pointer_hover) *pointer_hover = hover;
     if (gyro_show) *gyro_show = gyro_on;
     return g_open.load() || g_kbd.load() == 1 || g_sizes.load() || console_is_open() || gyro_on || hover ||
-           g_settings.perf_overlay != PERF_OFF || act_log_enabled() || quick_inventory_sort_hint() || quick_drop_hint_state();
+           g_settings.perf_overlay != PERF_OFF || act_log_enabled() || quick_inventory_sort_hint() || quick_drop_hint_state() ||
+           collect_map_shown() || ach_ui_active();
 }
 
 bool menu_render_needed(void) { return menu_draws(); }
@@ -2562,7 +3218,9 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
 #ifdef SW_METAL
     ImGui_ImplMetal_NewFrame(rp);
 #else
+    rec_queue_lock();  // (a new font texture is uploaded on the game's queue, which presents may be using: device.c)
     ImGui_ImplVulkan_NewFrame();
+    rec_queue_unlock();
 #endif
     ImGui::NewFrame();
 
@@ -2576,48 +3234,67 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
     }
 
     if (g_settings.perf_overlay != PERF_OFF) perf_overlay_draw(io, scale);
+    ach_ui_toasts(io.DisplaySize.x, io.DisplaySize.y, scale);
     if (act_log_enabled()) act_overlay_draw(io, scale);
     if (!open && !kbd && !sizes && !con && (quick_inventory_sort_hint() || quick_drop_hint_state())) quick_inventory_hint_draw(io);
+    if (!open && !kbd && !sizes && !con) collect_map_draw(io);
     if (!open && !kbd && !sizes && !con) photo_overlay_draw(io, scale);
-    if (!open && !kbd && !sizes && !con && gyro_scene_show) gyro_scene_draw(io, scale, gyro_scene);
+    gyro_scene_draw(io, gyro_scene, gyro_scene_show && !open && !kbd && !sizes && !con && !input_tilt_active());
 
     if (open) {
         // dim the game behind the menu
         ImGui::GetBackgroundDrawList()->AddRectFilled(ImVec2(0, 0), io.DisplaySize, IM_COL32(0, 0, 0, 110));
-        float w = fminf(io.DisplaySize.x * 0.9f, 1500 * scale), h = io.DisplaySize.y - 2 * 18 * scale;  // (all the height: a slim margin)
+        // the window: Savage Wind Configuration's layout (SWMM+'s look, ui_theme.h) - a header with the name and a
+        // close X (B / Esc too), the sidebar and the page, a bar of hints at the foot. ("Title screen" -
+        // rt_request_reboot(RT_REBOOT_TITLE) - is to find a new home; user 2026-10-11.)
+        float u = scale * 2, m = 18 * scale;
+        float h = io.DisplaySize.y - 2 * m, w = fminf(io.DisplaySize.x - 2 * m, h * 1.6f);
         ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
         ImGui::SetNextWindowSize(ImVec2(w, h), ImGuiCond_Always);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0f);
         ImGui::Begin("##menu", NULL, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings);
+        ImGui::PopStyleVar(2);
         ImFont *keep_big = g_font_big;  // (the window in the menu's font; header() uses g_font_big)
         g_font_big = g_menu_font_big;
         ImGui::PushFont(g_menu_font);
-        // header as on the start screen's Settings: the title, and a close X in the corner (B / Esc too). ("Title
-        // screen" - rt_request_reboot(RT_REBOOT_TITLE) - is to find a new home; user 2026-10-11.)
-        ImGui::PushFont(g_font_big);
-        ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), "%s", tr("Settings"));
-        ImGui::PopFont();
-        {
-            float bx = 44 * scale;
-            ImGui::SameLine(ImGui::GetWindowWidth() - ImGui::GetStyle().WindowPadding.x - bx);
-            ImVec2 p = ImGui::GetCursorScreenPos();
+        ImDrawList *dl = ImGui::GetWindowDrawList();
+        ImVec2 wp = ImGui::GetWindowPos();
+        float head = 42 * u, foot = 28 * u, r = ImGui::GetStyle().WindowRounding;
+        dl->AddRectFilled(wp, ImVec2(wp.x + w, wp.y + head), UI_BASE, r, ImDrawFlags_RoundCornersTop);
+        dl->AddRectFilled(ImVec2(wp.x, wp.y + h - foot), ImVec2(wp.x + w, wp.y + h), UI_BASE, r, ImDrawFlags_RoundCornersBottom);
+        {   // header: the wordmark, "Settings", the close X
+            float wm_h = 20 * u;
+            ui_draw_wordmark(dl, ImVec2(wp.x + 16 * u, wp.y + (head - wm_h) * 0.5f), wm_h, false);
+            UiImage wm = ui_wordmark();
+            float x = wp.x + 16 * u + (wm.tex ? wm_h * wm.w / wm.h : 120 * u) + 12 * u;
+            float fs = ImGui::GetFontSize() * 13 / 14;
+            dl->AddText(ImGui::GetFont(), fs, ImVec2(x, wp.y + (head - fs) * 0.5f + u), UI_MUTED, tr("Settings"));
+            float bx = 46 * u;
+            ImGui::SetCursorScreenPos(ImVec2(wp.x + w - bx, wp.y));
             ImGui::PushStyleColor(ImGuiCol_NavCursor, ImVec4(0, 0, 0, 0));
-            bool close = ImGui::InvisibleButton("##close", ImVec2(bx, bx), ImGuiButtonFlags_EnableNav);
+            bool close = ImGui::InvisibleButton("##close", ImVec2(bx, head), ImGuiButtonFlags_EnableNav);
             ImGui::PopStyleColor();
-            bool hot = ImGui::IsItemHovered() || ImGui::IsItemFocused();
-            ImU32 col = hot ? IM_COL32(236, 194, 84, 255) : IM_COL32(220, 216, 205, 255);
-            float m = bx * 0.3f, t = (hot ? 3.0f : 2.4f) * scale * 1.5f;
-            ImDrawList *dl = ImGui::GetWindowDrawList();
-            if (hot) dl->AddRectFilled(p, ImVec2(p.x + bx, p.y + bx), IM_COL32(255, 255, 255, 20), 8 * scale);
-            dl->AddLine(ImVec2(p.x + m, p.y + m), ImVec2(p.x + bx - m, p.y + bx - m), col, t);
-            dl->AddLine(ImVec2(p.x + bx - m, p.y + m), ImVec2(p.x + m, p.y + bx - m), col, t);
+            bool hot = ImGui::IsItemHovered() || (ImGui::IsItemFocused() && ImGui::GetCurrentContext()->NavCursorVisible);
+            ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
+            if (hot) dl->AddRectFilled(a, b, IM_COL32(0xC4, 0x2B, 0x1C, 255), r, ImDrawFlags_RoundCornersTopRight);
+            ImVec2 xs = ImGui::CalcTextSize(ICON_XMARK);
+            dl->AddText(ImVec2((a.x + b.x - xs.x) * 0.5f, (a.y + b.y - xs.y) * 0.5f), UI_TEXT, ICON_XMARK);
             if (close) set_open(false);
         }
-
+        {   // foot: what the buttons do
+            float fs = ImGui::GetFontSize() * 12 / 14, y = wp.y + h - foot + (foot - fs) * 0.5f;
+            std::string hints = std::string("L / R  ") + tr("Pages") + "      A  " + tr("Choose") + "      B  " + tr("Back");
+            dl->AddText(ImGui::GetFont(), fs, ImVec2(wp.x + 14 * u, y), UI_TEXT_DIM, hints.c_str());
+        }
+        ImGui::SetCursorScreenPos(ImVec2(wp.x, wp.y + head));
+        ImGui::BeginChild("##body", ImVec2(w, h - head - foot), ImGuiChildFlags_None, ImGuiWindowFlags_NavFlattened);
         bool any_popup = ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId), typing = ui_text_busy();  // (before the
-        tabs_body(scale, true, NULL);                                                                          //  pages run)
+        bool b_used = shell_body(scale, true);                                                                 //  pages run)
+        ImGui::EndChild();
         // B with nothing focused-deeper closes the menu (not the Esc / B that ends typing: typing is from the frame
-        // before, so it's still true the frame a field lets go)
-        if (!any_popup && !typing && !ui_text_busy() && ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) &&
+        // before, so it's still true the frame a field lets go; nor the B that took the cursor back to the sidebar)
+        if (!b_used && !any_popup && !typing && !ui_text_busy() && ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) &&
             (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) || ImGui::IsKeyPressed(ImGuiKey_Escape, false)))
             set_open(false);
         ImGui::PopFont();

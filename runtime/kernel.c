@@ -301,6 +301,71 @@ static int nregions;
 static uint64_t heap_size;
 static uint64_t tls_next = TLS_BASE;
 uint64_t kernel_heap_size(void) { return heap_size; }  // bytes from HEAP_BASE set by SetHeapSize
+
+// The game's memory (game_memory_mb). The game asks SetMemoryHeapSize for 3120 MB at start (main 0x700000071c) and
+// gives its root heap that less the 32 MB it keeps for malloc (0x7000c617c0); its resource heap (res::System) takes
+// what the root heap has left, so a bigger heap is room for bigger resources (HD texture packs). Both sites read the
+// size from here (tools/patches.py _game_heap_size). The renderer sizes its view of the heap by HEAP_MAX, so the size
+// is decided once, at start, and kept across "Quit to Start Screen".
+#define GAME_HEAP_CONSOLE 0xC3000000ull  // 3120 MB
+uint64_t g_heap_max = HEAP_MAX_CONSOLE;
+static uint64_t game_heap = GAME_HEAP_CONSOLE;
+
+void kernel_memory_setup(int mb) {
+    static bool done;
+    if (done) return;
+    done = true;
+    if (mb <= 0) return;
+    uint64_t want = (uint64_t)mb << 20, room = HEAP_MAX_CONSOLE - GAME_HEAP_CONSOLE;
+    if (want < GAME_HEAP_CONSOLE) want = GAME_HEAP_CONSOLE;
+    if (want > HEAP_MAX_LARGEST - room) want = HEAP_MAX_LARGEST - room;
+    want &= ~0xFFFFFull;  // (whole MB)
+    game_heap = want;
+    g_heap_max = (want + room + 0xFFFFFFull) & ~0xFFFFFFull;  // (16 MB steps)
+    LOG("[kernel] game memory: %llu MB heap (the game's own: %llu MB), limit %llu MB\n", (unsigned long long)(want >> 20),
+        (unsigned long long)(GAME_HEAP_CONSOLE >> 20), (unsigned long long)(g_heap_max >> 20));
+}
+
+uint64_t rt_game_heap_size(void) { return game_heap; }
+
+// The resource system's FixedHeap and the TexArcWork heap inside it grow by the same amount: a quarter of what
+// game_memory_mb adds, at most 256 MB (both come out of the root heap, so the rest is left to the resource heap).
+// Not needed for an HD texture pack to load, but with one the texture archives' first try (TextureArchiveWork) fails
+// less often and falls back less (Shrine of Resurrection load with the HD pack and its terrain: 24 failed tries
+// instead of 41; the game's own files: 10). The game's own sizes without the setting.
+uint64_t rt_game_heap_grow(uint64_t size) {
+    uint64_t add = (game_heap - GAME_HEAP_CONSOLE) / 4;
+    if (add > 0x10000000ull) add = 0x10000000ull;
+    return size + (add & ~0xFFFFFull);
+}
+
+// The resource manager's ForResourceS (which 0) and ForResourceL (1) heaps, sized from its settings, and
+// StarterPackMgr's heap inside ForResourceL (2, 225 MB), where the resident packs load: an HD Pack/TitleBG.pack (363 MB)
+// does not fit. ForResourceL and StarterPackMgr grow by a sixth of what game_memory_mb adds, at most 512 MB (the
+// pack's own emulator patch: ForResourceL 694 -> 1104 MB), so the rest of ForResourceL keeps its room; ForResourceS
+// stays. The game's own sizes without the setting.
+uint64_t rt_game_resource_heap(uint32_t size, int which) {
+    uint64_t add = which ? (game_heap - GAME_HEAP_CONSOLE) / 6 : 0;
+    if (add > 0x20000000ull) add = 0x20000000ull;
+    add &= ~0xFFFFFull;
+    static bool logged[3];
+    if (add && !logged[which]) {
+        static const char *const names[3] = {"ForResourceS", "ForResourceL", "StarterPackMgr"};
+        logged[which] = true;
+        LOG("[kernel] game memory: %s %u MB -> %llu MB\n", names[which], size >> 20,
+            (unsigned long long)((size + add) >> 20));
+    }
+    return size + add > 0xFFFFFFFFull ? 0xFFFFFFFFull : size + add;
+}
+
+// The GPU memory pool the models' textures load into (500 MB, made at boot): with an HD texture pack models whose
+// textures don't fit are left out. It takes two thirds of what game_memory_mb adds, at most 2 GB (the pack's own
+// emulator patch: about 2.5 GB at 6 GB). The game's own size without the setting.
+uint64_t rt_game_texture_pool(uint64_t size) {
+    uint64_t add = (game_heap - GAME_HEAP_CONSOLE) / 3 * 2;
+    if (add > 0x80000000ull) add = 0x80000000ull;
+    return size + (add & ~0xFFFFFull);
+}
 // Writable guest data regions (heap, mapped/physical memory, module .data): for debug/runtime memory scans.
 int kernel_data_regions(uint64_t *addr, uint64_t *size, int max) {
     int n = 0;
@@ -440,6 +505,7 @@ static void thread_free(KThread *t, bool join) {
     if (ntls_free < 1024) tls_free[ntls_free++] = t->tlr;
     kunlock();
     kcond_destroy(&t->cond);
+    free(t->dcache);
     free(t);
 }
 
@@ -1145,7 +1211,8 @@ static void svc_impl(Cpu *c, uint32_t imm, uint64_t pc) {
         case 3: v = ALIAS_SIZE; break;
         case 4: v = HEAP_BASE; break;
         case 5: v = HEAP_MAX; break;
-        case 6: case 21: v = 0xCD500000ull; break;  // application memory (3.2 GB, as on hardware)
+        case 6: case 21: v = 0xCD500000ull + (HEAP_MAX - HEAP_MAX_CONSOLE); break;  // application memory (3.2 GB,
+                                                                                      // as on hardware; + game_memory_mb)
         case 7: case 22: v = heap_size + 0x4000000; break;
         case 8: v = 0; break;
         case 9: v = 0; break;

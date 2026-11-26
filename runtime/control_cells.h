@@ -41,3 +41,6 @@ extern const ControlCell control_cell_player_fall_top, control_cell_player_fall_
 
 // Read the stored orbit camera, in any AA mode. Yaw 0 looks along +z, 90 along +x; pitch positive looks up.
 bool control_cell_camera_angles(double eye[3], double target[3], double *yaw, double *pitch);
+// Move the orbit camera so its target is at + target_off, keeping the direction and distance of its eye. The check of
+// camera.eye wants it near Link, so this finds the camera by its shape instead (an eye a few metres from its target).
+bool control_cell_camera_follow(const float at[3], const float target_off[3]);

@@ -20,9 +20,9 @@ typedef struct { int image; } NvnTexture;
 typedef struct { unsigned out_mask; } ShaderInfo;
 typedef struct { ShaderInfo *fi; } Prog;
 static struct { struct { int ncolor; NvnTexture *color[8]; } rt; unsigned channel_mask; } st;
-static int same_image(NvnTexture *a, NvnTexture *b) { return a && b && a->image == b->image; }
-static int draw_writes_color(Prog *pr, int i) {
-    return ((pr->fi->out_mask >> (i * 4)) & 15) && ((st.channel_mask >> (i * 4)) & 15);
+static int feedback_same_image(NvnTexture *a, NvnTexture *b) { return a && b && a->image == b->image; }
+static int feedback_draw_writes_color(unsigned out_mask, unsigned channel_mask, int i) {
+    return ((out_mask >> (i * 4)) & 15) && ((channel_mask >> (i * 4)) & 15);
 }
 """
 checks = r"""

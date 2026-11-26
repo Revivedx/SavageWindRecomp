@@ -31,6 +31,7 @@ jobs:
       simd: ${{ steps.filter.outputs.simd }}
       translate: ${{ steps.filter.outputs.translate }}
       feedback_alias: ${{ steps.filter.outputs.feedback_alias }}
+      launch_flags: ${{ steps.filter.outputs.launch_flags }}
     steps:
       - uses: dorny/paths-filter@v4
         id: filter
@@ -64,6 +65,11 @@ jobs:
               - 'runtime/nvn/maxwell/**'
               - 'tools/test_translate*'
               - '.github/workflows/tests.yml'
+            launch_flags:
+              - 'runtime/**'
+              - 'tools/gen_launch_flags.py'
+              - 'tools/launch_flags_curated.txt'
+              - '.github/workflows/tests.yml'
 
   # Every text the menus use has a translation in each runtime/ui/i18n/<lang>.inc, and none is left unused.
   i18n:
@@ -83,7 +89,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10.3.3
+      - uses: astral-sh/setup-uv@v10.4.0
         with:
           enable-cache: true
           cache-dependency-glob: .github/workflows/tests.yml
@@ -111,7 +117,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10.3.3
+      - uses: astral-sh/setup-uv@v10.4.0
         with:
           enable-cache: true
           cache-dependency-glob: .github/workflows/tests.yml
@@ -137,3 +143,13 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - run: python3 tools/test_feedback_alias.py
+
+  # The start screen's launch options are generated from the flags runtime/ reads; the table must not go stale.
+  launch_flags:
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.launch_flags == 'true') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - run: python3 tools/gen_launch_flags.py --check

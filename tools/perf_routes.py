@@ -152,7 +152,12 @@ def linux_games():
     return found
 
 
-MY_SESSIONS = set()  # (Linux) the sessions of the games this script started
+MY_SESSIONS = set()  # Linux process groups owned by this script
+MY_PROCESSES = set()  # Windows PIDs owned by this script
+
+
+def powershell():
+    return shutil.which('pwsh') or 'powershell'  # (PowerShell 7 if there is one, else the one every Windows has)
 
 
 def others(tree):
@@ -160,11 +165,14 @@ def others(tree):
     processes this script did not start (the player's game)."""
     if os.name != 'nt':
         return ['{} (session {})'.format(p, s) for p, s in linux_games() if s not in MY_SESSIONS]
-    ps = subprocess.run(['powershell', '-NoProfile', '-Command',
+    ps = subprocess.run([powershell(), '-NoProfile', '-Command',
                          "Get-CimInstance Win32_Process -Filter \"Name='savagewind.exe'\" | "
                          "ForEach-Object { \"$($_.ProcessId) $($_.ExecutablePath)\" }"], capture_output=True, text=True)
-    mine = os.path.normcase(os.path.abspath(tree))
-    return [l for l in ps.stdout.splitlines() if l.strip() and mine not in os.path.normcase(l)]
+    if ps.returncode:
+        raise RuntimeError("Could not enumerate Windows game processes")
+    return [line for line in ps.stdout.splitlines()
+            if line.strip() and int(line.split(None, 1)[0]) not in MY_PROCESSES]
+
 
 
 def game_cwd(args):
@@ -228,7 +236,7 @@ def launch(args, run_dir, size, affinity, extra_env):
         for line in f:
             key = line.split('=', 1)[0].strip()
             forced = {'window_size': size, 'frame_rate': '0', 'vsync': 'off', 'perf_overlay': 'off',
-                      'frame_generation': '0', 'fullscreen': '1' if args.fullscreen else '0'}
+                      'frame_generation': '0', 'volume': '0', 'fullscreen': '1' if args.fullscreen else '0'}
             if args.potato:  # (a weak PC plays with the console's shadows: Extreme alone costs ~13 ms of GPU in a forest)
                 forced['shadow_resolution'] = 'console'
             ini.append('{} = {}\n'.format(key, forced[key]) if key in forced else line)
@@ -258,6 +266,7 @@ def launch(args, run_dir, size, affinity, extra_env):
     argv = [exe] if args.data_root else [exe, 'extracted']  # (a data root of its own: its extracted/, as a player's)
     proc = subprocess.Popen(argv, cwd=args.tree, env=env, stdout=log, stderr=subprocess.STDOUT,
                             creationflags=flags, start_new_session=os.name != 'nt')  # (Linux: its own group, killed whole)
+    MY_PROCESSES.add(proc.pid)
     if os.name != 'nt':
         MY_SESSIONS.add(proc.pid)
     if flags:
@@ -278,10 +287,48 @@ def launch(args, run_dir, size, affinity, extra_env):
     return proc, log
 
 
+def reexec_child(parent_pid, executable):
+    """Find only a direct child of our launcher with the exact expected image."""
+    command = ('Get-CimInstance Win32_Process -Filter "ParentProcessId = {}" | '
+               'Select-Object ProcessId,ParentProcessId,ExecutablePath | ConvertTo-Json -Compress').format(int(parent_pid))
+    result = subprocess.run([powershell(), '-NoProfile', '-Command', command], capture_output=True, text=True)
+    if result.returncode:
+        raise RuntimeError('Could not inspect a Windows re-exec child')
+    rows = json.loads(result.stdout) if result.stdout.strip() else []
+    rows = rows if isinstance(rows, list) else [rows]
+    expected = os.path.normcase(os.path.abspath(executable))
+    found = [int(row['ProcessId']) for row in rows if row.get('ParentProcessId') == parent_pid and
+             row.get('ExecutablePath') and os.path.normcase(os.path.abspath(row['ExecutablePath'])) == expected]
+    return found[0] if len(found) == 1 else None
+
+
+def adopt_reexec(proc):
+    """Windows plat_exec exits its parent; keep waiting for that owned child."""
+    pid = reexec_child(proc.pid, proc.args[0])
+    if pid is None:
+        return False
+    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    kernel.OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32]
+    kernel.OpenProcess.restype = ctypes.c_void_p
+    handle = kernel.OpenProcess(0x100000 | 0x1000 | 1, False, pid)
+    if not handle:
+        raise OSError('Could not open the owned re-exec child')
+    old_handle, old_pid = proc._handle, proc.pid
+    proc._handle = type(old_handle)(handle)
+    proc.pid, proc.returncode = pid, None
+    old_handle.Close()
+    MY_PROCESSES.discard(old_pid)
+    MY_PROCESSES.add(pid)
+    print('Adopted Windows re-exec child {}'.format(pid), flush=True)
+    return True
+
+
 def wait_world(game, proc, seconds):
     end = time.monotonic() + seconds
     while time.monotonic() < end:
         if proc.poll() is not None:
+            if os.name == 'nt' and proc.returncode == 0 and adopt_reexec(proc):
+                continue
             raise RuntimeError('the game exited during boot (exit code {:#x})'.format(proc.returncode & 0xffffffff))
         try:
             r = game.cmd('pos', ok=False)
@@ -347,11 +394,14 @@ OTHER_WAITS = tuple(profile_samples.WAITS) + ('core_acquire', 'kernel_preempt')
 _maps = {}
 
 
-def sample_shares(tree, path):
+def sample_shares(exe, path):
+    """Main and render thread time shares from build/samples.txt, named with the symbols of the exe that ran (a
+    release exe keeps them); swgame.dll only when it sits next to the exe (older builds)."""
     if not _maps:
-        b = lambda f: os.path.join(tree, 'build', f)
-        _maps['exe'] = (profile_samples.symbols(b('savagewind.exe')), 0x140000000, profile_samples.image_size(b('savagewind.exe')))
-        _maps['swgame'] = (profile_samples.symbols(b('swgame.dll')), 0x180000000, profile_samples.image_size(b('swgame.dll')))
+        b = lambda f: os.path.join(os.path.dirname(exe), f)
+        _maps['exe'] = (profile_samples.symbols(exe), 0x140000000, profile_samples.image_size(exe))
+        if os.path.exists(b('swgame.dll')):
+            _maps['swgame'] = (profile_samples.symbols(b('swgame.dll')), 0x180000000, profile_samples.image_size(b('swgame.dll')))
     bases, maps = {}, {}
     kinds = {MAIN_HANDLE: collections.Counter(), RENDER_HANDLE: collections.Counter()}
     with open(path) as f:
@@ -540,7 +590,8 @@ def measure(game, args, log_path, route, run_dir, tag):
         game.cmd('sample', 'start', args.sample, args.sample_us)
         time.sleep(args.sample)
         if game.poll(['sample', 'status'], ('done',), 120) == 'done':
-            shares = sample_shares(args.tree, os.path.join(args.tree, 'build', 'samples.txt'))
+            exe = args.exe or os.path.join(args.tree, 'build', 'savagewind.exe')
+            shares = sample_shares(exe, os.path.join(game_cwd(args), 'build', 'samples.txt'))
 
     presents = th_b['presents'] - th_a['presents']
     cpu = {k: (th_b[k] - th_a[k]) / presents for k in th_b
@@ -631,6 +682,8 @@ def stop_game(game, proc, log):
             except OSError:
                 pass
         proc.wait(10)
+    MY_PROCESSES.discard(proc.pid)
+    MY_SESSIONS.discard(proc.pid)
     log.close()
     time.sleep(3)  # (a game that just ended can keep the next one from starting)
 

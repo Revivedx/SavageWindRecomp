@@ -28,6 +28,8 @@
 #include "output_scale.h"
 
 #ifndef SW_METAL
+extern bool vk_dlssg_available(void);
+extern int vk_dlssg_max_mult(void);
 extern bool vk_dlss_available(void);
 #endif
 
@@ -72,6 +74,33 @@ bool fsr4_offered(void) {
 #endif
 }
 
+bool frame_gen_available(int fg) {
+#ifdef SW_METAL
+    return fg == FG_OFF;
+#else
+    return fg == FG_OFF || fg == FG_FSR3 || (fg == FG_DLSS && vk_dlssg_available());
+#endif
+}
+
+bool frame_gen_mult_available(int fg, int mult) {
+#ifdef SW_METAL
+    return mult == FG_MULT_MIN;
+#else
+    if (mult == FG_MULT_MIN) return true;
+    return fg == FG_DLSS && frame_gen_available(FG_DLSS) && mult <= vk_dlssg_max_mult();
+#endif
+}
+
+int frame_gen_mult(int fg) {
+    static int forced = -1;  // SAVAGEWIND_FG_MULT=2|3|4 overrides the setting (tests)
+    if (forced < 0) forced = getenv("SAVAGEWIND_FG_MULT") ? atoi(getenv("SAVAGEWIND_FG_MULT")) : 0;
+    int m = forced ? forced : g_settings.frame_gen_mult;
+    if (m < FG_MULT_MIN) m = FG_MULT_MIN;
+    if (m > FG_MULT_MAX) m = FG_MULT_MAX;
+    while (m > FG_MULT_MIN && !frame_gen_mult_available(fg, m)) m--;
+    return m;
+}
+
 bool rt_fsr4(void) { return g_settings.upscaler == UPSCALE_FSR4 && upscaler_available(UPSCALE_FSR4); }
 // FSR 4 takes the same inputs and does the same jobs (anti-aliasing, sharpening) as FSR 3: everything that asks for
 // FSR 3 asks for either; vulkan/exec.c fsr3_scene picks the one to run
@@ -112,12 +141,15 @@ bool upscale_modes_available(void) {
 // hardly more frames than Performance where the CPU is the limit. So it is offered from a 4K window on, and below that
 // a stored Ultra Performance runs as Performance (the setting is kept: it comes back on a 4K window). FSR 1 keeps it at
 // any size. SAVAGEWIND_UPSCALE_ANY=1: offered at any size, as before.
+// DLSS's Native mode is NVIDIA's DLAA, and the menus call it so (as other games list it among DLSS's modes)
+bool upscale_mode_is_dlaa(int q) { return q == UPQ_NATIVE && g_settings.upscaler == UPSCALE_DLSS; }
+
 static volatile int g_out_lines;  // the window's height (output_scale; 0: not known yet)
 bool upscale_mode_offered(int q) {
     if (q == UPQ_DYNAMIC) return true;  // (the dynamic resolution: one of every upscaler's modes)
-    if (q == UPQ_NATIVE) return rt_fsr3() || rt_xess();  // (every temporal upscaler: XeSS reconstructs from the same
-                                                         //  inputs, so its 1x is anti-aliasing too - #820 knew only
-                                                         //  of FSR 3 and FSR 4, which were the ones there then)
+    // (every temporal upscaler: XeSS reconstructs from the same inputs, so its 1x is anti-aliasing too - #820 knew only
+    //  of FSR 3 and FSR 4, which were the ones there then; DLSS's 1x is NVIDIA's DLAA, and the menus name it so)
+    if (q == UPQ_NATIVE) return rt_temporal_upscaler();
     static int any = -1;
     if (any < 0) any = getenv("SAVAGEWIND_UPSCALE_ANY") && atoi(getenv("SAVAGEWIND_UPSCALE_ANY")) != 0;
     if (q != UPQ_ULTRA_PERFORMANCE || any || !(rt_fsr3() || rt_xess() || rt_dlss())) return true;
@@ -127,6 +159,44 @@ bool upscale_mode_offered(int q) {
 int upscale_quality_now(void) {
     int q = g_settings.upscale_quality;
     return upscale_mode_offered(q) ? q : (q == UPQ_NATIVE || q == UPQ_DYNAMIC ? UPQ_QUALITY : UPQ_PERFORMANCE);
+}
+
+// The temporal upscalers. They anti-alias the scene themselves (from several frames): while one is on, Video >
+// Anti-aliasing is off, the game's FXAA and SMAA included (vulkan/exec.c), and the menus show the row greyed with the
+// upscaler's name. The setting is kept.
+bool rt_temporal_upscaler(void) { return rt_fsr3() || rt_xess() || rt_dlss(); }
+const char *rt_temporal_upscaler_name(void) {
+    return rt_fsr4() ? "FSR 4" : rt_fsr3() ? "FSR 3" : rt_xess() ? "XeSS" : rt_dlss() ? "DLSS" : NULL;
+}
+
+// FSR 3 / 4, XeSS and DLSS take no scene larger than the window (vulkan/exec.c scene_post skips them then, and the
+// camera's jitter, there for them, would reach the screen unresolved): with one of them the render scale goes up to
+// 100%, and in its Native mode (DLAA with DLSS), the window's own size by definition, it is 100%. Picking one of them
+// or Native in a menu sets the render scale to 100% (render_scale_fit), and leaving them for a choice that offers the
+// value it had puts it back (so stepping through the rows on the way to another value loses nothing); a stored value
+// they don't offer otherwise (the ini edited, DLSS's library added later) runs as 100%.
+bool render_scale_offered(int r) {
+    if (r == RSCALE_100 || !rt_temporal_upscaler()) return true;
+    return r < RSCALE_100 && upscale_quality_now() != UPQ_NATIVE;
+}
+
+static int fitted_from = -1;  // the render scale render_scale_fit replaced with 100% (this run only; -1: none)
+
+void render_scale_fit(void) {
+    int r = g_settings.render_scale;
+    if (!render_scale_offered(r)) {
+        if (fitted_from < 0) fitted_from = r;
+        g_settings.render_scale = RSCALE_100;
+    } else if (fitted_from >= 0 && r == RSCALE_100 && render_scale_offered(fitted_from)) {
+        g_settings.render_scale = fitted_from, fitted_from = -1;
+    }
+}
+
+void render_scale_chosen(void) { fitted_from = -1; }
+
+int render_scale_now(void) {
+    int r = g_settings.render_scale;
+    return r < 0 || r >= RSCALE_COUNT ? RSCALE_100 : render_scale_offered(r) ? r : RSCALE_100;
 }
 
 double upscale_factor(void) {
@@ -172,7 +242,7 @@ static volatile int dyn_res_step;         // 0: Native, dyn_res_max_step(): smal
 // down to its fixed size before (Quality, 1.5x), never under it; 213x120 at 1280x720 otherwise.
 static int dyn_res_max_step(void) {
     static const double ss_f[RSCALE_COUNT] = {0.5, 0.75, 1.0, 1.25, 1.5, 2.0};  // (output_scale's Render scale)
-    int rsi = g_settings.render_scale;
+    int rsi = render_scale_now();
     double most = 3.0 * (rsi >= 0 && rsi < RSCALE_COUNT ? ss_f[rsi] : 1.0) + 1e-6;
     int s = 0;
     while (s + 1 < DYN_RES_STEPS && k_dyn_res_factors[s + 1] <= most) s++;
@@ -415,7 +485,7 @@ void output_scale(double dw, double dh, bool reshape_allowed, OutScale *o) {
     // MAX_TEX below still caps it. On Vulkan, only the 3D scene (RS_SCENE) scales with render_scale so the UI/HUD
     // stays sharp at the output resolution (#746).
     static const double ss_f[RSCALE_COUNT] = {0.5, 0.75, 1.0, 1.25, 1.5, 2.0};
-    int rsi = g_settings.render_scale;
+    int rsi = render_scale_now();
     double ss = rsi >= 0 && rsi < RSCALE_COUNT ? ss_f[rsi] : 1.0;
 #ifdef SW_METAL
     double out_div = upscale_factor(), scene_div = 1.0, ui_ss = ss, scene_ss = 1.0;

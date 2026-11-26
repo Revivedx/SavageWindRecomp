@@ -128,6 +128,22 @@ SITES = [
          '91000129/ffc003ff 1000000a/9f00001f 3868692b', 0),
     Site('title_msg_file', 'ref', 'f9000549 90000009/9f00001f 91000129/ffc003ff 9000000a/9f00001f '
          'f900015f/ffc003ff a9002d28 a8c17bfd d65f03c0', 2),
+    # the pause menu's System page: its button handler (buttons 0x4d..0x53; the seventh, 0x53, is Achievements)
+    Site('pause_button', 'code', 'b9404428 51013508 7100191f 54000009/ff00001f d65f03c0 d10183ff a9037bfd f90023f5', 0),
+    # ... and where its setup reads whether to add a seventh button (0x53, the Nintendo Switch 2 Edition upgrade, made
+    # at run time as Pa_Btn_06 in the gap the layout leaves): offered (+0x280) and not owned (+0x281). It is
+    # Achievements.
+    Site('pause_upgrade_offer', 'code', '394a0268 34000008/ff00001f 394a0668 34000008/ff00001f 910703ff a9434ff4 a94257f6 '
+         'a9415ffc', 0),
+    Site('pause_upgrade_owned', 'code', '394a0268 34000008/ff00001f 394a0668 34000008/ff00001f 910703ff a9434ff4 a94257f6 '
+         'a9415ffc', 2),
+    # ... and where that setup gives the button its text, "Nintendo Switch 2 Edition" (a string in the code, not a message):
+    # `mov x1, sp` before the call that sets it ({char16_t *, u32 length} at sp)
+    Site('pause_upgrade_text', 'code', '910003e1 aa1303e0 aa1f03e2 94000000/fc000000 14000000/fc000000 f94002c8 aa0003f7 '
+         'aa1603e0', 0),
+    # ... and the message files' search by label (x0 = file, x1 = label, x8 = {char16_t *, u32 length}), which the
+    # layouts' texts go through: that button's text
+    Site('msg_find', 'code', 'a9bd7bfd a90157f6 a9024ff4 910003fd aa0003f4 f9400400 aa0803f3 94000000/fc000000', 0),
     Site('title_version_format', 'ref', '90000001/9f00001f 91000021/ffc003ff d103c3a0 94000000/fc000000 '
          'f9400294/ffffffdf b940da88 35000008/ff00001f 90000001/9f00001f', 1),
     # BOTW's streaming Yaz0 decoder: its entry and its return (tools/patches.py; runtime/hle/yaz0.c)
@@ -135,6 +151,10 @@ SITES = [
     Site('yaz0_stream_ret', 'code', 'd65f03c0 7100869f 54000003/ff00001f b9400e68 35000008/ff00001f 12800000 '
          '14000000/fc000000 12800020', 0),
     # frame rate (runtime/hle/framepace.c, runtime/nvn/objects.c)
+    # the title screen's version line (tools/patches.py _title_version_text): the load of System/Version.txt's string
+    # for "Ver.%s", at the title's start and at its refresh
+    Site('title_version_text_a', 'code', 'f9408682 90000001/9f00001f 91024821 910063e0 94000000/fc000000', 0),
+    Site('title_version_text_b', 'code', 'f94086a2 90000001/9f00001f 91024821 d103c3a0 94000000/fc000000', 0),
     Site('frame_wait', 'code', 'a9bd7bfd f9000bf5 a9024ff4 910003fd 91078014 aa0003f3 aa1403e0 94000000/fc000000', 0),
     Site('frame_loop_interval_ret', 'code', 'f9400268 aa1303e0 f9409908 d63f0100 14000000/fc000000 1100052a '
          '14000000/fc000000 2a0903e1', 4),
@@ -154,6 +174,11 @@ SITES = [
     # tan(fovy / 2) (y) and of it with the aspect ratio (x)
     Site('persp_unproject_y', 'code', 'bd409800 f900003f 1e201004 1e214000 bd000820 bd409800 bd40ac01 bd400442', 6),
     Site('persp_unproject_x', 'code', 'bd409800 f900003f 1e201004 1e214000 bd000820 bd409800 bd40ac01 bd400442', 18),
+    # TimeMgr's clock step in OnlyUpdateTimeOfDay and normal mode, respectively.
+    Site('day_cycle_time_only', 'code', '90000008/9f00001f bd40c668 f9400108/ffc003ff f9400100 94000000/fc000000 '
+         'bd40ba61 52a87688 1f000500', 1),
+    Site('day_cycle_normal', 'code', '90000008/9f00001f bd40c668 f9400108/ffc003ff f9400100 94000000/fc000000 '
+         '1e200908 bd40ba60 52800028 39053e68', 1),
     # arrows' fall (tools/patches.py _arrow_gravity): the load of the gravity added to an arrow's velocity per update
     Site('arrow_fall_gravity', 'code', 'bd410a81 1e212849 bd410e81 1e21280a 94000000/fc000000 36000000/fff8001f f9404288 2d400500', 0),
     # Experimental shield-surf takeoff grace (#305): contact update, boost removal and launch request.
@@ -203,6 +228,10 @@ SITES = [
     Site('quick_menu_capture_alpha', 'code', 'f9400268/ffc003ff bd405100 1e202008 54000000/ff00001f '
          'bd402100 1e2e1001 1e212000 54000001/ff00001f 90000001/9f00001f 91000021/ffc003ff '
          'aa1303e0 94000000/fc000000 52801fe8 39016408', 7),
+    # Scalable font engine (CJK/Chinese TrueType) resolution scaling
+    Site('cjk_font_size', 'code', '53103d01 2a0103e4 94000000/fc000000 f9400660 52800102 b9403381 94000000/fc000000 aa0003f4', 0),
+    Site('cjk_font_bin', 'code', '7d406f81 4b080128 f94c826a 79406b8b 9bba296a bd400940 7e21d821 1f012400', 0),
+    Site('cjk_font_quad', 'code', '2d42212b 79c03aa9 1e220120 1e200960 1e380009 79009389 79c00329 0b090289', 0),
     # the wait for the ground (tools/patches.py _tp_gate): is the map around Link not loaded yet? (the world pauses for it)
     Site('tp_gate', 'code', 'd10283ff fd002be8 f90037f9 a905fbfd a9075ff8 a90857f6 a9094ff4 910163fd '
          '90000016/9f00001f', 0),
@@ -217,6 +246,34 @@ SITES = [
          '7100001f 5400000c/ff00001f 91314260', 1),
     Site('world_mgr', 'ref', '90000008/9f00001f 91000108/ffc003ff f9400108 b4000008/ff00001f b946b908 7100051f '
          '54000001/ff00001f a9bf7bfd', 1),
+    # the noise setter (tools/patches.py _silent_link; runtime/assists.c): a (object, channel, value) for one of
+    # an actor's four noise channels, channel 1 being the one whistling and the sounds like it go through
+    Site('silent_link', 'code', '51000429 91006008 7100053f 540000c8/ff00001f 8b214908 bd400101 1e202020 '
+         '540000a4/ff00001f', 0),
+    # the four champion abilities' "can this be used" checks (tools/patches.py _hero_soul_*; runtime/assists.c
+    # rt_hero_soul): each returns 0 while the game forbids hero souls, as the shrines and the Trial of the Sword do, and
+    # while the ability recharges. The patterns run from a check's entry to the call or the load that tells it apart.
+    Site('hero_soul_wind', 'code',
+         'f0008468/9f00001f d0008469/9f00001f f9420d08/ffc003ff f944c929/ffc003ff 39400108/ffc003ff '
+         '39400129/ffc003ff 2a090108 34000068/ff00001f 2a1f03e0 d65f03c0 a9be7bfd f9000bf3 910003fd '
+         'aa0003f3 2a1f03e0 94017619/fc000000 2a0003e8 2a1f03e0 36000088/ff00001f f9400bf3/ffc003ff '
+         'a8c27bfd d65f03c0 aa1303e0 94003761/fc000000', 0),
+    Site('hero_soul_fire', 'code',
+         'f0008468/9f00001f d0008469/9f00001f f9420d08/ffc003ff f944c929/ffc003ff 39400108/ffc003ff '
+         '39400129/ffc003ff 2a090108 34000068/ff00001f 2a1f03e0 d65f03c0 a9be7bfd f9000bf3 910003fd '
+         'aa0003f3 2a1f03e0 940175f3/fc000000 2a0003e8 2a1f03e0 36000088/ff00001f f9400bf3/ffc003ff '
+         'a8c27bfd d65f03c0 94069c50/fc000000 360000c0/ff00001f bd5e0660', 0),
+    Site('hero_soul_electric', 'code',
+         'f0008468/9f00001f d0008469/9f00001f f9420d08/ffc003ff f944c929/ffc003ff 39400108/ffc003ff '
+         '39400129/ffc003ff 2a090108 34000068/ff00001f 2a1f03e0 d65f03c0 a9be7bfd f9000bf3 910003fd '
+         'aa0003f3 2a1f03e0 940175d4/fc000000 2a0003e8 2a1f03e0 36000088/ff00001f f9400bf3/ffc003ff '
+         'a8c27bfd d65f03c0 94069c45/fc000000 360000c0/ff00001f bd5e1260', 0),
+    Site('hero_soul_water', 'code',
+         'a9be7bfd f9000bf3 910003fd aa0003f3 2a1f03e0 39712268/ffc003ff 370001e8/ff00001f f0008468/9f00001f '
+         'd0008469/9f00001f f9420d08/ffc003ff 39400108/ffc003ff f944c929/ffc003ff 39400129/ffc003ff 7100011f '
+         '7a400920 540000c1/ff00001f 2a1f03e0 940175b3/fc000000 2a0003e8 2a1f03e0 36000088/ff00001f '
+         'f9400bf3/ffc003ff a8c27bfd d65f03c0 94069c38/fc000000', 0),
+
     # the mouse camera (tools/patches.py _cam_stick, _cam_pitch, _cam_pitch_aim; runtime/hle/input.c): the camera's
     # stick input, which every camera action reads, and the square that the chase-like cameras apply to its vertical
     # part
@@ -330,6 +387,24 @@ SITES = [
     # _horse_crash, _horse_look_ahead; Cheats > Sure-footed horse)
     Site('horse_crash', 'code', 'b9403428 7100111f 54000001/ff00001f d10303ff 6d072beb f90053f5 6d0823e9 a9097bfd', 0),
     Site('horse_look_ahead', 'code', 'd105c3ff fd00a3e8 f900affc a914fbfd a9164ff4 910523fd aa0103f4 aa0003f3', 0),
+    # Gameplay > Keep crouch after camera (tools/patches.py _camera_*; runtime/camera_stealth.c): crouch idle
+    # target in the Player AI selector, Camera entry, the two Camera -> Wait exit branches, and Camera::leave().
+    Site('camera_squat_idle', 'code',
+         'f9400008 f9431d08 d63f0100 36000000/fff8001f 90000001/9f00001f 91000021/ffc003ff 14000000/fc000000 '
+         'aa1303e0 94000000/fc000000 37000000/fff8001f', 4),
+    Site('camera_enter_start', 'code',
+         'f9400668 90000001/9f00001f 91000021/ffc003ff aa1303e0 b94c4109 121e7929 b90c4109 94000000/fc000000', 0),
+    Site('camera_exit_finished', 'code',
+         '90000008/9f00001f 91000108/ffc003ff 91004335 910483e1 a91223f5 aa1303e0 94000000/fc000000 37000000/fff8001f '
+         '90000008/9f00001f 91000108/ffc003ff 910023e1 aa1303e0 a900a3f5 94000000/fc000000 37000000/fff8001f '
+         '90000008/9f00001f 91000108/ffc003ff 91004335 910443e1 a91123f5 aa1303e0 94000000/fc000000 37000000/fff8001f '
+         '90000008/9f00001f 91000108/ffc003ff 910403e1 aa1303e0 a91023f5 94000000/fc000000 37000000/fff8001f '
+         '90000008/9f00001f 91000108/ffc003ff 91004335 9103c3e1', 7),
+    Site('camera_exit_active', 'code',
+         '36000000/fff8001f 14000000/fc000000 f9400268 aa1303e0 f9406908 d63f0100 f9400008 f9401108', 1),
+    Site('camera_leave', 'code',
+         '94000000/fc000000 14000000/fc000000 90000008/9f00001f 91000108/ffc003ff f9400100 14000000/fc000000 '
+         'a9be7bfd f9000bf3 910003fd aa0003f3 f9400400 94000000/fc000000 37000000/fff8001f 94000000/fc000000', 4),
     # the pouch taking arrows off for the player's bow (tools/patches.py _remove_arrows; Accessibility > Infinite arrows)
     Site('pouch_remove_arrows', 'code', 'd101c3ff a9017bfd a9026ffc a90367fa a9045ff8 a90557f6 a9064ff4 910043fd '
          '90000008/9f00001f aa0003f3 f9400108/ffc003ff aa0103e0', 0),
@@ -393,6 +468,23 @@ SITES = [
     Site('pouch_item_get', 'code', 'd10243ff a9037bfd a9046ffc a90567fa a9065ff8 a90757f6 a9084ff4 9100c3fd f90003e3', 0),
     Site('pouch_mgr', 'got', '90000017/9f00001f aa0003f5 f94002f7/ffc003ff 910003e0 f94002f6 94000000/fc000000 2a0003e2 '
          'aa1603e0', 2),
+    # A treasure chest put in the world with an item in it (runtime/items.c items_request_chest), as the amiibo drop does
+    # (its chest: TBox_Field_Iron with DropActor): the actor creation request (creator, name, heap, accessor, its
+    # instance parameters, 0, 1), the creator and the object whose +0x28 is the heap it takes, and the instance
+    # parameters' class, their setup, and how a raw (@P, @R: 12 bytes, type 4) and a string (DropActor) parameter go in
+    Site('actor_create', 'call', '94000000/fc000000 14000000/fc000000 90000016/9f00001f f94002d6/ffc003ff f94002c0 '
+         '94000000/fc000000 52a7f008 52a7f015', 0),
+    Site('actor_creator', 'got', '90000008/9f00001f aa1403e0 f9400108/ffc003ff f9400115 f9400288 f9400d08 d63f0100 '
+         '90000008/9f00001f 910103e4', 2),
+    Site('actor_create_heap', 'got', '90000008/9f00001f 910103e4 f9400108/ffc003ff f9400681 aa1503e0 f9400108 f9401502 '
+         'aa1303e3', 2),
+    Site('inst_params_vt', 'got', '90000008/9f00001f f9400108/ffc003ff 91004108 a9047fe8 910103e8 91004100 f90007e0 '
+         '94000000/fc000000', 1),
+    Site('inst_params_init', 'call', '94000000/fc000000 f94006a8 9100c3e1 aa1503e0 b9003bff f9001bff bd43a509 bd43b50a', 0),
+    Site('inst_params_add', 'call', '94000000/fc000000 90000008/9f00001f aa1403e0 f9400108/ffc003ff f9400115 f9400288 '
+         'f9400d08 d63f0100 90000008/9f00001f 910103e4', 0),
+    Site('inst_params_add_string', 'call', '94000000/fc000000 aa1403e0 94000000/fc000000 36000000/fff8001f 90000008/9f00001f '
+         '91000108/ffc003ff 910043e1 a93aa3b5', 0),
     # Generic layout draw thunk and its native eligibility checks (runtime/ui_layout.c).
     Site('ui_layout_draw', 'code', '14000000/fc000000 f9013001 b4000001/ff00001f d10403ff a90a7bfd a90b6ffc a90c67fa a90d5ff8', 0),
     Site('ui_layout_native', 'code', '39440008 7100011f 39440809 3943f80a 3943fc0b 7a401920 7a400944 7a421964', 0),
@@ -443,6 +535,45 @@ SITES = [
     Site('replace_toast_tail_b', 'code', 'aa1303e0 52800021 94000000/fc000000 aa1303e0 a9414ff4 a8c27bfd 14000000/fc000000', 6),
     Site('replace_ui_draw_native', 'code', '39440008 7100011f 39440809 3943f80a 3943fc0b 7a401920 7a400944 7a421964', 0),
     Site('replace_full_info_call', 'code', '91238108 90000009/9f00001f 91000129/ffc003ff f9000268 90000008/9f00001f 91000108/ffc003ff 91004129 a9022269 f9400bf3 a8c27bfd d65f03c0 90000008/9f00001f 91000108/ffc003ff 91004108 f8010408 14000000/fc000000 a9be7bfd f9000bf3 910003fd 90000008/9f00001f aa0003f3 f9400108/ffc003ff 91004108 f8010408 94000000/fc000000 aa1303e0 f9400bf3 a8c27bfd 14000000/fc000000 52800020 d65f03c0 a9bf7bfd 910003fd 91008000 94000000/fc000000', 34),
+    # The read of the record's visit count in the marker update (1.9.0 0x7000d7bea4): the map draws a place's marker
+    # from it, so Cheats > Map reads it as 1 for the places it covers (patches.py _place_count_read) - the count in
+    # memory is not touched, the game marks and draws the place itself.
+    Site('place_count_read', 'code', 'b9401d08 7100011f b9403c09 1211012b 120f7929 b9006008 1a9fd7ea 4a4b3d4c', 0),
+    # The travel bit of a place marker (1.9.0 0x7000d7b904): the update computes a marker's flags - 0x400 for its
+    # state and 0x200 for "the map may travel here". Cheats > Map replaces the 0x200 select (patches.py
+    # _place_travel), so a place the option shows is a travel destination without being activated - no tower
+    # activated, so the map fog stays.
+    Site('place_travel', 'code', '1a9f116b 2a0b0108 2a0a0108 b9003c08 37000009/fff8001f d65f03c0 a9bd7bfd a90157f6', 0),
+    # The tower marker's colour decision (1.9.0 0x7000dac488): the map's marker draw reads the marker's flags and
+    # tests the travel bit (0x200) - that test is what draws a tower the option made warpable as an activated one.
+    # Cheats > Map hooks the read (patches.py _place_icon) and clears the bit for places that were never visited,
+    # so they keep the normal look while staying travel destinations.
+    Site('place_icon', 'code', 'b9403e68 7217011f f9406121 a9414ff4 1e200c20 a8c27bfd d61f0020 a9414ff4', 0),
+    # The game's memory (tools/patches.py _game_heap_size; runtime/kernel.c kernel_memory_setup): the size nninitStartup
+    # asks SetMemoryHeapSize for (mov w0, #0xc3000000, then the 32 MB block malloc keeps), and the root heap's size
+    # main hands sead's heap manager (mov w8, #0xc1000000: the heap less those 32 MB)
+    Site('game_heap_size', 'code', '52b86000 94000000/fc000000 910023e0 52a04001 94000000/fc000000 f94007e0 52a04001 '
+         '94000000/fc000000', 0),
+    Site('game_root_heap_size', 'code', '52b82008 52800020 a9027fe8 94000000/fc000000 52800020 94000000/fc000000 '
+         '52800020 94000000/fc000000', 0),
+    # ... and the resource system's FixedHeap (mov w0, #0x17600000) and the TexArcWork heap made inside it
+    # (mov w0, #0xc000000), where texture archives are tried first
+    Site('game_fixed_heap_size', 'code', '52a2ec00 94000000/fc000000 f9001a60 b5000000/ff00001f a9434ff4 f94013f5 '
+         'a9417bfd 910103ff', 0),
+    Site('game_texarc_heap_size', 'code', '52a18000 52800103 52800024 52800025 91004108 a90027e8 94000000/fc000000 '
+         'f9009260', 0),
+    # ... and the GPU memory pool the models' textures load into: 500 MB (mov w9, #0x1f400000), or 400 MB in the
+    # other mode the csel after them picks (mov w11, #0x19000000)
+    Site('game_texture_pool', 'code', '52a3e809 f9000feb 52a3200b f9000914 b94003e8 3941427b b940d156 7100091f', 0),
+    Site('game_texture_pool_b', 'code', '52a3200b f9000914 b94003e8 3941427b b940d156 7100091f 39414668 9a89017a', 0),
+    # ... and the resource manager's ForResourceS / ForResourceL heaps, whose sizes it reads from its settings
+    # (ldr w8, [x20, #0xcc] / [x20, #0xc8]): StarterPackMgr, where the resident packs load (Pack/TitleBG.pack), takes
+    # what ForResourceL has left
+    Site('game_resource_s', 'code', 'b940ce88 a904e3fa a93f27ba 290523f9 94000000/fc000000 b980ae68 9102227c 52a8141b', 0),
+    Site('game_resource_l', 'code', 'b940ca88 90000009/9f00001f 91000129/ffc003ff d10043a1 aa1503e0 b90023f6 79004bf7 '
+         '39009bf7', 0),
+    # ... and StarterPackMgr's heap inside ForResourceL: 225 MB (mov w8, #0xe100000; 20 MB in the mode the csel picks)
+    Site('game_starter_pack', 'code', '52a1c208 52a02809 9a881120 94000000/fc000000 aa0003e1 f9012e60 52802000 52800102', 0),
     Site('main_data', 'data', '', 0),
     Site('main_end', 'end', '', 0),
 ]
@@ -451,7 +582,8 @@ SITES = [
 # KNOWN table, the whole group is left out (with its patches) instead of refusing the version. The mouse camera's
 # sites go together: the stick input without the linear vertical part would square the mouse's (unclamped) motion.
 # Without them the mouse turns the camera through the right stick, as before (runtime/hle/input.c); without the
-# second group it turns it without the game's camera inversion options.
+# second group it turns it without the game's camera inversion options. Without the pause System page's sites it
+# has no Achievements button (Achievements are still in Options).
 OPTIONAL_GROUPS = [
     ('ui_layout_draw', 'ui_layout_native', 'ui_layout_pane'),
     ('replace_layout_calculate', 'pouch_can_receive', 'replace_toast_start', 'replace_pickup_status',
@@ -480,6 +612,7 @@ OPTIONAL_GROUPS = [
     ('surf_contact', 'surf_boost_remove', 'surf_jump_request'),
     ('stale_actor_helper', 'stale_actor_kind', 'stale_actor_target', 'stale_actor_flag', 'stale_actor_flag2'),
     ('quick_menu_capture_alpha',),
+    ('cjk_font_size', 'cjk_font_bin', 'cjk_font_quad'),
     ('kf_angle',),
     ('demo_move_arrive',),
     ('rail_point_radius',),
@@ -493,6 +626,7 @@ OPTIONAL_GROUPS = [
     ('menu_wrap', 'ui_control_layer'),  # (without them the menus stop at their ends, as in the game)
     ('cam_stick', 'cam_pitch_chase', 'cam_pitch_surf', 'cam_pitch_wakeboard', 'cam_pitch_aim', 'cam_pitch_item'),
     ('cam_reverse_x', 'cam_reverse_y'),
+    ('pause_button', 'msg_find', 'pause_upgrade_offer', 'pause_upgrade_owned', 'pause_upgrade_text'),
     ('cam_stick_end',),  # (Controls > Controller camera speed: without it the setting does nothing)
     ('traverse_scale', 'traverse_scale_default'),
     ('grass_range', 'grass_fade_blades', 'grass_fade_quads'),
@@ -508,14 +642,25 @@ OPTIONAL_GROUPS = [
     ('stamina_store',),
     ('sprint_cost', 'sprint_press_cost', 'battle_info_field', 'battle_info_b', 'battle_info_c'),  # (Cheats > Free sprint: without them it does nothing)
     ('horse_crash', 'horse_look_ahead'),  # (Cheats > Sure-footed horse: without them it does nothing)
+    ('camera_squat_idle', 'camera_enter_start', 'camera_exit_finished', 'camera_exit_active', 'camera_leave'),
     ('tp_gate',),  # (a far teleport of the control endpoint: without it a long jump freezes the world)
+    ('title_version_text_a', 'title_version_text_b'),  # (the title's version line in full: without them it stops at 15 letters)
     ('item_tick', 'pouch_item_get', 'pouch_mgr'),
+    ('actor_create', 'actor_creator', 'actor_create_heap', 'inst_params_vt', 'inst_params_init', 'inst_params_add',
+     'inst_params_add_string'),  # (reward chests: without them a reward waits for room in the pouch)
     ('horse_cam_lr',),
+    ('game_heap_size', 'game_root_heap_size'),  # (both or neither: the root heap must fit in the heap)
+    ('game_fixed_heap_size', 'game_texarc_heap_size'),  # (both or neither: TexArcWork is made inside FixedHeap)
+    ('game_texture_pool', 'game_texture_pool_b'),
+    ('game_resource_s', 'game_resource_l', 'game_starter_pack'),  # (StarterPackMgr grows inside ForResourceL)
 ]
 OPTIONAL = {n for g in OPTIONAL_GROUPS for n in g}
 
 KNOWN = {
     '1.9.0': {
+        'cjk_font_size': 0x7000017d40,
+        'cjk_font_bin': 0x7000017d78,
+        'cjk_font_quad': 0x7000017f78,
         'ui_layout_draw': 0x70013ee084,
         'ui_layout_native': 0x7000f6f690,
         'ui_layout_pane': 0x7000027d30,
@@ -650,14 +795,23 @@ KNOWN = {
         'dialog_answer': 0x7001dac9a8,
         'title_update': 0x7000e5f070,
         'title_button': 0x7000e5f9b0,
+        'pause_button': 0x7000dcfbe8,
+        'pause_upgrade_offer': 0x7000dcecb8,
+        'pause_upgrade_owned': 0x7000dcecc0,
+        'pause_upgrade_text': 0x7000dcf02c,
+        'msg_find': 0x7000f6a04c,
         'title_options_state': 0x3654,
         'title_msg_file': 0x7001e31f50,
         'title_version_format': 0x70015cd092,
+        'title_version_text_a': 0x7000e5eda0,
+        'title_version_text_b': 0x7000e5f248,
         'frame_wait': 0x7000e9487c,
         'frame_loop_interval_ret': 0x70011267c4,
         'vfr_ratio': 0x700151d494,
         'gui_speed': 0x7001280ee8,
         'quick_menu_capture_alpha': 0x7000e26a38,
+        'day_cycle_time_only': 0x70014266d4,
+        'day_cycle_normal': 0x7001426788,
         'arrow_fall_gravity': 0x70005ee734,
         'surf_contact': 0x70011e9e74,
         'surf_boost_remove': 0x70011e9e94,
@@ -691,6 +845,11 @@ KNOWN = {
         'controller_step': 0x7001dad0e0,
         'player_info': 0x7001e13ed0,
         'world_mgr': 0x7001e57580,
+        'silent_link': 0x70010d7e1c,
+        'hero_soul_wind': 0x7000cd9390,
+        'hero_soul_electric': 0x7000cd94a4,
+        'hero_soul_fire': 0x7000cd9428,
+        'hero_soul_water': 0x7000cd9520,
         'cam_stick': 0x7000d57fe0,
         'cam_stick_end': 0x7000d5801c,
         'horse_cam_lr': 0x7000c29000,
@@ -714,6 +873,15 @@ KNOWN = {
         'grass_blade_lateral_near': 0x70013a8f0c,
         'grass_blade_lateral_far': 0x70013a8f20,
         'tree_ranges': 0x70013c94ac,
+        'game_heap_size': 0x700000071c,
+        'game_root_heap_size': 0x7000c617c0,
+        'game_fixed_heap_size': 0x700131aef8,
+        'game_texarc_heap_size': 0x700131b49c,
+        'game_texture_pool': 0x700127b6e0,
+        'game_texture_pool_b': 0x700127b6e8,
+        'game_resource_s': 0x700155fda4,
+        'game_resource_l': 0x700155fde0,
+        'game_starter_pack': 0x7001209a8c,
         'act_hold': 0x7000d16f0c,
         'act_trig': 0x7000d16f74,
         'act_masks': 0x70016d89b4,
@@ -731,9 +899,24 @@ KNOWN = {
         'battle_info_c': 0x7001349648,
         'horse_crash': 0x70006b16c4,
         'horse_look_ahead': 0x70006b4218,
+        'camera_squat_idle': 0x7000ca9ef0,
+        'camera_enter_start': 0x7000caa6f4,
+        'camera_exit_finished': 0x7000cabfb4,
+        'camera_exit_active': 0x7000cacfac,
+        'camera_leave': 0x7000ca3734,
         'item_tick': 0x7000cc4c3c,
         'pouch_item_get': 0x7000d921bc,
         'pouch_mgr': 0x7001e18570,
+        'actor_create': 0x7001535b10,
+        'actor_creator': 0x7001e95430,
+        'actor_create_heap': 0x7001e14cd8,
+        'inst_params_vt': 0x7001bc5530,
+        'inst_params_init': 0x700112615c,
+        'inst_params_add': 0x7001126168,
+        'inst_params_add_string': 0x7000589948,
+        'place_count_read': 0x7000d7bea4,
+        'place_travel': 0x7000d7b904,
+        'place_icon': 0x7000dac488,
         'main_data': 0x7001b7a000,
         'main_end': 0x7001e98000,
     },

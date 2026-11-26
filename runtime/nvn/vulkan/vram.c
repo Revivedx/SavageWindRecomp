@@ -248,3 +248,12 @@ void vram_device_local_allocated(uint64_t *allocated, uint64_t *budget) {
 }
 
 bool vram_budget_ext(void) { return budget_ext; }
+
+bool vram_query_mb(int *total_mb, int *budget_mb) {
+    if (!g_vk.vma) return false;
+    uint64_t budget = 0, size = 0;
+    vram_device_local(NULL, &budget, &size);
+    if (total_mb) *total_mb = (int)(size >> 20);
+    if (budget_mb) *budget_mb = (int)(budget >> 20);
+    return size > 0;
+}

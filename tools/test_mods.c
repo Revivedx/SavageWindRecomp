@@ -8,6 +8,7 @@
 
 #ifdef _WIN32
 #include <direct.h>
+#include <io.h>
 #include <process.h>
 #define getpid _getpid
 #else
@@ -448,12 +449,98 @@ static void test_session_overlay_and_restart(void) {
     rm_rf(root);
 }
 
+// What mods_session_begin writes to stderr (savagewind.log), read back from `path`
+static char *session_log(const char *root, const char *path) {
+    fflush(stderr);
+    int keep = dup(2);
+    FILE *f = fopen(path, "wb");
+    if (keep < 0 || !f) {
+        fprintf(stderr, "FATAL: cannot capture stderr in %s\n", path);
+        exit(2);
+    }
+    dup2(fileno(f), 2);
+    mods_session_begin(root);
+    fflush(stderr);
+    dup2(keep, 2);
+    close(keep);
+    fclose(f);
+    f = fopen(path, "rb");
+    static char text[16384];
+    size_t n = f ? fread(text, 1, sizeof text - 1, f) : 0;
+    if (f) fclose(f);
+    text[n] = 0;
+    remove(path);
+    return text;
+}
+
+static void test_session_log(void) {
+    char root[512], env_dir[512], cap[600], long_line[300], want[400];
+    make_tmp_root(root, sizeof root, "log");
+    snprintf(env_dir, sizeof env_dir, "%s/env_overlay", root);
+    snprintf(cap, sizeof cap, "%s/stderr.txt", root);
+    write_text(env_dir, "Pack/TitleBG.pack", "ENV_PACK");
+    write_text(env_dir, "Actor/Pack/Hero.sbactorpack", "ENV_HERO");
+    write_text(root, "mods/top_mod/info.json", "{ \"name\": \"Top Priority\", \"version\": \"1.2\" }\n");
+    write_text(root, "mods/top_mod/Actor/Hero.sbactorpack", "TOP_HERO");
+    write_text(root, "mods.txt", "1 top_mod\n");
+    char report[400];
+
+    // No mods: one line that says so
+    set_env_var("SAVAGEWIND_ROMFS_OVERLAY", NULL);
+    CHECK(mods_set_enabled(root, "top_mod", false));
+    char *log = session_log(root, cap);
+    CHECK(strstr(log, "[mods] none (") != NULL);
+    CHECK(mods_report_line(report, sizeof report) > 0);
+    CHECK(strcmp(report, "Mods: none\n") == 0);
+
+    // An overlay with no list: its file count and top folders; the mod from mods/ with its version
+    CHECK(mods_set_enabled(root, "top_mod", true));
+    set_env_var("SAVAGEWIND_ROMFS_OVERLAY", env_dir);
+    log = session_log(root, cap);
+    CHECK(strstr(log, "[mods] active overlay layers (2), highest priority first:\n") != NULL);
+    snprintf(want, sizeof want, "[mods]   #1 SAVAGEWIND_ROMFS_OVERLAY (%s)\n", env_dir);
+    CHECK(strstr(log, want) != NULL);
+    CHECK(strstr(log, "[mods]     no savagewind-mods.txt (no list of the mods in it): 2 files") != NULL);
+    CHECK(strstr(log, "Actor") != NULL && strstr(log, "Pack") != NULL);
+    CHECK(strstr(log, "[mods]   #2 Top Priority 1.2 (mods/top_mod: 1 file,") != NULL);
+    CHECK(strstr(log, "[mods] 2 mods loaded:") != NULL);
+    CHECK(mods_report_line(report, sizeof report) > 0);
+    CHECK(strcmp(report, "Mods: 2 overlay layers (SAVAGEWIND_ROMFS_OVERLAY, Top Priority); the mods are listed in "
+                         "savagewind.log\n") == 0);
+
+    // The list a mod manager writes: notes and mods copied (CR, control characters and blank lines dropped, a long
+    // line cut), only the mods counted
+    memset(long_line, 'x', 260);
+    long_line[260] = 0;
+    char list[600];
+    snprintf(list, sizeof list, "# SWMM+ 0.2.0, profile Default\r\nLinkle 1.0.2 (BNP)\r\n\r\n  Ultimate\x01UI 2.0 (Wii U "
+             "BNP)\n%s\n", long_line);
+    write_text(env_dir, "savagewind-mods.txt", list);
+    log = session_log(root, cap);
+    CHECK(strstr(log, "[mods]     # SWMM+ 0.2.0, profile Default\n") != NULL);
+    CHECK(strstr(log, "[mods]     Linkle 1.0.2 (BNP)\n") != NULL);
+    CHECK(strstr(log, "[mods]     Ultimate UI 2.0 (Wii U BNP)\n") != NULL);
+    long_line[240] = 0;
+    snprintf(want, sizeof want, "[mods]     %s\n", long_line);
+    CHECK(strstr(log, want) != NULL);
+    CHECK(strstr(log, "no savagewind-mods.txt") == NULL);
+    CHECK(strstr(log, "[mods] 4 mods loaded:") != NULL);
+
+    // A short buffer still ends in a line
+    CHECK(mods_report_line(report, 24) > 0);
+    CHECK(strlen(report) == 23 && ends_with(report, "...\n"));
+
+    set_env_var("SAVAGEWIND_ROMFS_OVERLAY", NULL);
+    rm_rf(root);
+}
+
 int main(void) {
     test_ignored_top_files();
     test_empty_and_hidden_discovery();
     test_layouts_metadata_and_file_counts();
     test_persistence_reconcile_mutators_and_conflicts();
     test_session_overlay_and_restart();
+    test_session_log();
 
     printf("test_mods: %d checks, %d failed\n", g_checks, g_fails);
     return g_fails ? 1 : 0;

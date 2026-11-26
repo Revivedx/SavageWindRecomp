@@ -544,12 +544,10 @@ static int ttc_face(const char *path, const char *lang) {
 static bool add_single_fallback(ImFontAtlas *atlas, float size, const ImFontConfig *base,
                                 const char *const *fonts, const char *lang,
                                 const ImVector<ImWchar> &ranges, const char *shipped_path = nullptr) {
-    if (!fonts) return false;
-    for (int i = -1; i < 0 || fonts[i]; i++) {
-        const char *path = (i < 0 && shipped_path) ? shipped_path : (i >= 0 ? fonts[i] : nullptr);
-        if (!path || !*path) continue;
+    auto try_load = [&](const char *path) -> bool {
+        if (!path || !*path) return false;
         FILE *f = fopen(path, "rb");
-        if (!f) continue;
+        if (!f) return false;
         fclose(f);
         ImFontConfig cfg = base ? *base : ImFontConfig();
         cfg.MergeMode = true;
@@ -557,6 +555,11 @@ static bool add_single_fallback(ImFontAtlas *atlas, float size, const ImFontConf
         cfg.FontDataOwnedByAtlas = true;
         atlas->AddFontFromFileTTF(path, size, &cfg, ranges.Data);
         return true;
+    };
+    if (shipped_path && try_load(shipped_path)) return true;
+    if (fonts) {
+        for (int i = 0; fonts[i]; i++)
+            if (try_load(fonts[i])) return true;
     }
     return false;
 }

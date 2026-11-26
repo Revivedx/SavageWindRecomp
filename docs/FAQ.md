@@ -538,8 +538,10 @@ the Switch version 1.9.0 fit best; Wii U and Cemu packs need adapting, because t
 (0.6.0), a mod's `romfs` folder can be loaded with the launch option `SAVAGEWIND_ROMFS_OVERLAY=<folder>`.
 
 **Mods are other people's work.** Savage Wind doesn't check, test or support them, and isn't responsible for what they
-do, including if they break the game or your saves. Back up your saves before trying one, and turn every mod off before
-reporting a bug: a bug caused by a mod is closed right away, because we don't support what isn't ours. Savage Wind
+do, including if they break the game or your saves. Back up your saves before trying one. `savagewind.log` lists the
+mods each run loads, so a bug report with mods on first gets asked to try again with every mod off. If the bug is still
+there without mods, report it here as usual. If it goes away, a mod causes it: the report here is closed, and it belongs in
+[SWMM+'s issues](https://github.com/Revivedx/SWMMPlus/issues), where it's narrowed down to the mod at fault. Savage Wind
 releases never include mods, and mods must not be shared with game files in them
 ([#647](https://github.com/Revivedx/SavageWindRecomp/issues/647),
 [#645](https://github.com/Revivedx/SavageWindRecomp/issues/645)). In the future we may point to mods we've found to

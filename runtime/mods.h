@@ -71,6 +71,8 @@ bool mods_env_override(char *out, size_t cap);
 
 // Snapshot active overlay layers for the current boot: env override first, then enabled mods #1..#N.
 void mods_session_begin(const char *root);
+// The mods this run loaded, as the log counts them: each one an overlay's savagewind-mods.txt names, each Mods tab mod
+int mods_session_mod_count(void);
 
 // True if saved enabled mod order in <root>/mods.txt differs from the booted session snapshot.
 bool mods_session_pending_restart(const char *root);
@@ -79,6 +81,9 @@ bool mods_session_pending_restart(const char *root);
 int         mods_active_count(void);
 const char *mods_active_dir(int index);
 const char *mods_active_name(int index);
+
+// The problem report's line about mods ("Mods: none\n", or the active layers' names), written to `out`; its length
+int mods_report_line(char *out, size_t cap);
 
 // Locate the highest-priority regular file matching `<ov_sub>/<rel>` across active layers.
 bool mods_find_file(const char *ov_sub, const char *rel,

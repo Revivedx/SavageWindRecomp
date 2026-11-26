@@ -13,9 +13,12 @@ bool framepace_loading_ui(void) { return loading; }
 bool framepace_in_event(void) { return false; }
 bool fsr3_available(void) { return false; }
 bool fsr4_available(void) { return false; }
-bool vk_dlss_available(void) { return false; }
+static bool dlss_on;  // (the Render scale cases below)
+bool vk_dlss_available(void) { return dlss_on; }
 bool xess_available(void) { return false; }
 bool xess_usable(void) { return false; }
+bool vk_dlssg_available(void) { return false; }
+int vk_dlssg_max_mult(void) { return 2; }
 uint64_t plat_now_ns(void) { return 1000000000; }
 uint64_t renderer_present_count(void) { return 0; }
 uint64_t framepace_shown_frame(void) { return 0; }
@@ -138,5 +141,41 @@ int main(void) {
     g_settings.render_scale = RSCALE_50;
     near(k_dyn_res_factors[dyn_res_max_step()], 1.5);
     g_settings.render_scale = RSCALE_100;
-    puts("PASS: taller map viewport, 16:9 fallback, disabled fill, title, loading, movies, ultrawide and dynamic floor");
+
+#ifndef SW_METAL
+    // Render scale with a temporal upscaler (DLSS here): up to 100%, in Native (DLAA) 100%. A stored value it doesn't
+    // offer runs as 100%; render_scale_fit, from the menus, sets it to 100% and back when it is offered again.
+    dlss_on = true;
+    g_settings.upscaler = UPSCALE_DLSS, g_settings.upscale_quality = UPQ_QUALITY;
+    g_settings.render_scale = RSCALE_75;
+    assert(render_scale_offered(RSCALE_75) && render_scale_now() == RSCALE_75);
+    g_settings.render_scale = RSCALE_150;
+    assert(!render_scale_offered(RSCALE_150) && render_scale_now() == RSCALE_100);
+    assert(g_settings.render_scale == RSCALE_150);  // (stored as it was until a menu fits it)
+    render_scale_fit();
+    assert(g_settings.render_scale == RSCALE_100);
+    g_settings.upscaler = UPSCALE_OFF;  // (stepping on to no upscaler: the 150% comes back)
+    render_scale_fit();
+    assert(g_settings.render_scale == RSCALE_150);
+    g_settings.upscaler = UPSCALE_DLSS, g_settings.upscale_quality = UPQ_NATIVE;
+    g_settings.render_scale = RSCALE_75;
+    assert(!render_scale_offered(RSCALE_75) && render_scale_now() == RSCALE_100);
+    render_scale_fit();
+    assert(g_settings.render_scale == RSCALE_100);
+    g_settings.upscale_quality = UPQ_DYNAMIC;  // (on to Dynamic: 75% is offered again and comes back)
+    render_scale_fit();
+    assert(g_settings.render_scale == RSCALE_75);
+    g_settings.render_scale = RSCALE_50;
+    assert(render_scale_offered(RSCALE_50) && render_scale_now() == RSCALE_50);
+    g_settings.upscale_quality = UPQ_NATIVE;  // (a value the player set: fitted to 100%, kept once set in its row)
+    render_scale_fit();
+    render_scale_chosen();
+    g_settings.upscale_quality = UPQ_DYNAMIC;
+    render_scale_fit();
+    assert(g_settings.render_scale == RSCALE_100);
+    dlss_on = false, g_settings.upscaler = UPSCALE_OFF, g_settings.upscale_quality = UPQ_QUALITY;
+    g_settings.render_scale = RSCALE_100;
+#endif
+    puts("PASS: taller map viewport, 16:9 fallback, disabled fill, title, loading, movies, ultrawide, dynamic floor and "
+         "render scale with DLSS");
 }

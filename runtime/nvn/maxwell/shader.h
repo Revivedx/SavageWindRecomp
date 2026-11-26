@@ -119,6 +119,10 @@ extern bool maxwell_gmem_split, maxwell_gmem_snap, maxwell_gmem_bda;
 // (shaders.c xlate_id), so each choice keeps its own cached translations of them.
 extern bool maxwell_wet_fix;
 bool maxwell_wet_lighting(const uint8_t *blob, size_t max_size, int stage);
+// Video > Stars (settings.h stars), set like maxwell_wet_fix: the night sky's star points' brightness and size
+// (1 and 1: the game's). maxwell_stars: 1 their vertex shader, 2 their fragment shader, 0 any other; part of ids.
+extern float maxwell_star_gain, maxwell_star_size;
+int maxwell_stars(const uint8_t *blob, size_t max_size, int stage);
 // Debug: when translating the shader whose code starts at maxwell_dbg_code, output register
 // maxwell_dbg_reg as captured after the instruction at maxwell_dbg_pc (greyscale, all targets).
 extern const uint8_t *maxwell_dbg_code;

@@ -18,6 +18,10 @@
 // the target (tools/patches.py _tp_gate calls rt_tp_gate_begin / rt_tp_gate_end around the game's own function). The
 // world keeps running and loads the map; the game's real answer is counted, and once the ground has been ready for
 // several updates in a row the hold ends and Link falls onto it as after a short teleport.
+// The camera is part of it: the game loads the map around the camera as well as around Link, and after the jump the
+// orbit camera stays halfway back along the way it came (it was 2000 units from Link after a jump to Raqa Zunzo), so
+// the side of the target away from it never loaded and the hold timed out into a frozen world. The hold moves the
+// camera with Link (control_cell_camera_follow), keeping the way it looks.
 #include <math.h>
 #include <stdatomic.h>
 #include <stdio.h>
@@ -62,6 +66,7 @@ static bool want_hold;                      // this teleport is a far one
 static uint64_t hold_t0;
 static _Atomic uint64_t hold_cell;                  // where the hold writes Link's position (the teleport's address)
 static __thread int in_gate;
+static float cam_off[3];                    // the camera target's offset from Link before the jump (kept during the hold)
 
 // Called by the game's ground question (tools/patches.py _tp_gate) on the game's thread.
 int rt_tp_gate_begin(void) {
@@ -73,6 +78,7 @@ static void hold_write(void) {  // keep Link at the target, and the fall (damage
     uint64_t cell = atomic_load(&hold_cell);
     if (!cell) return;
     control_mem_poke(cell, target, sizeof target);
+    control_cell_camera_follow(target, cam_off);
     double y = target[1];
     control_cell_set(&control_cell_player_fall_top, &y);
     control_cell_set(&control_cell_player_fall_top2, &y);
@@ -255,7 +261,12 @@ static bool tp_begin(const float t[3], uint64_t frame, char *err, size_t nerr) {
     ttol = fmaxf(0.01f, fminf(2.0f, 0.25f * fmaxf(d, 0.2f)));  // (a copy that did not move is d away; the real one is at the target)
     why[0] = 0; tried = 0;
     want_hold = d >= HOLD_DIST || fabsf(t[1] - pp[1]) >= 4.0f * HOLD_DIST;
-    if (want_hold) { atomic_store(&ready_run, 0); atomic_store(&hold_updates, 0); atomic_store(&hold_on, 1); }  // (before the write: the next update must not see the far position first)
+    if (want_hold) {
+        double ct[3];
+        if (control_cell_get(&control_cell_camera_target, ct)) for (int i = 0; i < 3; i++) cam_off[i] = (float)ct[i] - pp[i];
+        else cam_off[0] = 0.0f, cam_off[1] = 1.5f, cam_off[2] = 0.0f;
+        atomic_store(&ready_run, 0); atomic_store(&hold_updates, 0); atomic_store(&hold_on, 1);
+    }  // (before the write: the next update must not see the far position first)
     float at[3];
     uint64_t pa = path_addr();
     if (pa) cache = pa;  // (the direct route: no search)

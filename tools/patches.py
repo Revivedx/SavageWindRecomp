@@ -41,6 +41,42 @@ def _ui_layout_pane(gen, a):
             f'if (rt_ui_layout_pane_draw(c, {fn})) return; c->x[8] = LD8(c->x[0] + 0x58); }}')
 
 
+def _cjk_font_size(gen, a):
+    assert _word(gen, a) == 0x53103d01, hex(_word(gen, a))  # lsl w1, w8, #0x10
+    return ('{ extern uint32_t rt_cjk_font_scale(void); '
+            'uint32_t scale = rt_cjk_font_scale(); '
+            'uint32_t size = (uint32_t)c->x[8] * scale; '
+            'c->x[1] = size << 16; }')
+
+
+def _cjk_font_bin(gen, a):
+    assert _word(gen, a) == 0x7d406f81, hex(_word(gen, a))  # ldr h1, [x28, #0x36]
+    return ('{ extern uint32_t rt_cjk_font_scale(void); '
+            'uint64_t ea = c->x[28] + 0x36ull; '
+            'uint32_t scale = rt_cjk_font_scale(); '
+            'c->v[1] = (u128)((uint32_t)LD16(ea) * scale); }')
+
+
+def _cjk_font_quad(gen, a):
+    assert _word(gen, a) == 0x2d42212b, hex(_word(gen, a))  # ldp s11, s8, [x9, #0x10]
+    return ('{ extern uint32_t rt_cjk_font_scale(void); '
+            'uint64_t ea = c->x[9] + 16; '
+            'uint32_t u_s11 = LD32(ea); '
+            'uint32_t u_s8 = LD32(ea + 4); '
+            'uint32_t scale = rt_cjk_font_scale(); '
+            'if (scale > 1) { '
+            'float f_s11, f_s8; '
+            'memcpy(&f_s11, &u_s11, 4); '
+            'memcpy(&f_s8, &u_s8, 4); '
+            'f_s11 /= (float)scale; '
+            'f_s8 /= (float)scale; '
+            'memcpy(&u_s11, &f_s11, 4); '
+            'memcpy(&u_s8, &f_s8, 4); '
+            '} '
+            'c->v[11] = (u128)u_s11; '
+            'c->v[8] = (u128)u_s8; }')
+
+
 def _quick_sort_enter(gen, a):
     # Menu::enter: sample held X before the selector initializes its list.
     assert _word(gen, a) == 0xfc1d0fe8, hex(_word(gen, a))  # str d8, [sp, #-0x30]!
@@ -375,6 +411,45 @@ def _title_msg(gen, a):
             f'  /* {a:#x}: sub sp, sp, #0x40 (message lookup) */')
 
 
+def _msg_find(gen, a):
+    # A message file's search by label (x0 = file, x1 = the label, a C string; x8 = where the {char16_t *, u32 length}
+    # it finds goes), which the layouts' texts go through: the pause System page's seventh button (Pa_Btn_06, see
+    # _pause_upgrade) reads Achievements
+    assert _word(gen, a) == 0xa9bd7bfd, hex(_word(gen, a))  # stp x29, x30, [sp, #-0x30]!
+    return ('{ extern int rt_pause_msg(uint64_t, uint64_t); if (rt_pause_msg(c->x[1], c->x[8])) return; '
+            'uint64_t ea = c->sp - 0x30; ST64(ea, c->x[29]); ST64(ea + 8, c->x[30]); c->sp = ea; }'
+            f'  /* {a:#x}: stp x29, x30, [sp, #-0x30]! (message file: find a label) */')
+
+
+def _pause_upgrade(flag, value):
+    # The pause menu System page's setup adds a seventh button (0x53, Pa_Btn_06, in the gap the layout leaves under Load)
+    # when the Nintendo Switch 2 Edition upgrade is offered (+0x280) and not owned (+0x281): with the runtime's
+    # Achievements button on, they read as such, and the button is Achievements (_pause_button, _msg_find)
+    def patch(gen, a):
+        assert _word(gen, a) == 0x394a0268 | (flag & 1) << 10, hex(_word(gen, a))  # ldrb w8, [x19, #flag]
+        return ('{ extern int rt_pause_ach_button(void); '
+                f'c->x[8] = rt_pause_ach_button() ? {value} : LD8(c->x[19] + {flag:#x}); }}'
+                f'  /* {a:#x}: ldrb w8, [x19, #{flag:#x}] (pause System page: the upgrade button) */')
+    return patch
+
+
+def _pause_upgrade_text(gen, a):
+    # ... and its text: the code gives it "Nintendo Switch 2 Edition" ({char16_t *, u32 length} at sp, for the call
+    # that sets it, after this instruction); the runtime puts Achievements there instead
+    assert _word(gen, a) == 0x910003e1, hex(_word(gen, a))  # mov x1, sp
+    return ('{ extern void rt_pause_ach_text(uint64_t); rt_pause_ach_text(c->sp); c->x[1] = c->sp; }'
+            f'  /* {a:#x}: mov x1, sp (pause System page: the upgrade button text) */')
+
+
+def _pause_button(gen, a):
+    # The pause menu System page's button handler (x0 = page, x1 = button, its id at +0x44; it switches on id - 0x4d):
+    # the seventh button (0x53; the Nintendo Switch 2 Edition upgrade, offered through the Nintendo eShop) goes on as
+    # Options (0x4f), with the Options screen set to open on its Achievements page (runtime/ui/game_options.mm)
+    assert _word(gen, a) == 0xb9404428, hex(_word(gen, a))  # ldr w8, [x1, #0x44]
+    return ('{ extern uint32_t rt_pause_button(uint32_t); c->x[8] = rt_pause_button(LD32(c->x[1] + 0x44)); }'
+            f'  /* {a:#x}: ldr w8, [x1, #0x44] (pause System page: button) */')
+
+
 def _pause_option_state(gen, a):
     # The pause menu System page's Options state update (x0 = page): it leaves the state once the screen reports
     # closed. During a page change it waits instead, then opens it again.
@@ -412,6 +487,17 @@ def _dialog_back(gen, a):
 # game's time step comes from (interval / 2): the runtime puts the frame's real length there, before the time
 # multipliers and the deltas are worked out from it.
 
+# The title screen's version line: main formats System/Version.txt's string, which the game keeps in 16 bytes, into it;
+# the whole "Savage Wind 0.6.0" comes from the runtime instead (runtime/services/fs.c rt_title_version_text).
+def _title_version_text(reg, word):
+    def patch(gen, a):
+        assert _word(gen, a) == word, hex(_word(gen, a))  # ldr x2, [x<reg>, #0x108]
+        return ('{ extern uint64_t rt_title_version_text(uint64_t); '
+                f'c->x[2] = rt_title_version_text(LD64(c->x[{reg}] + 0x108)); }}'
+                f'  /* {a:#x}: ldr x2, [x{reg}, #0x108] (the title screen\'s version line) */')
+    return patch
+
+
 def _frame_wait(gen, a):
     assert _word(gen, a) == 0xa9bd7bfd, hex(_word(gen, a))  # stp x29, x30, [sp, #-0x30]!
     return ('{ extern int rt_frame_wait(void); if (rt_frame_wait()) return; '
@@ -423,6 +509,13 @@ def _vfr_ratio(gen, a):
     assert _word(gen, a) == 0xb9407a68, hex(_word(gen, a))  # ldr w8, [x19, #0x78]
     return ('{ extern void rt_vfr_update(uint64_t); rt_vfr_update(c->x[19]); c->x[8] = LD32(c->x[19] + 0x78); }'
             f'  /* {a:#x}: ldr w8, [x19, #0x78] (VFR: interval ratio) */')
+
+
+def _day_cycle_step(gen, a):
+    assert _word(gen, a) == 0xbd40c668, hex(_word(gen, a))  # ldr s8, [x19, #0xc4]
+    # Change the local step only. TimeMgr still applies its own frame delta and publishes WM_Time.
+    return ('{ extern uint32_t rt_day_cycle_step(uint32_t); '
+            'c->v[8] = rt_day_cycle_step((uint32_t)LD32(c->x[19] + 0xc4)); }')
 
 
 # Arrows (#144): once in their fall, an arrow's velocity is its last direction x its speed plus a gravity vector
@@ -744,6 +837,38 @@ def _persp_unproject_x(gen, a):
 # the mouse turns both alike. Optional sites (tools/game_sites.py OPTIONAL_GROUPS): without them the mouse moves the
 # stick, as before.
 
+# The four champion abilities' "can this be used" checks (tools/game_sites.py hero_soul_*; runtime/assists.c
+# rt_hero_soul): each returns 0 while the game forbids hero souls, as the shrines and the Trial of the Sword do, and
+# while the ability recharges. With the option on the check passes, so the ability works from the start of the game and
+# in those places; off, the original instruction runs.
+def _hero_soul_entry(gen, a, which, who):
+    w = _word(gen, a)
+    assert (w & 0x9F000000) == 0x90000000, hex(w)  # adrp
+    return (f'{{ extern int rt_hero_soul(int); if (rt_hero_soul({which})) {{ c->x[0] = 1; return; }} '
+            f'c->x[{w & 31}] = {adrp_page(w, a):#x}ull; }}'
+            f'  /* {a:#x}: adrp (the check for {who}) */')
+
+
+def _hero_soul_wind(gen, a):
+    return _hero_soul_entry(gen, a, 0, "Revali's Gale")
+
+
+def _hero_soul_electric(gen, a):
+    return _hero_soul_entry(gen, a, 1, "Urbosa's Fury")
+
+
+def _hero_soul_fire(gen, a):
+    return _hero_soul_entry(gen, a, 2, "Daruk's Protection")
+
+
+def _hero_soul_water(gen, a):
+    # Mipha's check is the one that saves the caller's registers before testing
+    assert _word(gen, a) == 0xa9be7bfd, hex(_word(gen, a))  # stp x29, x30, [sp, #-0x20]!
+    return ('{ extern int rt_hero_soul(int); if (rt_hero_soul(3)) { c->x[0] = 1; return; } '
+            'uint64_t ea = c->sp - 0x20; ST64(ea, c->x[29]); ST64(ea + 8, c->x[30]); c->sp = ea; }'
+            f"  /* {a:#x}: stp x29, x30, [sp, #-0x20]! (the check for Mipha's Grace) */")
+
+
 def _cam_stick(gen, a):
     assert _word(gen, a) == _sub_sp(0x30), hex(_word(gen, a))
     return ('{ extern int rt_cam_stick(uint64_t, uint64_t); if (rt_cam_stick(c->x[0], c->x[30])) return; '
@@ -757,6 +882,17 @@ def _cam_stick_end(gen, a):
     assert _word(gen, a) == 0xfd400be8, hex(_word(gen, a))  # ldr d8, [sp, #0x10]
     return ('{ extern void rt_cam_stick_end(uint64_t); rt_cam_stick_end(c->x[19]); c->v[8] = LD64(c->sp + 0x10); }'
             f'  /* {a:#x}: ldr d8, [sp, #0x10] (camera stick input: its end) */')
+
+
+def _silent_link(gen, a):
+    # The game's noise setter (object = x0, channel = w1, value = s0). With the option on, channel 1 stays at zero: the
+    # setter returns before storing anything, and the runtime puts the zero in the channel (runtime/assists.c). The
+    # other channels (and every other actor) go through the setter as before.
+    assert _word(gen, a) == 0x51000429, hex(_word(gen, a))  # sub w9, w1, #1
+    return ('{ extern int rt_silent_link(uint64_t, uint32_t); '
+            'if (rt_silent_link(c->x[0], (uint32_t)c->x[1])) return; '
+            'c->x[9] = (uint32_t)((uint32_t)c->x[1] - 1u); }'
+            f'  /* {a:#x}: sub w9, w1, #1 (the noise setter: (object, channel, value)) */')
 
 
 def _cam_pitch(gen, a):
@@ -927,6 +1063,64 @@ def _grass_blade_lateral(gen, a):
             f'c->nzcv = rt_fcmp_s(c, rt_vf32(c, 0), rt_grass_blade_lateral({n - 6}, rt_vf32(c, {n}), rt_vf32(c, 9), rt_vf32(c, 13), rt_vf32(c, 21), '
             'LD32(c->sp + 0x204), LD32(c->sp + 0x208))); }'
             f'  /* {a:#x}: fcmp s0, s{n} (grass blades: a cell inside the region\'s width) */')
+
+
+# The game's memory (game_memory_mb, runtime/kernel.c kernel_memory_setup). nninitStartup asks SetMemoryHeapSize for
+# 3120 MB (1.9.0 0x700000071c) and main gives sead's root heap that less the 32 MB malloc keeps (0x7000c617c0); the
+# resource heap takes what the root heap has left. Both sizes come from the runtime: the game's own unless the
+# setting asks for more.
+
+def _game_heap_size(gen, a):
+    assert _word(gen, a) == 0x52b86000, hex(_word(gen, a))  # mov w0, #0xc3000000
+    return ('{ extern uint64_t rt_game_heap_size(void); c->x[0] = rt_game_heap_size(); }'
+            f'  /* {a:#x}: mov w0, #0xc3000000 (SetMemoryHeapSize) */')
+
+
+def _game_root_heap_size(gen, a):
+    assert _word(gen, a) == 0x52b82008, hex(_word(gen, a))  # mov w8, #0xc1000000
+    return ('{ extern uint64_t rt_game_heap_size(void); c->x[8] = rt_game_heap_size() - 0x2000000; }'
+            f'  /* {a:#x}: mov w8, #0xc1000000 (the root heap: the heap less malloc\'s 32 MB) */')
+
+
+# The resource system's FixedHeap (374 MB, 1.9.0 0x700131aef8) and the TexArcWork heap it makes inside itself (192 MB,
+# 0x700131b49c), where texture archives are tried first: with an HD texture pack those tries fail more often and fall
+# back. Both grow by the same amount with game_memory_mb (runtime/kernel.c rt_game_heap_grow; nothing without it).
+
+def _game_heap_grow(word, reg, size, fn='rt_game_heap_grow'):
+    def patch(gen, a):
+        assert _word(gen, a) == word, hex(_word(gen, a))
+        return (f'{{ extern uint64_t {fn}(uint64_t); c->x[{reg}] = {fn}({size:#x}); }}'
+                f'  /* {a:#x}: mov w{reg}, #{size:#x} */')
+    return patch
+
+
+# The resource manager's ForResourceS / ForResourceL heaps (1.9.0 0x700155fda4 / 0x700155fde0), sized from its
+# settings: StarterPackMgr, where the resident packs load, takes what ForResourceL (694 MB) has left, and an HD
+# Pack/TitleBG.pack (363 MB) does not fit (crash at the title). The size read grows with game_memory_mb
+# (runtime/kernel.c rt_game_resource_heap; nothing without it).
+
+def _game_resource_heap(word, off, which):
+    def patch(gen, a):
+        assert _word(gen, a) == word, hex(_word(gen, a))
+        return ('{ extern uint64_t rt_game_resource_heap(uint32_t, int); '
+                f'c->x[8] = rt_game_resource_heap(LD32(c->x[20] + {off:#x}), {which}); }}'
+                f'  /* {a:#x}: ldr w8, [x20, #{off:#x}] */')
+    return patch
+
+
+# ... and StarterPackMgr's own heap inside ForResourceL (225 MB, 1.9.0 0x7001209a8c; 20 MB in the mode the csel after
+# it picks), which the resident packs load into: it grows by what ForResourceL grows by.
+
+def _game_starter_pack(gen, a):
+    assert _word(gen, a) == 0x52a1c208, hex(_word(gen, a))  # mov w8, #0xe100000
+    return ('{ extern uint64_t rt_game_resource_heap(uint32_t, int); c->x[8] = rt_game_resource_heap(0xe100000, 2); }'
+            f'  /* {a:#x}: mov w8, #0xe100000 (StarterPackMgr) */')
+
+
+# The GPU memory pool the models' textures load into (1.9.0 0x700127b6e0: 500 MB, or 400 MB in the mode the csel
+# after it picks). It is made at boot and never grows: with an HD texture pack it runs out and models whose textures
+# do not fit are left out (the Shrine of Resurrection without walls). It grows with game_memory_mb
+# (runtime/kernel.c rt_game_texture_pool; nothing without it).
 
 
 # The terrain's distant trees (tera::Core::Tree, 1.9.0 0x70013c94ac, 1.8.2 0x70012b55cc: its per-frame shader setup).
@@ -1180,7 +1374,100 @@ def _tp_gate(gen, a):
             f'  /* {a:#x}: sub sp, sp, #0xa0 (is the ground around Link still loading?) */')
 
 
+# The read the whole marker update is built on: the record's visit count. With the option on it reads as 1 for a place
+# never visited, so the game marks it as visited itself and draws its marker - no game data is written at all. The
+# record pointer goes along so the runtime can leave everything that is not a shrine, tower, stable or lab alone.
+def _place_count_read(gen, a):
+    assert _word(gen, a) == 0xb9401d08, hex(_word(gen, a))  # ldr w8, [x8, #0x1c]
+    return ('{ extern uint32_t rt_place_count(uint64_t, uint32_t); '
+            'c->x[8] = rt_place_count(c->x[8], LD32(c->x[8] + 0x1c)); }'
+            f'  /* {a:#x}: ldr w8, [x8, #0x1c] (map markers: Cheats > Map) */')
+
+
+# The travel bit of a place marker: the update computes a marker's flags with 0x400 for its state and 0x200 for "the
+# map may travel here". Cheats > Map replaces that select: a place the option shows is a travel destination without
+# being activated, which is also what leaves the map fog alone (activating a tower is what reveals its region). The
+# original select is kept for everything the option does not cover.
+def _place_travel(gen, a):
+    assert _word(gen, a) == 0x1a9f116b, hex(_word(gen, a))  # csel w11, w11, wzr, ne
+    return ('{ extern uint32_t rt_place_travel(uint64_t, uint32_t); '
+            'c->x[11] = ((c->x[1] & 1u) ? (uint32_t)c->x[11] : 0u); '
+            'c->x[11] = rt_place_travel(c->x[0], (uint32_t)c->x[11]); }'
+            f'  /* {a:#x}: csel w11, w11, wzr, ne (map markers: Cheats > Map) */')
+
+
+# The marker draw's colour decision: it reads the marker's flags and tests the travel bit (0x200) - a marker the
+# option made travelable would be drawn as an activated tower. For a place that was never visited (its record's count
+# is still 0 in memory), the bit is cleared for this read only, so the marker keeps its normal look while the travel
+# point stays in the flags.
+def _place_icon(gen, a):
+    assert _word(gen, a) == 0xb9403e68, hex(_word(gen, a))  # ldr w8, [x19, #0x3c]
+    return ('{ extern uint32_t rt_place_icon(uint64_t, uint32_t); '
+            'c->x[8] = rt_place_icon(c->x[19], LD32(c->x[19] + 0x3c)); }'
+            f'  /* {a:#x}: ldr w8, [x19, #0x3c] (map markers: Cheats > Map) */')
+
+
+# Gameplay > Keep crouch after camera (runtime/camera_stealth.c): when Link enters the Camera rune (`カメラ`), the
+# normal camera action clears his crouch bit and leaves him standing (`待機`) on exit. Record his crouch bit before
+# entering, route normal Camera exits back to crouch idle (`しゃがみ待機`) when enabled, and clear pending state on
+# Camera::leave() so non-normal exits (damage, demos, climbing, water) never leave stale state behind.
+def _adrp_add_cstr(gen, a):
+    w0, w1 = _word(gen, a), _word(gen, a + 4)
+    assert (w0 & 0x9f000000) == 0x90000000, hex(w0)
+    assert (w1 & 0xffc00000) == 0x91000000 and ((w1 >> 5) & 31) == (w0 & 31), (hex(w0), hex(w1))
+    va = adrp_page(w0, a) + ((w1 >> 10) & 0xfff)
+    off = va - gen.base
+    end = gen.nso.image.index(0, off)
+    return bytes(gen.nso.image[off:end]).decode('utf-8')
+
+
+def _camera_enter_start(gen, a):
+    assert _word(gen, a) == 0xf9400668, hex(_word(gen, a))  # ldr x8, [x19, #8]
+    assert _adrp_add_cstr(gen, a + 4) == 'カメラ'
+    return ('{ extern void rt_camera_stealth_enter(uint64_t, int); uint64_t p = LD64(c->x[19] + 8); '
+            'rt_camera_stealth_enter(p, p ? (int)((LD32(p + 0xcec) >> 2) & 1u) : 0); c->x[8] = p; }'
+            f'  /* {a:#x}: ldr x8, [x19, #8] (Camera entry: record crouch bit) */')
+
+
+def _camera_exit_finished(gen, a):
+    w = _word(gen, a)
+    assert (w & 0xfff8001f) == 0x37000000, hex(w)  # tbnz w0, #0, stand
+    assert _adrp_add_cstr(gen, a - 28) == 'カメラ'
+    stand = gen.lift(a).target
+    squat = gen.sites['camera_squat_idle']
+    assert _adrp_add_cstr(gen, stand) == '待機'
+    assert _adrp_add_cstr(gen, squat) == 'しゃがみ待機'
+    return (f'{{ extern int rt_camera_stealth_exit(uint64_t); if (c->x[0] & 1) {{ '
+            f'if (rt_camera_stealth_exit(LD64(c->x[19] + 8))) {{ goto L_{squat:x}; }} '
+            f'goto L_{stand:x}; }} }}'
+            f'  /* {a:#x}: tbnz w0, #0, {stand:#x} (Camera finished: restore crouch idle) */')
+
+
+def _camera_exit_active(gen, a):
+    w = _word(gen, a)
+    assert (w & 0xfc000000) == 0x14000000, hex(w)  # b stand
+    stand = gen.lift(a).target
+    squat = gen.sites['camera_squat_idle']
+    assert _adrp_add_cstr(gen, stand) == '待機'
+    assert _adrp_add_cstr(gen, squat) == 'しゃがみ待機'
+    return (f'{{ extern int rt_camera_stealth_exit(uint64_t); '
+            f'if (rt_camera_stealth_exit(LD64(c->x[19] + 8))) {{ goto L_{squat:x}; }} '
+            f'goto L_{stand:x}; }}'
+            f'  /* {a:#x}: b {stand:#x} (Camera active exit: restore crouch idle) */')
+
+
+def _camera_leave(gen, a):
+    assert _word(gen, a) == 0xf9400100, hex(_word(gen, a))  # ldr x0, [x8]
+    return ('{ extern void rt_camera_stealth_leave(void); rt_camera_stealth_leave(); c->x[0] = LD64(c->x[8]); }'
+            f'  /* {a:#x}: ldr x0, [x8] (Camera::leave: clear pending crouch state) */')
+
+
 PATCHES = {
+    'silent_link': _silent_link,
+    'hero_soul_wind': _hero_soul_wind,
+    'hero_soul_electric': _hero_soul_electric,
+    'hero_soul_fire': _hero_soul_fire,
+    'hero_soul_water': _hero_soul_water,
     'ui_layout_draw': _ui_layout_draw,
     'ui_layout_pane': _ui_layout_pane,
     'replace_tick_call': _replace_tick_call,
@@ -1237,13 +1524,22 @@ PATCHES = {
     'dialog_back': _dialog_back,
     'title_update': _title_tick,
     'title_button': _title_event,
+    'pause_button': _pause_button,
+    'pause_upgrade_offer': _pause_upgrade(0x280, 1),
+    'pause_upgrade_owned': _pause_upgrade(0x281, 0),
+    'pause_upgrade_text': _pause_upgrade_text,
+    'msg_find': _msg_find,
     'msg_lookup': _title_msg,
     'frame_wait': _frame_wait,
+    'title_version_text_a': _title_version_text(20, 0xf9408682),
+    'title_version_text_b': _title_version_text(21, 0xf94086a2),
     'yaz0_stream': _yaz0_stream,
     'yaz0_stream_ret': _yaz0_stream_ret,
     'vfr_ratio': _vfr_ratio,
     'gui_speed': _gui_speed,
     'quick_menu_capture_alpha': _quick_menu_capture_alpha,
+    'day_cycle_time_only': _day_cycle_step,
+    'day_cycle_normal': _day_cycle_step,
     'arrow_fall_gravity': _arrow_gravity,
     'surf_contact': _surf_contact,
     'surf_boost_remove': _surf_boost_remove,
@@ -1294,6 +1590,15 @@ PATCHES = {
     'grass_blade_lateral_near': _grass_blade_lateral,
     'grass_blade_lateral_far': _grass_blade_lateral,
     'tree_ranges': _tree_ranges,
+    'game_heap_size': _game_heap_size,
+    'game_root_heap_size': _game_root_heap_size,
+    'game_fixed_heap_size': _game_heap_grow(0x52a2ec00, 0, 0x17600000),   # mov w0, #0x17600000
+    'game_texarc_heap_size': _game_heap_grow(0x52a18000, 0, 0xc000000),   # mov w0, #0xc000000
+    'game_texture_pool': _game_heap_grow(0x52a3e809, 9, 0x1f400000, 'rt_game_texture_pool'),    # mov w9, #0x1f400000
+    'game_texture_pool_b': _game_heap_grow(0x52a3200b, 11, 0x19000000, 'rt_game_texture_pool'),  # mov w11, #0x19000000
+    'game_resource_s': _game_resource_heap(0xb940ce88, 0xcc, 0),   # ldr w8, [x20, #0xcc]
+    'game_resource_l': _game_resource_heap(0xb940ca88, 0xc8, 1),   # ldr w8, [x20, #0xc8]
+    'game_starter_pack': _game_starter_pack,
     'menu_wrap': _menu_wrap,
     'act_hold': _act_query(0),
     'act_trig': _act_query(1),
@@ -1311,7 +1616,17 @@ PATCHES = {
     'battle_info_c': _battle_info(2),
     'horse_crash': _horse_crash,
     'horse_look_ahead': _horse_look_ahead,
+    'camera_enter_start': _camera_enter_start,
+    'camera_exit_finished': _camera_exit_finished,
+    'camera_exit_active': _camera_exit_active,
+    'camera_leave': _camera_leave,
     'item_tick': _item_tick,
+    'place_count_read': _place_count_read,
+    'place_travel': _place_travel,
+    'place_icon': _place_icon,
+    'cjk_font_size': _cjk_font_size,
+    'cjk_font_bin': _cjk_font_bin,
+    'cjk_font_quad': _cjk_font_quad,
 }
 
 

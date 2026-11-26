@@ -22,6 +22,8 @@ void hw_illust_draw(int device, int which, uint32_t w, uint32_t h, uint8_t *lin,
 // The layouts over the drawings (Layout/Common.sblarc): the Controls page's (blyt/PaAllControllerTipsNN_00.bflyt), its
 // callout lines; the tips' (blyt/PaMessageTipsDrcImageNN_00.bflyt), the blue marks on the close-ups' buttons
 enum { HW_LAYOUT_CONTROLS, HW_LAYOUT_TIPS };
-// Layout `layout` (HW_LAYOUT_*, n bytes, edited in place) moved to device's (HW_DEVICE_*) buttons. Returns the panes
-// moved, 0 when the layout is not the one expected (then it is left as it is).
-int hw_illust_layout(int device, int layout, uint8_t *flyt, size_t n);
+// Layout `layout` (HW_LAYOUT_*, n bytes, edited in place) moved to device's (HW_DEVICE_*) buttons. face (NULL: the
+// Switch's places): for the Switch's A, B, X, Y, where the controller button they are bound to sits (0 east, 1 south,
+// 2 north, 3 west: glyphs_hud_positions); the tips mark that button. Returns the panes moved, 0 when the layout is not
+// the one expected (then it is left as it is).
+int hw_illust_layout(int device, int layout, uint8_t *flyt, size_t n, const int face[4]);

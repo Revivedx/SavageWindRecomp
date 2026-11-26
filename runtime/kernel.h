@@ -43,6 +43,7 @@ struct KThread {
     int core_held;
     uint64_t core_ticket;
     bool off_cores;  // runs beside the cores, never holding one (kernel_thread_off_cores)
+    void *dcache;    // dispatch.c: this thread's table of call targets (cpuopts bit 1024), allocated at its first miss
 };
 
 typedef struct KSharedMem {
@@ -86,3 +87,8 @@ typedef struct { volatile int v; char pad[60]; } __attribute__((aligned(64))) Co
 extern CoreBestWait g_core_best_wait[4];
 void kernel_preempt(KThread *t);
 uint64_t kernel_heap_size(void);  // bytes from HEAP_BASE set by SetHeapSize
+void kernel_memory_setup(int mb);  // game_memory_mb (0: the game's own 3120 MB); once, at start, before the renderer
+uint64_t rt_game_heap_size(void);  // the heap the game asks for (tools/patches.py _game_heap_size)
+uint64_t rt_game_heap_grow(uint64_t size);  // a resource heap's size with game_memory_mb (tools/patches.py _game_heap_grow)
+uint64_t rt_game_texture_pool(uint64_t size);  // the models' texture pool with game_memory_mb (the same)
+uint64_t rt_game_resource_heap(uint32_t size, int which);  // ForResourceS (0) / L (1) / StarterPackMgr (2), the same

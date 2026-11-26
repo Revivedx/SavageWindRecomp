@@ -4,10 +4,34 @@ What changed in each Savage Wind release. The `test` branch holds what the next 
 
 ## Next (on the `test` branch)
 
+- **More memory for HD textures** ([#1135](https://github.com/Revivedx/SavageWindRecomp/pull/1135) by Zarigis): Mods >
+  HD texture packs gives the game 6 GB of memory instead of its own 3 GB, so big HD texture packs load. It uses about
+  3 GB more RAM, so it is off by default and needs 16 GB of RAM. Converting a texture pack made for 1.6.0 is SWMM+'s job.
+- **The world map at your screen's resolution** ([#1137](https://github.com/Revivedx/SavageWindRecomp/pull/1137) by
+  Zarigis): the map's terrain was always drawn at 1080 lines and stretched, so at 4K it was a 1080p picture.
+- **Collectible hints on light ground** ([#1131](https://github.com/Revivedx/SavageWindRecomp/pull/1131) by
+  Quorthon13): the circles stand out on Eldin's rock, lava and snow, where they all but vanished.
+- **Texture filtering** ([#1118](https://github.com/Revivedx/SavageWindRecomp/pull/1118) by Dathinel): when the game
+  changed a texture's filter within a frame, a later draw could keep the old one (blocky instead of smooth).
+- **NVIDIA DLSS frame generation** ([#345](https://github.com/Revivedx/SavageWindRecomp/pull/345) by Yiozolm): Video >
+  Frame generation is now Off, AMD FSR 3 or NVIDIA DLSS, on NVIDIA RTX 40 or newer graphics cards on Windows. Video >
+  Frame generation multiplier gives 3x and 4x on RTX 50 cards. Savage Wind Configuration downloads NVIDIA's frame
+  generation library with the DLSS one. Where DLSS can't run it is greyed out, and a settings file asking for it gets
+  AMD FSR 3.
+- **Shaders precompiled when they're missing or out of date:** with Precompile all shaders on, a start whose
+  precompiled shaders don't match this PC (a new graphics driver, the data folder from another PC, game files set up
+  without the start screen) precompiles them first on the progress bar (Esc or B skips it), then goes into the game.
+  Before, the game started anyway and stuttered while they compiled; only Game Files said why.
+  `savagewind --precompile-shaders-if-needed` does the same from a terminal: nothing when they are up to date.
 - **Lower requirements:** 8 GB of RAM with a dedicated graphics card instead of 16 GB. The game asks Windows for about
   2.5 GB less memory (RTX 3060, 1080p: 8.3 -> 5.9 GB) and no longer grows by hundreds of megabytes as you travel.
 - **Vulkan 1.2 drivers** are taken when they have dynamic rendering, synchronization2 and extended dynamic state 1 and
   2 as extensions (without FSR 3, FSR 4 or frame generation). Not confirmed on such a card yet.
+- **Cheats: Chinese item names are found by pinyin.** The items are listed under the name your game's text language
+  gives them, but the search is typed on the on-screen keyboard a controller drives, which has no input method, so a
+  Chinese name could not be searched for at all. `luyu` now finds 鲈鱼, `kaoluyu` 烤鲈鱼, `bingleng` the frozen fish,
+  and `yu` every name with 鱼 in it, on a controller or a keyboard. The readings are the Unicode Han Database's, not
+  the game's (`runtime/pinyin.c`); the console's `give` command reads them the same way.
 
 ## Alpha 6 (0.6.0-alpha.6) - 2026-11-15
 

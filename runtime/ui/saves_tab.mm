@@ -31,6 +31,7 @@
 
 #include "i18n.h"
 #include "imgui.h"
+#include "ui_theme.h"
 #include "option_rows.h"
 #include "saves_tab.h"
 
@@ -525,7 +526,7 @@ void profile_failure_text(int code, std::string *head, std::string *hint) {
 
 // The last job's result, as lines in the rows' pane
 void draw_result(int phase) {
-    const ImVec4 gold(0.93f, 0.76f, 0.33f, 1), bad(1, 0.5f, 0.4f, 1);
+    const ImVec4 gold = ImGui::ColorConvertU32ToFloat4(UI_ACCENT_LIGHT), bad(1, 0.5f, 0.4f, 1);
     ImGui::PushTextWrapPos(0);
     if (phase == WORKING) {
         ImGui::TextColored(gold, "%s", tr("Working..."));
@@ -612,7 +613,7 @@ void draw_confirm(int phase) {
     if (phase != CONFIRM) g_popup_shown = false;
     if (!g_export_dst.empty()) {
         if (!ImGui::BeginPopupModal("##exportok", NULL, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar)) return;
-        ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), "%s", tr("Export this save?"));
+        ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(UI_ACCENT_LIGHT), "%s", tr("Export this save?"));
         ImGui::PushTextWrapPos(fminf(ImGui::GetFontSize() * 34, ImGui::GetIO().DisplaySize.x * 0.7f));
         ImGui::TextWrapped("%s", fmt("Slots: %s", slot_list(g_rep).c_str()).c_str());
         ImGui::TextDisabled("%s", fmt("To: %s", shown_path(g_export_dst).c_str()).c_str());
@@ -640,7 +641,7 @@ void draw_confirm(int phase) {
         return;
     }
     if (!ImGui::BeginPopupModal("##importok", NULL, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar)) return;
-    ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), "%s", tr("Import this save?"));
+    ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(UI_ACCENT_LIGHT), "%s", tr("Import this save?"));
     ImGui::PushTextWrapPos(fminf(ImGui::GetFontSize() * 34, ImGui::GetIO().DisplaySize.x * 0.7f));  // (a small window too)
     ImGui::TextWrapped("%s", fmt("Slots: %s", slot_list(g_rep).c_str()).c_str());
     ImGui::TextDisabled("%s", fmt("From: %s", shown_path(g_rep.root).c_str()).c_str());

@@ -485,9 +485,10 @@ void quick_drop_action_tick(Cpu *c) {
     bool identity = drop_player(&scratch) == player &&
         drop_resolve(&scratch, equipped_drop.actor_link, drop_links + 0x20, actor) &&
         drop_resolve(&scratch, drop_links + 0x10, drop_links + 0x38, player);
+    // The slot may already hold a different instance by the time this callback runs.
     if (identity && atomic_load(&drop_actor_consumed) && !LD8(player + 0x1120 + equipped_drop.actor_category) &&
         !LD8(player + drop_pending_offset(equipped_drop.actor_category)) &&
-        !drop_call(&scratch, g_site.player_equipment, player, equipped_drop.actor_category, 0) &&
+        drop_call(&scratch, g_site.player_equipment, player, equipped_drop.actor_category, 0) != actor &&
         LD8(actor + 0x920) == 0xff && !LD8(actor + 0x934) &&
         !drop_call(&scratch, g_site.actor_link_alive, actor + 0x938, 0, 0) &&
         !drop_call(&scratch, g_site.actor_link_alive, actor + 0x958, 0, 0)) {

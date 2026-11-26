@@ -31,9 +31,10 @@ static inline void rt_log(const char *fmt, ...) {
 
 // ---- address space layout (guest addresses == host addresses)
 // macOS reserves 0x2_0000_0000-0x70_0000_0000, and guest addresses must fit in 39 bits, so the
-// guest lives in a 12.5 GB window at 0x70_0000_0000 claimed at startup (see main.c).
+// guest lives in a 15.5 GB window at 0x70_0000_0000 claimed at startup (see main.c). It holds the heap at its largest
+// (game_memory_mb, HEAP_MAX below); only what the game maps in it is committed.
 #define GUEST_LO     0x7000000000ull
-#define GUEST_HI     0x7320000000ull
+#define GUEST_HI     0x73E0000000ull
 // The exefs modules (main, subsdk0..9, sdk) sit back to back from MAIN_BASE, main first, as tools/layout.py
 // places them; the game code library says where each one is (runtime/gamelib.h). Both bounds: tools/layout.py too.
 #define MAIN_BASE    0x7000000000ull
@@ -47,7 +48,12 @@ static inline void rt_log(const char *fmt, ...) {
 #define ALIAS_BASE   0x7100000000ull   // alias region (svcMapMemory targets)
 #define ALIAS_SIZE   0x0100000000ull
 #define HEAP_BASE    0x7240000000ull
-#define HEAP_MAX     0x00D0000000ull   // 3.25 GB
+// The heap's limit: 3.25 GB for the game's own 3120 MB heap, more with game_memory_mb (kernel_memory_setup, set once
+// at start, before the renderer sizes its view of the heap). At most HEAP_BASE + HEAP_MAX_LARGEST, inside GUEST_HI.
+#define HEAP_MAX_CONSOLE 0x00D0000000ull   // 3.25 GB
+#define HEAP_MAX_LARGEST 0x0190000000ull   // 6.25 GB: a 6144 MB heap and the same room the game's own has
+extern uint64_t g_heap_max;
+#define HEAP_MAX     g_heap_max
 
 // ---- loader.c
 typedef struct Module {
@@ -100,6 +106,11 @@ void rt_request_reboot(int kind);  // any thread; the window loop (ui_run) retur
 int rt_reboot_requested(void);
 extern volatile int g_rt_unwind;   // set while guest threads are being stopped (kernel.c)
 void rt_unwind_point(void);        // guest threads: unwind to thread_main if a reboot is stopping them
+
+// Live experiment switches of the guest's threads (cpuopts bits 1024 and 2048, nvn/vulkan/exec.c stage_cpu_publish):
+// plain variables, so that the paths they steer read no more than a load. Default off.
+extern volatile int g_opt_dispatch_fast;  // dispatch.c: the indirect-call dispatch with the per-thread table (dispatch_fast)
+extern volatile int g_opt_cb_unlink;      // nvn/cmdbuf.c: a command buffer leaves the registry in constant time
 
 // ---- ui (runtime/nvn/metal.m)
 int ui_run(void);  // window loop; returns the reboot kind requested (the window stays open)

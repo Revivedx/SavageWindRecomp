@@ -122,6 +122,12 @@ def keys():
     text = open(path, encoding='utf-8').read()
     for m in re.finditer(r'^\s*\{"([^"]+)", -?\d', text, re.M):
         found.setdefault(m.group(1), f'{os.path.relpath(path, ROOT)}:{text[:m.start()].count(chr(10)) + 1}')
+    # the achievements' names and descriptions (runtime/achievements_defs.c g_ach_defs: shown through tr())
+    path = os.path.join(ROOT, 'runtime/achievements_defs.c')
+    text = open(path, encoding='utf-8').read()
+    for m in re.finditer(r'\{"[a-z_0-9]+", "((?:[^"\\]|\\.)*)", "((?:[^"\\]|\\.)*)", ACH_', text):
+        where = f'{os.path.relpath(path, ROOT)}:{text[:m.start()].count(chr(10)) + 1}'
+        found.setdefault(m.group(1), where), found.setdefault(m.group(2), where)
     return found
 
 

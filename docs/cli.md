@@ -2,8 +2,8 @@
 
 `savagewind <command>` does what the start screen and Savage Wind Configuration do, without a window, so scripts
 and other launchers can drive Savage Wind. `savagewind help` lists the commands and `savagewind help <command>`
-explains one. A first argument that isn't a command keeps its old meaning (the game files folder), and `--play`,
-`--config` and the other flags work as before.
+explains one. A first argument that isn't a command keeps its old meaning (the game files folder), and `--play`
+(`--skip-launcher` / `--no-launcher`), `--config` and the other flags work as before.
 
 | Command | What it does | Exit status |
 |---|---|---|

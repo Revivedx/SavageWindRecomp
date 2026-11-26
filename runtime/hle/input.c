@@ -99,7 +99,8 @@ static _Atomic uint32_t test_pad;
 static _Atomic int32_t test_lx, test_ly;  // (a resting stick's drift: "lstick" in SAVAGEWIND_HOST_INPUT)
 static _Atomic bool host_test;  // (then a real controller is left out: the player's own pad must not spoil the test)
 static _Atomic int last_device;  // DEVICE_*: what the player used last
-static bool tilt_held;  // the tilt key or controller button: the mouse tilts the controller instead of turning the camera
+static _Atomic bool tilt_held;  // the tilt binding: the mouse tilts the controller instead of turning the camera
+bool input_tilt_active(void) { return tilt_held; }
 extern bool menu_input_captured(void);  // runtime/ui/menu.mm: overlay menu or name entry up (it has the keys / pad)
 
 static bool profiler_key_available(void) {
@@ -165,7 +166,10 @@ static void recompute_motion(void) {
                         held_gyro(BIND_GYRO_CENTER));
     else motion_keyboard(0, 0, 0, false);
     bool tilt = (game_key_slot(BIND_TILT) || held_pad(BIND_TILT)) && win_focused && !menu_input_captured();
-    if (tilt != tilt_held) motion_tilt_held(tilt_held = tilt);
+    if (tilt != tilt_held) {
+        motion_tilt_held(tilt);
+        tilt_held = tilt;
+    }
 }
 
 // Through the bindings (runtime/hle/bindings.c: g_bind_key), read on every key event, so a rebind applies at once.
@@ -243,6 +247,8 @@ static void recompute_pad(void) {
                             SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER) / 32767.0f,
                             host >> SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER & 1, host >> SDL_GAMEPAD_BUTTON_LEFT_SHOULDER & 1);
                 photo_pad(host);  // (hle/photo.c: the d-pad's filter, hour and picture)
+                extern void freecam_pad_buttons(uint32_t buttons);
+                freecam_pad_buttons(host);
             }
             pad_buttons = 0;
             pad_play = 0;
@@ -254,6 +260,7 @@ static void recompute_pad(void) {
         }
         freecam_pad(0, 0, 0, 0, 0, 0, false, false);
         photo_pad(0);
+        { extern void freecam_pad_buttons(uint32_t buttons); freecam_pad_buttons(0); }
     }
     host_buttons = host;
     recompute_motion();
@@ -574,13 +581,14 @@ volatile int g_debug_frame_request;  // F9, developer mode only: dump the next f
 volatile int g_record_frames;        // F12: (debugging) save every other game image to build/frames/ until F12 again
 volatile int g_skip_fs_off;          // F8: (debugging) draw the shaders SAVAGEWIND_SKIP_FSHASH names, until F8 again
 
-// Events a test pushes (SAVAGEWIND_HOST_INPUT type: / sdlkey: / sdlpad:) carry this device id: they go the whole way, menu first.
+// Events a test pushes (SAVAGEWIND_HOST_INPUT type: / sdlkey: / sdlpad: / mclick:) carry this device id: they go the whole way, menu first.
 #define TEST_DEVICE 0x7E57u
 static bool test_event(const SDL_Event *e) {
     switch (e->type) {
     case SDL_EVENT_KEY_DOWN: case SDL_EVENT_KEY_UP: return e->key.which == TEST_DEVICE;
     case SDL_EVENT_TEXT_INPUT: return e->text.windowID == TEST_DEVICE;
     case SDL_EVENT_GAMEPAD_BUTTON_DOWN: case SDL_EVENT_GAMEPAD_BUTTON_UP: return e->gbutton.which == TEST_DEVICE;
+    case SDL_EVENT_MOUSE_BUTTON_DOWN: case SDL_EVENT_MOUSE_BUTTON_UP: return e->button.which == TEST_DEVICE;
     default: return false;
     }
 }
@@ -726,7 +734,10 @@ void input_handle_event(const SDL_Event *e) {
             }
             if (freecam_active()) {
                 extern bool photo_key(int scancode);  // (hle/photo.c: filter, hour, picture)
-                if (e->type == SDL_EVENT_KEY_DOWN && !e->key.repeat && photo_key(e->key.scancode)) break;
+                extern bool freecam_path_key(int scancode);
+                if (e->type == SDL_EVENT_KEY_DOWN && !e->key.repeat &&
+                    (photo_key(e->key.scancode) || freecam_path_key(e->key.scancode)))
+                    break;
                 freecam_key(e->key.scancode, e->type == SDL_EVENT_KEY_DOWN);
                 break;
             }
@@ -739,7 +750,7 @@ void input_handle_event(const SDL_Event *e) {
             g_debug_frame_request = 1;
         if (e->type == SDL_EVENT_KEY_DOWN && e->key.scancode == SDL_SCANCODE_F6 && !e->key.repeat && profiler_key_available())
             prof_toggle();  // start, stop, or acknowledge a full buffer (runtime/prof.h; report: tools/swprof.py)
-        if (e->type == SDL_EVENT_KEY_DOWN && e->key.scancode == SDL_SCANCODE_F12 && !e->key.repeat)
+        if (e->type == SDL_EVENT_KEY_DOWN && e->key.scancode == SDL_SCANCODE_F12 && !e->key.repeat && control_enabled())
             g_record_frames = !g_record_frames;
         if (e->type == SDL_EVENT_KEY_DOWN && e->key.scancode == SDL_SCANCODE_F8 && !e->key.repeat) {
             g_skip_fs_off = !g_skip_fs_off;
@@ -778,7 +789,7 @@ void input_handle_event(const SDL_Event *e) {
         // The PC pointer keeps left (click) and right (back) for itself. Middle and the side buttons stay bound, as with
         // the pointer off: middle click is the right stick press, Rotate in the inventory (#346). A held button's release
         // always counts, even after its menu closed, so it never stays pressed in play.
-        if (e->button.button < sizeof mouse_down && (mouse_held ||
+        if (e->button.button < sizeof mouse_down && (mouse_held || (test_mouse && test_event(e)) ||
             (e->type == SDL_EVENT_MOUSE_BUTTON_UP && mouse_down[e->button.button]) ||
             (pc_cursor_active() && e->button.button != SDL_BUTTON_LEFT && e->button.button != SDL_BUTTON_RIGHT))) {
             if (e->type == SDL_EVENT_MOUSE_BUTTON_DOWN) last_device = DEVICE_KEYBOARD;
@@ -855,6 +866,8 @@ static _Atomic int32_t script_lx, script_ly, script_rx, script_ry;
 //   entry first like a player's typing; "{Escape}" (any SDL key name) presses that key. No ',' or ':' in <text>.
 // "frame:sdlpad:<button>:frames" / "frame:sdlkey:<key>:frames" hold a controller button / key as real events (down
 //   at frame, up `frames` later): they reach menus and the on-screen keyboard first, as a player's would.
+//   "frame:mclick:left|middle|right|x1|x2:frames" does the same with a mouse button (with "mouse:" the mouse counts
+//   as held in the window, as the camera's).
 // "frame:shot:<name>" saves the window (game + menus) to build/<name>.png.
 // SAVAGEWIND_BIND_TEST="frame:pad|key:<input>:<host>,..." starts a rebind capture of <input> (bind_* name: a, zl,
 //   ls_up...) at that frame (the Controls tab shows it waiting) and presses <host> 90 frames later ("esc" cancels,
@@ -877,6 +890,16 @@ static void test_push(uint64_t frame, unsigned long start, unsigned long len, co
     }
     if (!strcmp(dev, "sdlkey")) {
         if (frame == start || frame == start + len) push_key(SDL_GetScancodeFromName(arg), SDL_KMOD_NONE, frame == start);
+        return;
+    }
+    if (!strcmp(dev, "mclick")) {  // left / middle / right / x1 / x2
+        static const char *const mb[] = {"left", "middle", "right", "x1", "x2"};
+        int b = 0;
+        for (int i = 0; i < 5 && !b; i++) if (!strcmp(arg, mb[i])) b = i + 1;
+        if (!b || (frame != start && frame != start + len)) return;
+        e.type = frame == start ? SDL_EVENT_MOUSE_BUTTON_DOWN : SDL_EVENT_MOUSE_BUTTON_UP;
+        e.button.which = TEST_DEVICE, e.button.button = (Uint8)b, e.button.down = frame == start, e.button.clicks = 1;
+        SDL_PushEvent(&e);
         return;
     }
     if (!strcmp(dev, "sdlpad")) {
@@ -935,7 +958,8 @@ static void host_test_frame(uint64_t frame) {
             unsigned long start = 0, len = 10;
             char dev[8] = "", name[400] = "";
             if (sscanf(tok, "%lu:%7[a-z]:%399[^:]:%lu", &start, dev, name, &len) < 3) continue;
-            if (!strcmp(dev, "type") || !strcmp(dev, "sdlpad") || !strcmp(dev, "sdlkey") || !strcmp(dev, "shot")) {
+            if (!strcmp(dev, "type") || !strcmp(dev, "sdlpad") || !strcmp(dev, "sdlkey") || !strcmp(dev, "mclick") ||
+                !strcmp(dev, "shot")) {
                 test_push(frame, start, len, dev, name);
                 continue;
             }
@@ -1172,6 +1196,8 @@ static void fill_state(Cpu *c) {
     b=pc_cursor_buttons(b);
     // (Accessibility toggles: a menu, a cutscene or a talk lets go, so the shield or the bow isn't still up after it)
     b = toggle_buttons(b, !in_menu && !pc_cursor_active() && !framepace_in_event() && !framepace_dialogue_ui());
+    extern bool game_options_hold_a(void);  // runtime/ui/game_options.mm: the Achievements page is up
+    if (game_options_hold_a()) b &= ~(1ull << BTN_A);
     {   // injected Plus: held for ~10 presented frames (the game polls several times per frame)
         extern uint64_t renderer_present_count(void);
         static uint64_t until;

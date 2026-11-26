@@ -43,6 +43,7 @@ void control_fly_wheel(float notches) { (void)notches;abort(); }
 bool freecam_active(void) { return false; }
 void freecam_toggle(void) { abort(); }
 void freecam_key(int scancode, bool down) { (void)scancode; (void)down; abort(); }
+void freecam_pad_buttons(uint32_t buttons) { (void)buttons; }  // (camera path keys: off with the free camera)
 static int photo_takes = 0;
 void photo_take(void) { photo_takes++; }
 void photo_pad(uint32_t buttons) { (void)buttons; }
@@ -275,6 +276,20 @@ int main(void) {
     input_handle_event(&e);
     assert(photo_takes == shots_before + 1);
     puts("PASS: PrintScreen triggers screenshot capture");
+
+    // Mouse bow aiming: releasing right-click cancels bow while ZR is still held, then settles without holding bare B (Sprint)
+    {
+        PcBow bow = {0};
+        uint64_t t = 1000000000ull;
+        pc_bow_aim(&bow, true, t);
+        assert(pc_bow_buttons(&bow, t) == (1ull << 9));  // ZR held
+        pc_bow_aim(&bow, false, t + 50000000ull);
+        assert(pc_bow_buttons(&bow, t + 50000000ull) == ((1ull << 9) | (1ull << 1)));  // ZR + B cancel
+        // After 120ms cancel window, enters settle: must NOT emit bare B (1ull << 1)
+        assert(pc_bow_buttons(&bow, t + 180000000ull) == 0);
+        assert(pc_bow_buttons(&bow, t + 260000000ull) == 0);
+        puts("PASS: pc_bow settle does not emit bare B (Sprint)");
+    }
 }
 
 uint64_t quick_replace_buttons(uint64_t b) { return b; }

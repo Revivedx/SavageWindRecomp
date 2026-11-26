@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "imgui.h"
+#include "ui_theme.h"
 #include "launch_flags.h"
 #include "launch_flags_boot.h"
 #include "i18n.h"
@@ -22,7 +23,7 @@ bool g_msg_error;
 char g_row_value[LF_MAX_FLAGS][LF_VALUE_MAX];
 bool g_row_active[LF_MAX_FLAGS];
 
-const ImVec4 kGold(0.93f, 0.76f, 0.33f, 1), kWarn(1, 0.6f, 0.35f, 1), kBad(1, 0.5f, 0.4f, 1);
+const ImVec4 kGold = ImGui::ColorConvertU32ToFloat4(UI_ACCENT_LIGHT), kWarn(1, 0.6f, 0.35f, 1), kBad(1, 0.5f, 0.4f, 1);
 
 void say(const char *text, bool error) {
     snprintf(g_msg, sizeof g_msg, "%s", text);

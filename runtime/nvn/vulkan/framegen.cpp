@@ -138,8 +138,19 @@ extern "C" void fg_destroy(void) {
     memset(&g, 0, sizeof g);
 }
 
+// The contexts are made for the largest render size they may get - the final image's, or the render's when it is
+// bigger (render scale over 100 %) - and the render size of each frame is a parameter of its dispatch. Making them
+// again at every step of Dynamic resolution waited for the GPU each time and hung an AMD Radeon 680M (#1061).
+static bool fits(const FgConfig *made, const FgConfig *c) {
+    return made->display_w == c->display_w && made->display_h == c->display_h && made->color_format == c->color_format &&
+           made->hudless_format == c->hudless_format && made->depth_inverted == c->depth_inverted &&
+           c->render_w <= made->render_w && c->render_h <= made->render_h;
+}
+
 static bool create(const FgConfig *c) {
     g.cfg = *c;
+    if (g.cfg.render_w < c->display_w) g.cfg.render_w = c->display_w;
+    if (g.cfg.render_h < c->display_h) g.cfg.render_h = c->display_h;
     if (!make_backend(&g.shared, &g.scratch_shared, 1) || !make_backend(&g.fi_if, &g.scratch_fi, 2)) return false;
     TRY(g.shared.fpCreateBackendContext(&g.shared, FFX_EFFECT_SHAREDAPIBACKEND, nullptr, &g.shared_id));
     FfxOpticalflowContextDescription od = {};
@@ -149,7 +160,7 @@ static bool create(const FgConfig *c) {
     FfxFrameInterpolationContextDescription fd = {};
     fd.backendInterface = g.fi_if;
     fd.flags = c->depth_inverted ? FFX_FRAMEINTERPOLATION_ENABLE_DEPTH_INVERTED : 0;
-    fd.maxRenderSize = {c->render_w, c->render_h};
+    fd.maxRenderSize = {g.cfg.render_w, g.cfg.render_h};
     fd.displaySize = {c->display_w, c->display_h};
     fd.backBufferFormat = ffxGetSurfaceFormatVK(c->color_format);
     fd.previousInterpolationSourceFormat = ffxGetSurfaceFormatVK(c->hudless_format);
@@ -166,8 +177,8 @@ static bool create(const FgConfig *c) {
         TRY(g.shared.fpCreateResource(&g.shared, &frd.reconstructedPrevNearestDepth, g.shared_id, &g.res[R_PREV_DEPTH + i]));
     }
     g.live = true;
-    LOG("[fg] FSR 3 frame interpolation %ux%u (render %ux%u, color format %d, hudless %d)\n", c->display_w, c->display_h,
-        c->render_w, c->render_h, (int)c->color_format, (int)c->hudless_format);
+    LOG("[fg] FSR 3 frame interpolation %ux%u (render up to %ux%u, now %ux%u, color format %d, hudless %d)\n", c->display_w,
+        c->display_h, g.cfg.render_w, g.cfg.render_h, c->render_w, c->render_h, (int)c->color_format, (int)c->hudless_format);
     return true;
 }
 
@@ -192,7 +203,7 @@ static FfxResource shared(int i) { return g.shared.fpGetResource(&g.shared, g.re
 extern "C" bool vk_api12(void);  // (device.c)
 extern "C" bool fg_dispatch(VkCommandBuffer cb, const FgConfig *c, const FgFrame *f) {
     if (vk_api12()) return false;  // (a Vulkan 1.2 driver: no frame generation)
-    if (g.live && memcmp(&g.cfg, c, sizeof *c)) {
+    if (g.live && !fits(&g.cfg, c)) {
         g_fg_vk.wait_idle();
         fg_destroy();
     }

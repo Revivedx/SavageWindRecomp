@@ -10,3 +10,4 @@ uint64_t ui_layout_begin(Cpu *c);
 void ui_layout_end(Cpu *c, uint64_t commands);
 void rt_ui_layout_draw(Cpu *c, void (*native)(Cpu *));
 bool rt_ui_layout_pane_draw(Cpu *c, void (*native)(Cpu *));
+uint32_t rt_cjk_font_scale(void);

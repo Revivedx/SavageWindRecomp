@@ -19,6 +19,11 @@ void output_scale_screen(double sw, double sh, int iw, int ih, OutScale *o);
 // = window / factor per axis), and the factor in use (1: Off)
 bool upscaler_available(int u);
 bool fsr4_offered(void);  // AMD FSR 4 usable on this PC (an AMD Radeon and AMD's DLLs; held back or not)
+bool frame_gen_available(int fg);  // FG_*: Video > Frame generation's choices this GPU can run
+// Video > Frame generation multiplier: whether frame generation fg (FG_*) makes mult - 1 frames for each drawn here,
+// and the multiplier in use with it (the setting, or the most it makes below that)
+bool frame_gen_mult_available(int fg, int mult);
+int frame_gen_mult(int fg);
 bool fsr3_upscaler_enabled(void);  // FSR 3 / 4 upscaling offered (SAVAGEWIND_FSR3=0: hidden)
 // The world camera's projection as last made (rt_persp, game thread): tan(fovy / 2), aspect, near, far; zeros before
 void rt_world_projection(float out[4]);
@@ -37,7 +42,18 @@ bool upscale_modes_available(void);  // (rendering below the window's size: need
 double upscale_mode_factor(int q);
 double upscale_factor(void);
 bool upscale_mode_offered(int q);   // mode q can be chosen now (Ultra Performance with FSR 3 / 4 or DLSS: a 4K window)
+bool upscale_mode_is_dlaa(int q);   // mode q is named DLAA in the menus: Native with DLSS chosen
 int upscale_quality_now(void);      // the mode in use: the setting, or Performance where it is not offered
+bool rt_temporal_upscaler(void);  // FSR 3 / 4, XeSS or DLSS: the upscalers that rebuild the image from several frames
+const char *rt_temporal_upscaler_name(void);  // its name ("FSR 4", "FSR 3", "XeSS", "DLSS"), or NULL
+// Video > Render scale: whether value r (RSCALE_*) can be chosen now (with a temporal upscaler up to 100%, in its Native
+// or DLAA mode 100%), and the one in use
+bool render_scale_offered(int r);
+int render_scale_now(void);
+// The stored render scale to 100% when the upscaler and mode now chosen don't offer it, and back to the value it had
+// when they offer it again; render_scale_chosen: the player set it in its row (that value is never undone)
+void render_scale_fit(void);
+void render_scale_chosen(void);
 // Video > Shadow resolution: the width the game's shadow maps are made at from presented frame `frame` on (0: their
 // own size; vulkan/textures.c RS_SHADOW)
 unsigned shadow_map_size(unsigned long long frame);

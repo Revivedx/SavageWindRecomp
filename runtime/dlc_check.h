@@ -40,6 +40,10 @@ RtDlcCheck rt_dlc_check(const char *root);
 // Deep verification of root (lays out both RomFS images as the game does and checks key files for reading).
 RtDlcCheck rt_dlc_verify(const char *root);
 
+// A RomFS folder with the DLC merged into it (#188, #242, #1070): it has the DLC's System/AocVersion.txt or
+// Pack/AocMainField.pack. True whether or not aoc folders are also set up.
+bool rt_romfs_dlc_merged(const char *romfs);
+
 // Short log tag for a state ("ready", "only-one", ...).
 const char *rt_dlc_state_name(RtDlcState state);
 

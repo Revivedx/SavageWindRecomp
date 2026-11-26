@@ -140,8 +140,8 @@ Read the [FAQ](docs/FAQ.md) first: issues about something it already covers are 
 release and game version 1.9.0, search the [existing issues](https://github.com/Revivedx/SavageWindRecomp/issues?q=is%3Aissue),
 and [open one](https://github.com/Revivedx/SavageWindRecomp/issues/new/choose) with your `savagewind.log`. On a crash
 or a cutscene bug, attach your zipped `save` folder too. Reports without these are closed after 24 hours. Turn every
-mod off and check that the bug still happens: a bug caused by a mod is closed right away, because we don't support what
-isn't ours.
+mod off and check that the bug still happens. A bug that goes away without mods belongs in
+[SWMM+'s issues](https://github.com/Revivedx/SWMMPlus/issues), where it's narrowed down to the mod at fault.
 
 ## Contributing and building
 

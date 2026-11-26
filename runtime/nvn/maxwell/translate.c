@@ -60,6 +60,7 @@ typedef struct {
     size_t ninsts;         // number of 8-byte words to scan
     int stage;
     bool wet;              // one of the game's wet lighting passes, with Video > Wet grass fix on (maxwell_wet_lighting)
+    int stars;             // the night sky's stars (maxwell_stars): 1 their vertex shader, 2 their fragment shader
     const ShaderKey *key;
     ShaderInfo *info;
     Str body;
@@ -2232,6 +2233,22 @@ bool maxwell_wet_lighting(const uint8_t *blob, size_t max_size, int stage) {
     return h == 0x970f06ddc0d6fa0aull || h == 0xb19a04739cefe2b2ull || h == 0xdae9df4164496f40ull;
 }
 
+// Video > Stars (settings.h stars). The game draws the night sky's stars as 2048 alpha-blended points, sized in
+// the console's pixels by their vertex shader and shaded by their fragment shader as a disc mixed with the fog,
+// their brightness in its alpha. At a PC's resolution each star covers few pixels of a much larger image, and the
+// half-size sky composite after them dims them further: the stars barely showed. Brighter levels scale the
+// fragment's alpha and colour (maxwell_star_gain) and the point's size (maxwell_star_size). The two shaders are
+// found like the wet lighting passes, by an FNV-1a hash of their SPH and first code (1.9.0); 1 and 1: the game's.
+float maxwell_star_gain = 1.0f, maxwell_star_size = 1.0f;
+int maxwell_stars(const uint8_t *blob, size_t max_size, int stage) {
+    if ((maxwell_star_gain == 1.0f && maxwell_star_size == 1.0f) || max_size < 0x230) return 0;
+    if (stage != STAGE_VERTEX && stage != STAGE_FRAGMENT) return 0;
+    uint64_t h = 1469598103934665603ull;
+    for (size_t i = 0x30; i < 0x230; i++) h = (h ^ blob[i]) * 0x100000001B3ull;
+    if (stage == STAGE_VERTEX) return h == 0xa541cb79afa7278aull && maxwell_star_size != 1.0f ? 1 : 0;
+    return h == 0xddc71bd9a889c4d7ull && maxwell_star_gain != 1.0f ? 2 : 0;
+}
+
 // Declarations + entry point around the (rewritten) body; mirrors the MSL assembly in maxwell_translate.
 static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
     ShaderInfo *info = c->info;
@@ -2404,6 +2421,13 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
     if (stage == STAGE_VERTEX) {
         if (key && key->flip_y) sp(&s, "  gl_Position.y = -gl_Position.y;\n");
         if (key && key->depth_minus_one) sp(&s, "  gl_Position.z = (gl_Position.z + gl_Position.w) * 0.5f;\n");
+        // A point size of 0 or less: NVN, as OpenGL, draws the smallest point (1 pixel); Vulkan leaves it undefined,
+        // and NVIDIA draws nothing. The night sky's stars (maxwell_stars) set their size as min(theirs, a limit) and
+        // got 0: none of their 2048 points was drawn (the missing stars of #589).
+        if (info->writes_point_size && !dbg) {
+            if (c->stars == 1) sp(&s, "  gl_PointSize *= %.4ff;\n", maxwell_star_size);  // (Video > Stars)
+            sp(&s, "  gl_PointSize = max(gl_PointSize, 1.0f);\n");
+        }
         if (mvec) {
             if (key->flip_y) sp(&s, "  ppos.y = -ppos.y;\n");
             if (key->depth_minus_one) sp(&s, "  ppos.z = (ppos.z + ppos.w) * 0.5f;\n");
@@ -2439,6 +2463,8 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
         if (tint)
             sp(&s, "  if (ltint[0].w > 0.0f) { vec3 g = c0.rgb; float l = dot(g, vec3(0.299f, 0.587f, 0.114f));\n"
                    "    c0.rgb = mix(g, ltint[0].rgb * pow(l, ltint[1].w) + ltint[1].rgb * l, ltint[0].w); }\n");
+        if (c->stars == 2 && !dbg)  // (Video > Stars: maxwell_stars)
+            sp(&s, "  c0.a = min(c0.a * %.4ff, 1.0f); c0.rgb *= %.4ff;\n", maxwell_star_gain, maxwell_star_gain);
         if (c->wet && !dbg)  // (Video > Wet grass fix: maxwell_wet_lighting)
             sp(&s, "  c0.rgb -= 0.9f * max(min(c0.r, min(c0.g, c0.b)) - 0.5f, 0.0f);\n");
         if (c->omap_depth) {
@@ -3055,6 +3081,7 @@ ShaderInfo *maxwell_translate(const uint8_t *blob, size_t max_size, int stage, c
     if (stage == STAGE_COMPUTE) code = blob;
     c->code = code;
     c->wet = maxwell_wet_lighting(blob, max_size, stage);
+    c->stars = maxwell_stars(blob, max_size, stage);
     if (stage == STAGE_FRAGMENT) {
         c->omap_target = *(const uint32_t *)(sph + 0x48);
         c->omap_depth = (*(const uint32_t *)(sph + 0x4C) >> 1) & 1;

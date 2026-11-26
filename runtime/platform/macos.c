@@ -2,6 +2,7 @@
 #include <crt_externs.h>
 #include <dlfcn.h>
 #include <execinfo.h>
+#include <fcntl.h>
 #include <mach-o/dyld.h>
 #include <mach/mach.h>
 #include <mach/mach_time.h>
@@ -11,7 +12,9 @@
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
 #include <sys/ucontext.h>
 #include <unistd.h>
 
@@ -19,7 +22,72 @@
 
 static mach_timebase_info_data_t tb;
 
-void plat_init(void) {}
+// stdout / stderr go to savagewind.log in the data folder, as on Linux (runtime/platform/linux.c, the same rules): the
+// app opened from the Finder had its log nowhere, so a player had no savagewind.log to attach, and a problem report
+// (Options) had none to copy. ~/Library/Application Support/local.savagewind (runtime/paths.c; rt_paths_init runs
+// later). The last run's log stays as savagewind.prev.log. Started from a terminal, the log is shown there too; in a
+// development tree (an extracted/ folder here) stderr stays where it goes.
+static char g_log_path[1024];
+static off_t g_echo_from;  // (where this process's part of the log starts)
+
+static void *log_echo_thread(void *arg) {
+    int out = (int)(intptr_t)arg, in = open(g_log_path, O_RDONLY);
+    if (in < 0) return NULL;
+    lseek(in, g_echo_from, SEEK_SET);
+    char buf[8192];
+    for (;;) {
+        ssize_t n = read(in, buf, sizeof buf);
+        if (n > 0) { if (write(out, buf, (size_t)n) < 0) break; continue; }
+        usleep(100000);
+    }
+    close(in);
+    return NULL;
+}
+
+// a launcher that starts this with --prepare (runtime/main.c) reads its progress lines from stdout
+static bool prepare_asked(void) {
+    char **argv = *_NSGetArgv();
+    for (int i = 1; i < *_NSGetArgc(); i++)
+        if (!strcmp(argv[i], "--prepare")) return true;
+    return false;
+}
+
+static void log_to_file(void) {
+    char dir[900];
+    const char *env = getenv("SAVAGEWIND_DATA_ROOT"), *home = getenv("HOME");
+    struct stat st;
+    if (env && *env) snprintf(dir, sizeof dir, "%s", env);
+    else if (stat("extracted", &st) == 0 && S_ISDIR(st.st_mode)) return;  // dev mode: wherever stderr goes already
+    else snprintf(dir, sizeof dir, "%s/Library/Application Support/local.savagewind", home && *home ? home : "/tmp");
+    for (char *c = dir + 1; *c; c++)
+        if (*c == '/') { *c = 0; mkdir(dir, 0755); *c = '/'; }
+    mkdir(dir, 0755);
+    snprintf(g_log_path, sizeof g_log_path, "%s/savagewind.log", dir);
+    bool append = getenv("SAVAGEWIND_LOG_APPEND") != NULL;
+    if (!append) {
+        char prev[1100];
+        snprintf(prev, sizeof prev, "%s/savagewind.prev.log", dir);
+        rename(g_log_path, prev);
+    }
+    const char *e = getenv("SAVAGEWIND_LOG_ECHO_FD");
+    bool quiet = getenv("SAVAGEWIND_LOG_QUIET") != NULL;  // (savagewind <command>: its own output only, runtime/cli.h)
+    int echo = !quiet && e && isatty(atoi(e)) ? atoi(e) : -1;
+    if (echo < 0 && !quiet && isatty(STDERR_FILENO) && (echo = dup(STDERR_FILENO)) >= 0) {  // (kept across the re-exec)
+        char fd[16];
+        snprintf(fd, sizeof fd, "%d", echo);
+        setenv("SAVAGEWIND_LOG_ECHO_FD", fd, 1);
+        dprintf(echo, "[log] written to %s and shown here\n", g_log_path);
+    }
+    if (!freopen(g_log_path, append ? "a" : "w", stderr)) { g_log_path[0] = 0; return; }
+    setvbuf(stderr, NULL, _IONBF, 0);  // (reopened, stderr was buffered: lines lost at the re-exec, or in a crash)
+    if (!prepare_asked()) dup2(STDERR_FILENO, STDOUT_FILENO);
+    setenv("SAVAGEWIND_LOG_APPEND", "1", 1);
+    g_echo_from = lseek(STDERR_FILENO, 0, SEEK_END);
+    pthread_t t;
+    if (echo >= 0 && pthread_create(&t, NULL, log_echo_thread, (void *)(intptr_t)echo) == 0) pthread_detach(t);
+}
+
+void plat_init(void) { log_to_file(); }
 
 bool plat_reserve_guest(uint64_t lo, uint64_t hi) {
     // Everything readable/writable: macOS pages are 16K but the guest maps at 4K granularity.
@@ -85,7 +153,7 @@ void plat_thread_realtime(uint64_t period_ns) {
 
 void plat_thread_elevate(void) {}
 
-const char *plat_log_path(void) { return ""; }  // (the log goes to stderr)
+const char *plat_log_path(void) { return g_log_path; }  // ("": dev mode, the log goes to stderr)
 
 bool plat_exe_path(char *buf, size_t size) {
     uint32_t len = (uint32_t)size;
@@ -163,6 +231,29 @@ PlatProc plat_spawn(const char *const argv[], const char *log_path, bool append_
     posix_spawnattr_destroy(&at);
     posix_spawn_file_actions_destroy(&fa);
     return rc ? 0 : (PlatProc)pid;
+}
+
+// Another program on its own (platform.h): its own session (it stays when this process and its group end), stdin and
+// output to /dev/null
+bool plat_start_program(const char *const argv[]) {
+    posix_spawn_file_actions_t fa;
+    posix_spawn_file_actions_init(&fa);
+    posix_spawn_file_actions_addopen(&fa, 0, "/dev/null", O_RDONLY, 0);
+    posix_spawn_file_actions_addopen(&fa, 1, "/dev/null", O_WRONLY, 0);
+    posix_spawn_file_actions_adddup2(&fa, 1, 2);
+    posix_spawnattr_t at;
+    posix_spawnattr_init(&at);
+#ifdef POSIX_SPAWN_SETSID
+    posix_spawnattr_setflags(&at, POSIX_SPAWN_SETSID);
+#else
+    posix_spawnattr_setflags(&at, POSIX_SPAWN_SETPGROUP);
+    posix_spawnattr_setpgroup(&at, 0);
+#endif
+    pid_t pid;
+    int rc = posix_spawn(&pid, argv[0], &fa, &at, (char *const *)argv, environ);
+    posix_spawnattr_destroy(&at);
+    posix_spawn_file_actions_destroy(&fa);
+    return rc == 0;
 }
 
 void plat_proc_kill(PlatProc p) {

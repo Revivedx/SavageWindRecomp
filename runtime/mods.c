@@ -47,6 +47,7 @@ typedef struct {
 } ModPathRefList;
 
 static bool            g_mod_session_started = false;
+static int             g_mod_session_mods;  // mods this run loaded (each one an overlay's list names, each Mods tab mod)
 static ModActiveLayer *g_mod_layers = NULL;
 static int             g_mod_layer_count = 0;
 static int             g_mod_layer_cap = 0;
@@ -1071,6 +1072,78 @@ static bool mod_push_session_id(const char *id) {
     return true;
 }
 
+// savagewind.log names the mods each run loads, so that a bug report shows them (docs/FAQ.md, "Can I use mods?": a
+// problem seen with mods is tried without them first). A mod manager that deploys one merged folder for
+// SAVAGEWIND_ROMFS_OVERLAY (SWMM+) names the mods merged into it in MOD_LIST_FILE at that folder's root: one mod per
+// line, highest priority first; lines that start with '#' are notes. The log copies those lines. Without the file it
+// gives the folder's file count and top folders.
+#define MOD_LIST_FILE  "savagewind-mods.txt"
+#define MOD_LIST_LINES 200  // the lines copied; the rest are counted
+#define MOD_LIST_LINE  240  // bytes of one line kept
+
+// The mods MOD_LIST_FILE names in `dir` (-1: no such file), its lines copied to the log
+static int mod_log_list_file(const char *dir) {
+    char path[MOD_PATH_CAP];
+    if (!mod_join_path(path, sizeof path, dir, MOD_LIST_FILE)) return -1;
+    FILE *f = fopen(path, "rb");
+    if (!f) return -1;
+    int mods = 0, lines = 0, skipped = 0;
+    char line[1024];
+    while (fgets(line, sizeof line, f)) {
+        size_t n = strlen(line);
+        bool whole = n > 0 && line[n - 1] == '\n';
+        while (n > 0 && (line[n - 1] == '\n' || line[n - 1] == '\r')) line[--n] = 0;
+        if (!whole && n == sizeof line - 1) {  // (a longer line: the rest of it is dropped)
+            int c;
+            while ((c = fgetc(f)) != EOF && c != '\n') {}
+        }
+        for (char *p = line; *p; p++)
+            if ((unsigned char)*p < 0x20 || *p == 0x7f) *p = ' ';
+        const char *s = line;
+        while (*s == ' ') s++;
+        if (!*s) continue;
+        if (*s != '#') mods++;
+        if (lines >= MOD_LIST_LINES) {
+            skipped++;
+            continue;
+        }
+        lines++;
+        fprintf(stderr, "[mods]     %.*s\n", (int)mod_utf8_trim_cap(s, MOD_LIST_LINE), s);
+    }
+    fclose(f);
+    if (skipped) fprintf(stderr, "[mods]     (%d more lines)\n", skipped);
+    return mods;
+}
+
+// For a folder with no MOD_LIST_FILE: how many files it holds and its first top folders
+static void mod_log_folder(const char *dir) {
+    static ModEntry count;  // (only file_count and total_bytes are used)
+    memset(&count, 0, sizeof count);
+    mod_walk_files(dir, "", false, &count, 0, NULL);
+    char tops[256] = "";
+    size_t at = 0;
+    int n = 0, more = 0;
+    DIR *d = opendir(dir);
+    if (d) {
+        struct dirent *e;
+        while ((e = readdir(d))) {
+            if (e->d_name[0] == '.') continue;
+            char child[MOD_PATH_CAP];
+            if (!mod_join_path(child, sizeof child, dir, e->d_name) || !mod_is_dir(child)) continue;
+            if (n < 8 && at + strlen(e->d_name) + 3 < sizeof tops) {
+                at += (size_t)snprintf(tops + at, sizeof tops - at, "%s%s", n ? ", " : "", e->d_name);
+                n++;
+            } else {
+                more++;
+            }
+        }
+        closedir(d);
+    }
+    fprintf(stderr, "[mods]     no " MOD_LIST_FILE " (no list of the mods in it): %d file%s, %.1f MB%s%s%s\n",
+            count.file_count, count.file_count == 1 ? "" : "s", count.total_bytes / 1048576.0, n ? "; folders " : "", tops,
+            more ? ", ..." : "");
+}
+
 void mods_session_begin(const char *root) {
     free(g_mod_layers);
     g_mod_layers = NULL;
@@ -1083,6 +1156,7 @@ void mods_session_begin(const char *root) {
     g_mod_session_id_cap = 0;
 
     g_mod_session_started = true;
+    g_mod_session_mods = 0;
 
     char env_dir[MOD_PATH_CAP];
     bool has_env = mods_env_override(env_dir, sizeof env_dir);
@@ -1091,21 +1165,55 @@ void mods_session_begin(const char *root) {
     }
 
     ModList list;
-    if (mods_scan(root, &list, false)) {
+    bool scanned = mods_scan(root, &list, false);
+    if (scanned) {
         for (int i = 0; i < list.count; i++) {
             if (!list.items[i].enabled) continue;
             mod_push_layer(list.items[i].host_dir, list.items[i].name);
             mod_push_session_id(list.items[i].id);
         }
-        mods_list_free(&list);
     }
 
-    if (has_env || g_mod_session_id_count > 0) {
-        fprintf(stderr, "[mods] active overlay layers (%d):\n", g_mod_layer_count);
-        for (int i = 0; i < g_mod_layer_count; i++) {
-            fprintf(stderr, "[mods]   #%d %s (%s)\n", i + 1, g_mod_layers[i].name, g_mod_layers[i].dir);
+    if (!g_mod_layer_count) {
+        fprintf(stderr, "[mods] none (no SAVAGEWIND_ROMFS_OVERLAY, no mod turned on in the Mods tab)\n");
+    } else {
+        fprintf(stderr, "[mods] active overlay layers (%d), highest priority first:\n", g_mod_layer_count);
+        int layer = 0, mods = 0;
+        if (has_env) {
+            fprintf(stderr, "[mods]   #%d SAVAGEWIND_ROMFS_OVERLAY (%s)\n", ++layer, env_dir);
+            int listed = mod_log_list_file(env_dir);
+            if (listed < 0) mod_log_folder(env_dir);
+            mods += listed < 0 ? 1 : listed;
         }
+        for (int i = 0; scanned && i < list.count; i++) {
+            const ModEntry *e = &list.items[i];
+            if (!e->enabled) continue;
+            fprintf(stderr, "[mods]   #%d %s%s%s (%s: %d file%s, %.1f MB)\n", ++layer, e->name, e->version[0] ? " " : "",
+                    e->version, e->rel_dir, e->file_count, e->file_count == 1 ? "" : "s", e->total_bytes / 1048576.0);
+            mods++;
+        }
+        fprintf(stderr, "[mods] %d mod%s loaded: try a problem without them first (docs/FAQ.md)\n", mods,
+                mods == 1 ? "" : "s");
+        g_mod_session_mods = mods;
     }
+    if (scanned) mods_list_free(&list);
+}
+
+int mods_session_mod_count(void) { return g_mod_session_mods; }
+
+int mods_report_line(char *out, size_t cap) {
+    if (!out || !cap) return 0;
+    out[0] = 0;
+    int count = mods_active_count();
+    if (!count) return snprintf(out, cap, "Mods: none\n");
+    size_t at = (size_t)snprintf(out, cap, "Mods: %d overlay layer%s (", count, count == 1 ? "" : "s");
+    for (int i = 0; i < count && at < cap; i++) {
+        const char *name = mods_active_name(i);
+        at += (size_t)snprintf(out + at, cap - at, "%s%s", i ? ", " : "", name ? name : "?");
+    }
+    if (at < cap) at += (size_t)snprintf(out + at, cap - at, "); the mods are listed in savagewind.log\n");
+    if (at >= cap && cap > 5) memcpy(out + cap - 5, "...\n", 5);  // (cut: still a line)
+    return (int)strlen(out);
 }
 
 bool mods_session_pending_restart(const char *root) {

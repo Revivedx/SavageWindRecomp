@@ -16,18 +16,20 @@ static uint64_t root_object(const ControlCell *c) {
 }
 static size_t elem_size(CellType t) { (void)t; return 4; }  // (all three types are 32 bits)
 
+static uint64_t chain_addr(uint64_t root, const CellChain *ch) {  // where a chain ends, unchecked (0: broken)
+    uint64_t p = root;
+    for (int i = 0; i + 1 < ch->len; i++)
+        if (!control_mem_peek(p + ch->off[i], &p, sizeof p) || p < 0x10000) return 0;
+    return p + ch->off[ch->len - 1];
+}
+
 uint64_t control_cell_addr(const ControlCell *c) {
     uint64_t root = root_object(c);
     if (!root) return 0;
     size_t sz = elem_size(c->type) * (size_t)c->count;
     for (int k = 0; k < c->nchains; k++) {
-        const CellChain *ch = &c->chains[k];
-        uint64_t p = root;
-        int i = 0;
-        for (; i + 1 < ch->len; i++)
-            if (!control_mem_peek(p + ch->off[i], &p, sizeof p) || p < 0x10000) break;
-        if (i + 1 < ch->len) continue;
-        p += ch->off[ch->len - 1];
+        uint64_t p = chain_addr(root, &c->chains[k]);
+        if (!p) continue;
         uint8_t v[16];
         if (!control_mem_peek(p, v, sz)) continue;
         if (!c->check || c->check(v)) return p;
@@ -58,6 +60,23 @@ bool control_cell_camera_angles(double e[3], double t[3], double *yaw, double *p
     *yaw = atan2(dx, dz) * 57.29577951308232;
     *pitch = -p[0];
     return true;
+}
+
+bool control_cell_camera_follow(const float at[3], const float target_off[3]) {
+    uint64_t root = root_object(&control_cell_camera_eye);
+    if (!root) return false;
+    for (int k = 0; k < control_cell_camera_eye.nchains && k < control_cell_camera_target.nchains; k++) {
+        uint64_t pe = chain_addr(root, &control_cell_camera_eye.chains[k]), pt = chain_addr(root, &control_cell_camera_target.chains[k]);
+        float e[3], t[3];
+        if (!pe || !pt || !control_mem_peek(pe, e, sizeof e) || !control_mem_peek(pt, t, sizeof t)) continue;
+        float d[3] = {e[0] - t[0], e[1] - t[1], e[2] - t[2]};
+        float len = sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+        if (!isfinite(len) || len < 0.5f || len > 50.0f) continue;  // (not the orbit camera: its eye is a few metres from its target)
+        float nt[3] = {at[0] + target_off[0], at[1] + target_off[1], at[2] + target_off[2]};
+        float ne[3] = {nt[0] + d[0], nt[1] + d[1], nt[2] + d[2]};
+        return control_mem_poke(pt, nt, sizeof nt) && control_mem_poke(pe, ne, sizeof ne);
+    }
+    return false;
 }
 
 bool control_cell_set(const ControlCell *c, const double *in) {

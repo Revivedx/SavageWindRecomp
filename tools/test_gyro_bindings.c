@@ -49,6 +49,7 @@ void control_fly_wheel(float n){(void)n;abort();}
 bool freecam_active(void) { return false; }
 void freecam_toggle(void) { abort(); }
 void freecam_key(int scancode, bool down) { (void)scancode; (void)down; abort(); }
+void freecam_pad_buttons(uint32_t buttons) { (void)buttons; }  // (camera path keys: off with the free camera)
 void freecam_mouse(float dx, float dy) { (void)dx; (void)dy; abort(); }
 void freecam_pad(float lx, float ly, float rx, float ry, float up, float down, bool fast, bool slow) {
     (void)lx; (void)ly; (void)rx; (void)ry; (void)up; (void)down; (void)fast; (void)slow;

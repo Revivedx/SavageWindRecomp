@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <algorithm>
 #include <string>
 #include <vector>
 
@@ -16,8 +17,10 @@
 
 extern "C" {
 #include "../mods.h"
+#include "../settings.h"
 }
 void reveal_folder(const std::string &dir);  // launcher.mm: Explorer / Finder / the file manager
+extern "C" const char *launcher_swmm_mods_dir(void);  // launcher.mm: where SWMM+ deployed its mods ("" when none)
 
 namespace {
 
@@ -27,6 +30,25 @@ std::string g_selected_id;
 bool g_dirty = true;
 int g_last_frame = -100;
 bool g_atexit_registered = false;
+
+// The mods SWMM+ deployed into a folder: the lines of its savagewind-mods.txt (runtime/mods.c), notes left out. In
+// Configuration that is SWMM+'s own folder (Play loads it); in game, the overlay this run loaded.
+std::vector<std::string> swmm_list(const char *dir) {
+    std::vector<std::string> out;
+    if (!dir || !*dir) return out;
+    std::string path = std::string(dir) + "/savagewind-mods.txt";  // (i18n-skip: a file)
+    FILE *f = fopen(path.c_str(), "rb");
+    if (!f) return out;
+    char line[1024];
+    while (fgets(line, sizeof line, f)) {
+        std::string l = line;
+        while (!l.empty() && (unsigned char)l.back() <= ' ') l.pop_back();
+        size_t a = l.find_first_not_of(' ');
+        if (a != std::string::npos && l[a] != '#') out.push_back(l.substr(a));
+    }
+    fclose(f);
+    return out;
+}
 
 std::string fmt(const char *p, ...) {
     va_list ap;
@@ -165,6 +187,8 @@ std::string format_mod_desc(const ModEntry &m, int idx, const ModList &list, boo
     } else {
         d += tr("Mod changes take effect when the game restarts.");
     }
+    d += std::string("\n\n") + tr("The arrows on the right move it up or down the list (LB / RB with a controller): where two "
+                                   "mods change the same file, the one higher up wins.");
     return d;
 }
 
@@ -191,8 +215,11 @@ void mods_tab_draw(bool in_game, bool *want_restart) {
         }
     }
 
+    // SWMM+'s: in game, what this run's overlay holds; in Configuration, what Play will load (launcher.mm)
     char env_dir[1024];
-    if (mods_env_override(env_dir, sizeof env_dir)) {
+    bool env = mods_env_override(env_dir, sizeof env_dir);
+    std::vector<std::string> swmm = swmm_list(env ? env_dir : in_game ? "" : launcher_swmm_mods_dir());
+    if (env && swmm.empty()) {  // (a folder named by hand, not SWMM+'s)
         opt_section("Launch flag overlay");
         opt_disable_next();
         std::string env_desc = fmt(
@@ -212,7 +239,7 @@ void mods_tab_draw(bool in_game, bool *want_restart) {
                "away. Savage Wind releases never include mods; "
                "in the future we may suggest some we've found to play well with Savage Wind.",
                true);
-    if (g_list.count == 0) {
+    if (g_list.count == 0 && swmm.empty()) {
         opt_disable_next();
         opt_action("No mods installed", "",
                    "Put mod folders in the mods folder next to Savage Wind.\n\nSupported layouts:\n"
@@ -228,6 +255,8 @@ void mods_tab_draw(bool in_game, bool *want_restart) {
         float pad = 16.0f * (fs / 34.0f);
         float avail_w = ImGui::GetContentRegionAvail().x;
 
+        std::string move_id;
+        int move_dir = 0;
         for (int i = 0; i < g_list.count; i++) {
             const ModEntry &m = g_list.items[i];
             bool en = m.enabled;
@@ -239,17 +268,26 @@ void mods_tab_draw(bool in_game, bool *want_restart) {
                 val_override = val_str.c_str();
             }
             const char *shown_val = val_override ? val_override : tr(en ? "On" : "Off");
-            float max_label_w = avail_w - 2.0f * pad - ImGui::CalcTextSize(shown_val).x - fs * 0.8f;
+            float max_label_w = avail_w - 2.0f * pad - ImGui::CalcTextSize(shown_val).x - fs * 3.2f;  // (and the arrows)
             std::string row_label = ellipsize_to_width(fmt("#%d  %s", i + 1, m.name), max_label_w);
             std::string desc = format_mod_desc(m, i, g_list, in_game, pending_restart);
 
             ImGui::PushID(m.id);
-            if (opt_toggle_item(row_label.c_str(), &en, val_override, desc.c_str())) {
+            int act = opt_order_item(row_label.c_str(), &en, val_override, i > 0, i < g_list.count - 1, desc.c_str());
+            if (act == OPT_ORDER_TOGGLED) {
                 pending_toggle_id = m.id;
                 pending_toggle_val = en;
                 has_pending_toggle = true;
+            } else if (act == OPT_ORDER_UP || act == OPT_ORDER_DOWN) {
+                move_id = m.id;
+                move_dir = act == OPT_ORDER_UP ? -1 : 1;
             }
             ImGui::PopID();
+        }
+        if (move_dir && mods_move(NULL, move_id.c_str(), move_dir)) {
+            g_selected_id = move_id;
+            rescan_mods();
+            pending_restart = in_game && mods_session_pending_restart(NULL);
         }
 
         if (has_pending_toggle) {
@@ -261,62 +299,42 @@ void mods_tab_draw(bool in_game, bool *want_restart) {
         }
     }
 
-    if (g_list.count >= 2) {
-        opt_section("Load order");
-        int sel_idx = find_selected_index();
-        if (sel_idx < 0) sel_idx = 0;
-        const ModEntry &sel = g_list.items[sel_idx];
-        std::string sel_desc = format_mod_desc(sel, sel_idx, g_list, in_game, pending_restart);
-
-        float fs = ImGui::GetFontSize();
-        float pad = 16.0f * (fs / 34.0f);
-        float aw = fs * 0.42f, gap = fs * 0.55f;
-        std::string sel_lbl = tr_upper(tr("Selected mod"));
-        float max_choice_w = ImGui::GetContentRegionAvail().x - 2.0f * pad - ImGui::CalcTextSize(sel_lbl.c_str()).x -
-                             2.0f * (aw + gap) - fs * 0.8f;
-
-        std::vector<std::string> choice_strs((size_t)g_list.count);
-        std::vector<const char *> choice_ptrs((size_t)g_list.count);
-        for (int i = 0; i < g_list.count; i++) {
-            choice_strs[i] = ellipsize_to_width(fmt("#%d  %s", i + 1, g_list.items[i].name), max_choice_w);
-            choice_ptrs[i] = choice_strs[i].c_str();
+    if (!swmm.empty()) {  // (read only here: SWMM+ turns them on and off, and orders them)
+        opt_section("From SWMM+");
+        if (opt_toggle("Load SWMM+'s mods", &g_settings.swmm_mods, true,
+                       "On: Play loads the mods SWMM+ deployed, listed below. Off: the game starts without them, and SWMM+ "
+                       "keeps them. SWMM+ merges them into one folder, so here they go on or off together; one by one, "
+                       "in SWMM+."))
+            settings_save();
+        for (size_t i = 0; i < swmm.size(); i++) {
+            std::string name = swmm[i];
+            size_t cut = std::min(name.find(" ("), name.find(" ["));  // ("Linkle Mod 1.0.1 (packaged, Switch) [...]")
+            if (cut != std::string::npos) name.resize(cut);
+            std::string desc = swmm[i] + "\n\n" +
+                               tr("Turned on in SWMM+, which deployed it for Savage Wind: Play loads it. To turn it off or "
+                                  "change it, open SWMM+.");
+            ImGui::PushID((int)i);
+            if (!g_settings.swmm_mods) opt_disable_next();
+            opt_action(fmt("#%d  %s", (int)i + 1, name.c_str()).c_str(), tr(g_settings.swmm_mods ? "On" : "Off"),
+                       desc.c_str(), false);
+            ImGui::PopID();
         }
+    }
 
-        int chosen = sel_idx;
-        if (opt_choice_item("Selected mod", &chosen, choice_ptrs.data(), g_list.count, -1, sel_desc.c_str(), true, true)) {
-            if (chosen >= 0 && chosen < g_list.count) {
-                g_selected_id = g_list.items[chosen].id;
-                sel_idx = chosen;
-            }
-        }
-
-        // Re-read sel in case Selected mod cycler changed sel_idx this frame.
-        const ModEntry &cur_sel = g_list.items[sel_idx];
-        std::string cur_desc = format_mod_desc(cur_sel, sel_idx, g_list, in_game, pending_restart);
-
-        bool can_up = sel_idx > 0;
-        if (!can_up) opt_disable_next();
-        if (opt_button("Move higher priority", cur_desc.c_str()) && can_up) {
-            std::string move_id = cur_sel.id;
-            if (mods_move(NULL, move_id.c_str(), -1)) {
-                g_selected_id = move_id;
-                rescan_mods();
-                pending_restart = in_game && mods_session_pending_restart(NULL);
-                sel_idx = find_selected_index();
-                if (sel_idx < 0) sel_idx = 0;
-            }
-        }
-
-        const ModEntry &cur_sel2 = g_list.items[sel_idx];
-        std::string cur_desc2 = format_mod_desc(cur_sel2, sel_idx, g_list, in_game, pending_restart);
-        bool can_down = sel_idx < g_list.count - 1;
-        if (!can_down) opt_disable_next();
-        if (opt_button("Move lower priority", cur_desc2.c_str()) && can_down) {
-            std::string move_id = cur_sel2.id;
-            if (mods_move(NULL, move_id.c_str(), +1)) {
-                g_selected_id = move_id;
-                rescan_mods();
-            }
+    // game_memory_mb (runtime/kernel.c kernel_memory_setup): the game's heap at 6144 MB instead of its own 3120, read
+    // once when the game starts. Off by default; under 12 GB of RAM it can only be turned off.
+    opt_section("HD texture packs");
+    {
+        bool more = g_settings.game_memory_mb > 0, low_ram = SDL_GetSystemRAM() < 12 * 1024;
+        if (low_ram && !more) opt_disable_next();
+        if (opt_toggle("More memory for HD textures", &more, false,
+                       low_ram ? "Needs a PC with 16 GB of RAM: it gives the game 6 GB of memory instead of its own 3 GB, "
+                                 "for big HD texture packs."
+                               : "Gives the game 6 GB of memory instead of its own 3 GB, so big HD texture packs load. It "
+                                 "uses about 3 GB more RAM, with or without a pack: leave it off if you don't use one. "
+                                 "Takes effect the next time the game starts.")) {
+            g_settings.game_memory_mb = more ? 6144 : 0;
+            settings_save();
         }
     }
 

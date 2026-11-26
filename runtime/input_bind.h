@@ -24,7 +24,8 @@ enum {
     BIND_GYRO_UP, BIND_GYRO_DOWN, BIND_GYRO_LEFT, BIND_GYRO_RIGHT,  // key or controller button: virtual gyro during a shrine
     BIND_GYRO_TURN_LEFT, BIND_GYRO_TURN_RIGHT, BIND_GYRO_CENTER,    // apparatus (runtime/hle/motion.c motion_keyboard)
     BIND_FLY,                                            // toggles fly mode (control endpoint builds, runtime/control_fly.c)
-    BIND_KEY_COUNT                                       // keyboard: buttons + both sticks + walk + tilt + gyro + fly
+    BIND_CONSOLE,                                        // opens/closes the console (runtime/ui/menu.mm; keyboard only)
+    BIND_KEY_COUNT                                       // keyboard: buttons + both sticks + walk + tilt + gyro + fly + console
 };
 // BIND_DEV_ANY (a capture only): the next press of either device is taken, a controller button for the controller side,
 // a key or mouse button for the keyboard side (only the stick-direction slots ignore the controller)

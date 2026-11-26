@@ -5,10 +5,11 @@ static int arc_calls,axis_calls;
 static float last_q[4];
 extern "C" void motion_gizmo_arcball(float w,float x,float y,float z){arc_calls++;last_q[0]=w;last_q[1]=x;last_q[2]=y;last_q[3]=z;}
 static GyroScene s;
-static void frame(int w,int h,ImVec2 p,bool down){
+static void frame(int w,int h,ImVec2 p,bool down,bool right=false,bool enabled=true){
  auto &io=ImGui::GetIO();io.DisplaySize=ImVec2((float)w,(float)h);io.DeltaTime=1.f/60;
- io.AddMousePosEvent(p.x,p.y);io.AddMouseButtonEvent(0,down);
- ImGui::NewFrame();gyro_scene_draw(io,h/1080.f,s);ImGui::Render();
+ io.AddMousePosEvent(p.x,p.y);io.AddMouseButtonEvent(ImGuiMouseButton_Left,down);
+ io.AddMouseButtonEvent(ImGuiMouseButton_Right,right);
+ ImGui::NewFrame();gyro_scene_draw(io,s,enabled);ImGui::Render();
  assert(ImGui::GetDrawData()->TotalVtxCount==0); // no mesh, rings, labels or panel
 }
 int main(){
@@ -33,7 +34,25 @@ int main(){
   frame(w,h,p,true);assert(arc_calls==1); // re-grip is also jump-free
   s.active=false;p.y+=20*k;frame(w,h,p,true);assert(arc_calls==1); // leaving stops drag
   frame(w,h,p,false);
-  printf("%dx%d: drag, hold/re-grip, exit, no visible geometry PASS\n",w,h);
+  s.active=true;s.generation++;
+  arc_calls=0;
+  frame(w,h,p,false,true);assert(arc_calls==0); // right button also starts without a jump
+  p.x+=40*k;frame(w,h,p,false,true);
+  assert(arc_calls==1&&last_q[2]>1e-3&&last_q[1]==0&&last_q[3]==0); // bank only
+  p.y-=25*k;frame(w,h,p,false,true);
+  assert(arc_calls==2&&last_q[1]<-1e-3&&last_q[2]==0&&last_q[3]==0); // pitch only
+  p.x+=30*k;frame(w,h,p,false,true,false);assert(arc_calls==2); // tilt binding cancels the gesture
+  p.x+=30*k;frame(w,h,p,false,true);assert(arc_calls==2); // a held button must be pressed again
+  frame(w,h,p,false);
+  frame(w,h,p,false,true);
+  s.generation++;p.x+=30*k;frame(w,h,p,false,true);assert(arc_calls==2); // a new apparatus needs a new grip
+  frame(w,h,p,false);
+  p=ImVec2(w*.03f,h*.5f);
+  frame(w,h,p,false,true);
+  p.x=w*.97f;frame(w,h,p,false,true);
+  assert(arc_calls==3&&last_q[0]>.7f&&last_q[2]>0); // a fast swipe keeps its direction
+  frame(w,h,p,false);
+  printf("%dx%d: left drag, right bank and pitch, re-grip, exit, no visible geometry PASS\n",w,h);
  }
  ImGui::DestroyContext();
 }

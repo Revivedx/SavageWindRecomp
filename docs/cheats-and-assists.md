@@ -39,6 +39,8 @@ your settings.
 |---|---|
 | God mode | Link takes no damage. |
 | One-hit kill | Enemies go down in one hit. |
+| Silent Link | Link stays quiet, so enemies do not hear him. |
+| Unlock champion abilities | The four champion abilities are usable anywhere from the start of the game, in shrines and in the Trial of the Sword too; the pause menu cannot switch them off. |
 | Damage taken | How much damage Link takes: 25% to 400%. 100% is the game's own. |
 | Damage dealt | How much damage enemies take: 25% to 400%. 100% is the game's own. |
 | Weapon wear | How fast weapons, bows and shields wear out: Fairy (never), Peter Pan (0.5x), Hylian (1x, the game's own), Hero (1.5x), Master (2x), Legend (2.5x), Dude, are you ok? (3x). |
@@ -57,6 +59,12 @@ Savage Wind was started with `-dev` (see [Teleport and console cheats](#teleport
    of a name in **Search**. The list stays empty until you do one of the two.
 2. Set the **Amount** (1 to 99). Stackable items such as arrows and materials take the whole amount at once.
 3. Press **Add** next to the item. It goes into your pouch through the game's own item pickup.
+
+**Searching a Chinese name** goes by the name's pinyin. The search is typed on the on-screen keyboard, which a
+controller drives and which has no input method, so the hanzi themselves can't be typed there: type the readings
+instead, without tones, run together or apart. `luyu` finds 鲈鱼, `kaoluyu` 烤鲈鱼, `bingleng` the frozen fish, and `yu`
+every name with 鱼 in it. With a keyboard the hanzi can be typed directly, as before; ü is also typed `v`, as in a
+pinyin input method.
 
 If the pouch is full, you get as many as fit, and the tab says how many were added. If you are in a menu or a
 cutscene, the request waits until you are back in play. The item list comes from your own game files; nothing of the
@@ -77,6 +85,30 @@ game is shipped with Savage Wind.
 | Free sprint out of combat | Sprinting on the ground takes no stamina while no enemy is fighting you. Once enemies start the battle music, sprinting costs stamina again until the music fades. Climbing, swimming, gliding and attacks cost stamina as usual. |
 | Item pickup multiplier | Multiplies the stackable items you pick up (materials, monster parts, arrows) by 2, 4 or 8, up to 999. |
 | Sure-footed horse | A running horse no longer stops dead and rears when it runs into something, even a small rock. It no longer stops at cliff edges either: mind where you ride. |
+| Show shrines and towers | Shows every shrine, tower, stable and ancient lab on the map, and makes the shrines, towers and labs travel destinations (a stable is shown but never travelled to). Nothing is saved and no tower is activated, so the map fog stays as it is. |
+
+### Collectible hints on the map
+
+**Collectible hints on the map** helps you find the Korok seeds and shrines you have left, without giving their exact
+spots away. Turn it on in the Cheats tab, open the game's map and hold **D-pad Down**, or its key on the keyboard (**4**
+unless you changed it in Controls). The map's prompt bar shows it as **Hints**, with your button. The hints fade in
+while you hold it and fade out when you let go:
+
+- a soft pale circle around each Korok seed you don't have yet, and a stronger amber one around each shrine you haven't
+  found yet. The spot is somewhere inside its circle, not at its centre. Hovering a circle with the map's cursor
+  says which it is;
+- top right, the region under the cursor: its name and how many of its Korok seeds and shrines you have found. A region
+  where you have found everything is shown in a muted blue, with a check after its name.
+
+Only regions whose tower you have activated show anything: the rest of the map stays as the game shows it. Nothing is
+shown in Hero's Path mode, or while the Sheikah Sensor's settings or a stamp's window is open. It is off until you turn
+it on, and needs version 1.9.0 of the game.
+
+The counts come from your game while the map is open and follow it as you play: the first time, reading them takes a
+moment. They count the 900 Korok seeds and the 120 shrines of the main game; the shrines of The Champions' Ballad are
+not counted. The list of what to count, and the regions' names, come from your own game files: Savage Wind reads them
+once, when the game starts with the option on (or the first time the map asks, a fraction of a second). If your files
+don't have what it expects, no hints show and the log says why.
 
 ## Teleport and console cheats
 
@@ -98,6 +130,7 @@ The teleport and a few more cheats are console commands for developers. To use t
 | `give <name> [count]` | Puts an item in the pouch, the same as the Cheats tab: `give arrow 20`. With several matches it lists them. |
 | `time <0-24>` | Sets the hour of the day. `time freeze` stops the clock and `time unfreeze` starts it again. |
 | `bloodmoon` | The game's own blood moon, as Cheats > Blood moon now. It starts once you close the console. |
+| `collectibles` | Shows the Korok seeds and shrines you have, in all of Hyrule and in each region, and which towers you have activated: the counts the map's hints use. |
 | `help` | Lists every command. |
 
 Known limits of the teleport:

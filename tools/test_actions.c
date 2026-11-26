@@ -721,10 +721,85 @@ static void a_moved_menu_input_leaves_its_actions(void) {
     assert(hold(AIM_RUNE) == 0);
     host(0, 0, 0);
     act_poll(true);
+    // ZL on the keyboard (#1103): Menu: previous tab 2 moved to G, Guard / lock on and the hidden lock-on check keep
+    // right click, and G does neither
+    const int GUARD = 13, HIDDEN_LOCK_ON = 29, RIGHT_CLICK = BIND_MOUSE + SDL_BUTTON_RIGHT;
+    assert(g_bind_key[BIND_ZL] == RIGHT_CLICK && act_is_default(GUARD));
+    bind_settings_load("bind_key_zl", "G");
+    assert(g_bind_key[BIND_ZL] == SDL_SCANCODE_G && act_is_default(GUARD));
+    key_down[RIGHT_CLICK] = 1;
+    host(0, 0, 0);
+    act_poll(true);
+    assert(hold(GUARD) == 1 && hold(HIDDEN_LOCK_ON) == 1);
+    key_down[RIGHT_CLICK] = 0;
+    key_down[SDL_SCANCODE_G] = 1;
+    host(0, 0, 0);
+    act_poll(true);
+    assert(hold(GUARD) == 0 && hold(HIDDEN_LOCK_ON) == 0);
+    key_down[SDL_SCANCODE_G] = 0;
+    host(0, 0, 0);
+    act_poll(true);
     // back to the defaults: the game's own answers again
     bind_reset(BIND_DEV_KEY);
     bind_reset(BIND_DEV_PAD);
     assert(hold(CALL_HORSE) == -1 && hold(AIM_RUNE) == -1);
+    act_reset();
+}
+
+// "Reset keyboard to defaults" then rebinding Guard: the reset must not leave the hidden lock-on check (29) a binding
+// of its own, or Guard's new key would stop moving it (#1016) and the old one would go on targeting (#1057).
+static void a_reset_leaves_the_hidden_lock_on_check_following_guard(void) {
+    act_reset();
+    bind_reset(BIND_DEV_KEY);
+    act_set(BIND_DEV_KEY, 13, SDL_SCANCODE_F);
+    host(0, 0, 0);
+    act_poll(true);
+    key_down[BIND_MOUSE + SDL_BUTTON_RIGHT] = 1;  // its factory-default input, now nobody's
+    host(0, 0, 0);
+    act_poll(true);
+    assert(hold(13) == 0 && hold(29) == 0);
+    key_down[BIND_MOUSE + SDL_BUTTON_RIGHT] = 0;
+    key_down[SDL_SCANCODE_F] = 1;
+    host(0, 0, 0);
+    act_poll(true);
+    assert(hold(13) == 1 && hold(29) == 1);
+    key_down[SDL_SCANCODE_F] = 0;
+    host(0, 0, 0);
+    act_poll(true);
+    assert(hold(13) == 0 && hold(29) == 0);
+    bind_reset(BIND_DEV_KEY);
+    act_reset();
+}
+
+// The player's report (#1057): Bow on the right mouse button and Guard / lock on on F, the other way round from the
+// factory defaults. The right mouse button must aim the bow only, and the hidden lock-on check (29) must follow
+// Guard's F, so pressing it must not target as well.
+static void bow_and_guard_swapped_on_mouse_and_key_leaves_lock_on_on_the_guard_key(void) {
+    act_reset();
+    host(0, 0, 0);
+    act_poll(true);
+    assert(g_act_key[18] == SDL_SCANCODE_F && g_act_key[13] == BIND_MOUSE + SDL_BUTTON_RIGHT);  // factory defaults
+    // The swap the Controls page makes: Bow takes the guard's right mouse button, Guard takes the bow's F.
+    act_set(BIND_DEV_KEY, 18, BIND_MOUSE + SDL_BUTTON_RIGHT);
+    act_set(BIND_DEV_KEY, 13, SDL_SCANCODE_F);
+    host(0, 0, 0);
+    act_poll(true);
+    assert(hold(13) == 0 && hold(18) == 0 && hold(29) == 0);
+    key_down[BIND_MOUSE + SDL_BUTTON_RIGHT] = 1;
+    host(0, 0, 0);
+    act_poll(true);
+    assert(hold(18) == 1 && trig(18) == 1);   // the bow aims
+    assert(hold(13) == 0 && hold(29) == 0);   // ...and nothing locks on
+    key_down[BIND_MOUSE + SDL_BUTTON_RIGHT] = 0;
+    key_down[SDL_SCANCODE_F] = 1;
+    host(0, 0, 0);
+    act_poll(true);
+    assert(hold(18) == 0);
+    assert(hold(13) == 1 && hold(29) == 1);  // Guard, and the hidden lock-on check with it
+    key_down[SDL_SCANCODE_F] = 0;
+    host(0, 0, 0);
+    act_poll(true);
+    assert(hold(13) == 0 && hold(29) == 0);
     act_reset();
 }
 
@@ -755,6 +830,8 @@ int main(void) {
     play_bits_ignore_menu_rows();
     a_conversation_answer_does_not_jump();
     guard_rebind_updates_hidden_lock_on();
+    a_reset_leaves_the_hidden_lock_on_check_following_guard();
+    bow_and_guard_swapped_on_mouse_and_key_leaves_lock_on_on_the_guard_key();
     a_moved_menu_input_leaves_its_actions();
     puts("action bindings: default fallthrough, custom host bindings, schema migration, held / pressed, menus, shared keys, pad capture, contexts, A / B swap, reset and ini passed");
     return 0;

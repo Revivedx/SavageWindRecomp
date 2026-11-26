@@ -450,6 +450,10 @@ static uint64_t xlate_id_as(const char *id, const uint8_t *code, size_t max_size
     h = hash64(h, hd, sizeof *hd);
     h = hash64(h, code, hd->bin_size);
     if (maxwell_wet_lighting(code, max_size, stage)) h = hash64(h, "wet", 3);  // (Video > Wet grass fix: its own translation)
+    if (maxwell_stars(code, max_size, stage)) {  // (Video > Stars: each level its own translation)
+        float g[2] = {maxwell_star_gain, maxwell_star_size};
+        h = hash64(h, g, sizeof g);
+    }
     return h ? h : 1;
 }
 

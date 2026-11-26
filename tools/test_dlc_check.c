@@ -126,6 +126,17 @@ int main(void) {
     reset_root();
     write_str("romfs/Pack/AocMainField.pack", "SARC");
     CHECK(rt_dlc_check(g_root).state == RT_DLC_MERGED);
+    // rt_romfs_dlc_merged: the romfs folder alone (Configuration builds no game code from it, #1070), also with aoc
+    // folders set up beside it, and not for a plain one
+    char romfs[1200];
+    snprintf(romfs, sizeof romfs, "%s/romfs", g_root);
+    CHECK(rt_romfs_dlc_merged(romfs));
+    write_str("aoc1/System/AocVersion.txt", "3.0\n");
+    write_str("aoc2/System/AocVersion.txt", "3.0\n");
+    CHECK(rt_romfs_dlc_merged(romfs));
+    reset_root();
+    write_str("romfs/System/Version.txt", "1.6.0\n");
+    CHECK(!rt_romfs_dlc_merged(romfs) && !rt_romfs_dlc_merged("") && !rt_romfs_dlc_merged(NULL));
 
     // 3. Misnamed DLC folder in root (#383), while ignoring save/ and cache/.
     reset_root();

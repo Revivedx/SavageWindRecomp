@@ -209,11 +209,11 @@ static void steam_hidden(void) {
     nhidden = 0;
     SDL_SetHint(SDL_HINT_GAMECONTROLLER_IGNORE_DEVICES, "0x054c/0x0ce6,0x28de/0x1205, 0x057e/0x2009");
     motion_before_sdl_init();
-    assert(nhidden == 2);
+    assert(nhidden == 1);
     assert(hidden[0].vendor == 0x054c && hidden[0].product == 0x0ce6);
-    assert(hidden[1].vendor == 0x057e && hidden[1].product == 0x2009);
-    assert(!strcmp(SDL_GetHint(SDL_HINT_GAMECONTROLLER_IGNORE_DEVICES), "0x28de/0x1205"));  // (Valve's stay hidden)
-    printf("Steam Input: its hidden controllers opened for their sensors, Valve's kept hidden PASS\n");
+    // (Valve's and Nintendo's stay hidden: SDL's drivers for them restart the controller Steam is using, #136)
+    assert(!strcmp(SDL_GetHint(SDL_HINT_GAMECONTROLLER_IGNORE_DEVICES), "0x28de/0x1205,0x057e/0x2009"));
+    printf("Steam Input: its hidden controllers opened for their sensors, Valve's and Nintendo's kept hidden PASS\n");
 }
 
 static void dsu_axes(void) {

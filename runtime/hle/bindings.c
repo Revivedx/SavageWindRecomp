@@ -26,7 +26,8 @@ _Static_assert(PADB_LTRIGGER == SDL_GAMEPAD_BUTTON_COUNT, "trigger pseudo-button
     SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER, PADB_LTRIGGER, PADB_RTRIGGER, SDL_GAMEPAD_BUTTON_START, SDL_GAMEPAD_BUTTON_BACK, \
     SDL_GAMEPAD_BUTTON_DPAD_LEFT, SDL_GAMEPAD_BUTTON_DPAD_UP, SDL_GAMEPAD_BUTTON_DPAD_RIGHT, SDL_GAMEPAD_BUTTON_DPAD_DOWN, \
     [BIND_WALK ... BIND_GYRO_CENTER] = -1, \
-    [BIND_FLY] = SDL_GAMEPAD_BUTTON_MISC1}  /* fly mode (test builds): the Capture / Share / Mute button, which the game never uses */
+    [BIND_FLY] = SDL_GAMEPAD_BUTTON_MISC1,  /* fly mode (test builds): the Capture / Share / Mute button, which the game never uses */ \
+    [BIND_CONSOLE] = -1}
 #define DEF_KEY { \
     SDL_SCANCODE_E, SDL_SCANCODE_LSHIFT, SDL_SCANCODE_SPACE, BIND_MOUSE + SDL_BUTTON_LEFT, SDL_SCANCODE_LCTRL, \
     BIND_MOUSE + SDL_BUTTON_MIDDLE, SDL_SCANCODE_Q, SDL_SCANCODE_R, BIND_MOUSE + SDL_BUTTON_RIGHT, SDL_SCANCODE_F, \
@@ -35,17 +36,18 @@ _Static_assert(PADB_LTRIGGER == SDL_GAMEPAD_BUTTON_COUNT, "trigger pseudo-button
     SDL_SCANCODE_W, SDL_SCANCODE_S, SDL_SCANCODE_A, SDL_SCANCODE_D, SDL_SCANCODE_I, SDL_SCANCODE_K, \
     SDL_SCANCODE_J, SDL_SCANCODE_L, SDL_SCANCODE_C, SDL_SCANCODE_T, \
     SDL_SCANCODE_I, SDL_SCANCODE_K, SDL_SCANCODE_J, SDL_SCANCODE_L, SDL_SCANCODE_U, SDL_SCANCODE_O, SDL_SCANCODE_P, \
-    SDL_SCANCODE_F7}
+    SDL_SCANCODE_F7, SDL_SCANCODE_F12}
 static const int16_t k_def_pad[BIND_KEY_COUNT] = DEF_PAD, k_def_key[BIND_KEY_COUNT] = DEF_KEY;
 int16_t g_bind_pad[BIND_KEY_COUNT] = DEF_PAD, g_bind_key[BIND_KEY_COUNT] = DEF_KEY;
 int16_t g_bind_pad2[BIND_KEY_COUNT], g_bind_key2[BIND_KEY_COUNT];
 
-bool bind_pad_slot(int slot) { return (slot >= 0 && slot < BIND_PAD_COUNT) || (slot >= BIND_WALK && slot < BIND_KEY_COUNT); }
+bool bind_pad_slot(int slot) { return (slot >= 0 && slot < BIND_PAD_COUNT) || (slot >= BIND_WALK && slot <= BIND_FLY); }
 
 static const char *const k_ini[BIND_KEY_COUNT] = {
     "a", "b", "x", "y", "lstick", "rstick", "l", "r", "zl", "zr", "plus", "minus", "left", "up", "right", "down",
     "ls_up", "ls_down", "ls_left", "ls_right", "rs_up", "rs_down", "rs_left", "rs_right", "walk", "tilt",
     "gyro_up", "gyro_down", "gyro_left", "gyro_right", "gyro_turn_left", "gyro_turn_right", "gyro_center", "fly",
+    "console",
 };
 // What each raw Switch input does apart from the 41 actions: the Key bindings page and the F1 overlay list these by
 // function, never by the Switch button. Left stick press has no function of its own (the action Crouch covers it): it
@@ -62,6 +64,7 @@ static const char *const k_names[BIND_KEY_COUNT] = {
     "Gyro tilt up", "Gyro tilt down", "Gyro tilt left", "Gyro tilt right",
     "Gyro turn left", "Gyro turn right", "Gyro recenter",
     "Fly mode (test builds)",
+    "Console",
 };
 // controller buttons by position (savagewind.ini)
 static const char *const k_pad_ini[PADB_HOST_COUNT] = {
@@ -153,6 +156,7 @@ int bind_label_family(void) {
 static void result(int kind, int dev, int slot, int other);
 static int act_default(int dev, int id);
 static void act_refresh(void);
+static void act_reset_following_guard(int dev);
 
 void bind_reset(int dev) {
     if (dev == BIND_DEV_PAD) {
@@ -166,6 +170,10 @@ void bind_reset(int dev) {
         act_set(dev, id, ACT_FOLLOW);
         act_set2(dev, id, ACT_NONE);
     }
+    // The hidden lock-on check (29) has no row of its own and follows Guard (#1016), which works while it is nobody's
+    // binding: a reset must leave it following, not make the factory default a binding of its own, or rebinding Guard
+    // afterwards would stop moving it and the old input would go on targeting (#1057).
+    act_reset_following_guard(dev);
     LOG("[input] %s bindings reset to the defaults\n", dev == BIND_DEV_PAD ? "controller" : "keyboard");
     result(5, dev, -1, -1);
 }
@@ -348,12 +356,15 @@ bool bind_capture_event(const SDL_Event *e) {
                 (unsigned)e->key.key);
             return true;
         }
-        // F1 (menu), F9 (frame dump), F11 (fullscreen), F12 and the key left of 1 (the console), and PrintScreen
-        // (screenshot) stay the overlay's; a controller capture ignores keys
+        // F1 (menu), F9 (frame dump), F11 (fullscreen), PrintScreen (screenshot) and the active Console key stay
+        // the overlay's; a controller capture ignores keys. F12 / Grave can be bound once Console moves elsewhere (#1020).
+        bool is_console = cap_slot != BIND_CONSOLE &&
+                          ((g_bind_key[BIND_CONSOLE] > 0 && e->key.scancode == g_bind_key[BIND_CONSOLE]) ||
+                           (g_bind_key2[BIND_CONSOLE] > 0 && e->key.scancode == g_bind_key2[BIND_CONSOLE]) ||
+                           (g_bind_key[BIND_CONSOLE] == SDL_SCANCODE_F12 && e->key.scancode == SDL_SCANCODE_GRAVE));
         if (!kd || e->key.scancode == SDL_SCANCODE_F1 || e->key.scancode == SDL_SCANCODE_F9 ||
-            e->key.scancode == SDL_SCANCODE_F11 || e->key.scancode == SDL_SCANCODE_F12 ||
-            e->key.scancode == SDL_SCANCODE_PRINTSCREEN ||
-            e->key.scancode == SDL_SCANCODE_GRAVE || e->key.scancode >= SDL_SCANCODE_COUNT) return true;
+            e->key.scancode == SDL_SCANCODE_F11 || e->key.scancode == SDL_SCANCODE_PRINTSCREEN ||
+            is_console || e->key.scancode >= SDL_SCANCODE_COUNT) return true;
         cap_dev = -1;
         assign(BIND_DEV_KEY, cap_slot, e->key.scancode);
         return true;
@@ -584,6 +595,14 @@ void act_reset(void) {
     }
     a_explicit_key = a_explicit_pad = 0;
     act_refresh();
+}
+
+// A reset puts every action back at its factory default. The hidden lock-on check (29) has no row of its own and goes
+// on following Guard (#1016): a reset must leave it following, not make the default a binding of its own, or rebinding
+// Guard afterwards would stop moving it and Guard's old input would go on targeting (#1057).
+static void act_reset_following_guard(int dev) {
+    if (dev == BIND_DEV_PAD) a_explicit_pad &= ~(1ull << 29);
+    else a_explicit_key &= ~(1ull << 29);
 }
 
 // Initialized before settings or either Controls page can read the public arrays (also in standalone tests).
