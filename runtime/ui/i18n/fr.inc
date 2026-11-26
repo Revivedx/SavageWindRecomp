@@ -1556,3 +1556,6 @@ T("Press the sprint button once while moving and Link keeps sprinting until he s
 T("30 fps until F5 again", "30 fps jusqu'au prochain F5")
 T("Frame rate as set again", "Fréquence d'images comme réglée")
 T("30 fps for a physics puzzle, until pressed again:  F5", "30 fps pour une énigme physique, jusqu'au prochain appui :  F5")
+    {"Ambient occlusion", "Occlusion ambiante"},
+    {"Soft contact shadows in corners and foliage. Off: cleaner, faster.", "Ombres de contact douces dans les coins et le feuillage. Non : plus net, plus rapide."},
+    {"Soft contact shadows in corners and foliage. Off: cleaner image, a little faster.", "Ombres de contact douces dans les coins et le feuillage. Non : image plus nette, un peu plus rapide."},

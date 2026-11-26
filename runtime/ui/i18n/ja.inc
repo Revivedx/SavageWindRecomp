@@ -1556,3 +1556,6 @@ T("Press the sprint button once while moving and Link keeps sprinting until he s
 T("30 fps until F5 again", "もう一度F5を押すまで30fps")
 T("Frame rate as set again", "フレームレートを設定どおりに戻しました")
 T("30 fps for a physics puzzle, until pressed again:  F5", "物理パズル用に30fps（もう一度押すまで）:  F5")
+    {"Ambient occlusion", "アンビエントオクルージョン"},
+    {"Soft contact shadows in corners and foliage. Off: cleaner, faster.", "角や草木の柔らかい接地影。オフ：くっきりして高速。"},
+    {"Soft contact shadows in corners and foliage. Off: cleaner image, a little faster.", "角や草木の柔らかい接地影。オフ：よりクリアな画面、少し高速。"},

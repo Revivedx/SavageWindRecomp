@@ -221,9 +221,10 @@ typedef struct {
     int menu_speed;      // menu cursor and UI animation speed, percent (MENU_SPEED_CHOICES, runtime/hle/framepace.c)
     int draw_distance;   // DRAWDIST_*: how far placed actors are kept (runtime/draw_distance.c)
     int haze;            // the air's haze, percent of the game's (services/fs.c haze_patch; from the next start)
-    int haze_low;        // savagewind.ini only (#915): a haze below the menu's 75 %, 0-74 (the sky turns teal); -1 unset
-    bool bloom;          // the glow around bright light (off: its draws clear their images: vulkan/exec.c)
-    bool depth_of_field; // the distance blur over far pixels (off: its draw is skipped: vulkan/exec.c)
+    int haze_low;           // savagewind.ini only (#915): a haze below the menu's 75 %, 0-74 (the sky turns teal); -1 unset
+    bool bloom;             // the glow around bright light (off: its draws clear their images: vulkan/exec.c)
+    bool depth_of_field;    // the distance blur over far pixels (off: its draw is skipped: vulkan/exec.c)
+    bool ambient_occlusion; // quarter-res HBAO contact shadows (off: AO + blur cleared to 1.0: vulkan/exec.c)
     bool grass;          // grass blades and crossed quads (off: draw_distance.c hides both layers)
     int grass_distance;  // GRASS_DIST_*: independent grass draw distance (0: follow draw_distance)
     bool lens_flare;     // sun glare / lens flare (off: vulkan/exec.c skips sun occlusion queries)

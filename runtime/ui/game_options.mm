@@ -1033,6 +1033,9 @@ void build_items(void) {
     v.push_back(toggle(P_VIDEO_ADV, "Depth of field", "Blurs the far distance. Off: sharp out to the horizon.",
                        [](const Item &) { return (int)g_settings.depth_of_field; },
                        [](const Item &, int x) { g_settings.depth_of_field = x; }, 1));
+    v.push_back(toggle(P_VIDEO_ADV, "Ambient occlusion", "Soft contact shadows in corners and foliage. Off: cleaner, faster.",
+                       [](const Item &) { return (int)g_settings.ambient_occlusion; },
+                       [](const Item &, int x) { g_settings.ambient_occlusion = x; }, 1));
     v.push_back(toggle(P_VIDEO_ADV, "Grass", "Grass blades and ground cover. Off: bare terrain, faster.",
                        [](const Item &) { return (int)g_settings.grass; },
                        [](const Item &, int x) { g_settings.grass = x; }, 1));

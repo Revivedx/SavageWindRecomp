@@ -1556,3 +1556,6 @@ T("Press the sprint button once while moving and Link keeps sprinting until he s
 T("30 fps until F5 again", "30 fps จนกว่าจะกด F5 อีกครั้ง")
 T("Frame rate as set again", "อัตราเฟรมกลับเป็นตามที่ตั้งไว้")
 T("30 fps for a physics puzzle, until pressed again:  F5", "30 fps สำหรับปริศนาฟิสิกส์ จนกว่าจะกดอีกครั้ง:  F5")
+    {"Ambient occlusion", "แอมเบียนต์ออกคลูชัน"},
+    {"Soft contact shadows in corners and foliage. Off: cleaner, faster.", "เงาสัมผัสนุ่มนวลตามมุมและใบไม้ ปิด: ภาพสะอาดและเร็วขึ้น"},
+    {"Soft contact shadows in corners and foliage. Off: cleaner image, a little faster.", "เงาสัมผัสนุ่มนวลตามมุมและใบไม้ ปิด: ภาพสะอาดขึ้น เร็วขึ้นเล็กน้อย"},

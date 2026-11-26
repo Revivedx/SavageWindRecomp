@@ -9204,6 +9204,18 @@ static void draw_(CmdRec *r, bool indexed) {
         if (bloom) { stat_skipped++; return; }
     }
     if (!g_settings.depth_of_field && g_cur_fs_hash == UINT64_C(0xf7731492223eb16a)) { stat_skipped++; return; }
+    // Ambient occlusion off: clear the 400x225 HBAO target to 1.0 (unoccluded) on the final blur pass and skip
+    // the AO + bilateral blur draws; the half-res composite (0f8f1af28fc2064d) then writes 1.0 into its AO channel.
+    if (!g_settings.ambient_occlusion &&
+        (g_cur_fs_hash == UINT64_C(0xcb54ea341e41d9c5) || g_cur_fs_hash == UINT64_C(0xb19c72f044b00219) ||
+         g_cur_fs_hash == UINT64_C(0x8222f280bba07b98))) {
+        if (g_cur_fs_hash == UINT64_C(0x8222f280bba07b98) && st.rt.ncolor > 0 && st.rt.color[0]) {
+            static const float one[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+            clear(0, 0, one, 0xF, false, 0, false, 0, 0);
+        }
+        stat_skipped++;
+        return;
+    }
     // The bloom's fixed tap offsets must address adjacent console-size texels.
     // Enlarging those images spaces the taps apart and produces separate copies
     // of emissive details; odd mip scratch sizes also stopped inheriting scale.

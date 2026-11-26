@@ -1507,6 +1507,8 @@ static void tab_display(void) {
                "little faster, a flatter image.");
     opt_toggle("Depth of field", &g_settings.depth_of_field, true, "The game blurs the far distance a little. Off: sharp "
                "out to the horizon, a little faster.");
+    opt_toggle("Ambient occlusion", &g_settings.ambient_occlusion, true, "Soft contact shadows in corners and foliage. "
+               "Off: cleaner image, a little faster.");
     opt_toggle("Grass", &g_settings.grass, true, "Grass blades and ground cover. Off: bare terrain, faster.");
     {
         static const char *const gd_names[GRASS_DIST_COUNT] = {"Follow draw distance", "Potato", "Original", "Medium", "High"};

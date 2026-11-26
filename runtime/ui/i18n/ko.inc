@@ -1556,3 +1556,6 @@ T("Press the sprint button once while moving and Link keeps sprinting until he s
 T("30 fps until F5 again", "F5를 다시 누를 때까지 30fps")
 T("Frame rate as set again", "프레임 속도를 설정대로 되돌렸습니다")
 T("30 fps for a physics puzzle, until pressed again:  F5", "물리 퍼즐용 30fps, 다시 누를 때까지:  F5")
+    {"Ambient occlusion", "앰비언트 오클루전"},
+    {"Soft contact shadows in corners and foliage. Off: cleaner, faster.", "구석과 수풀의 부드러운 접촉 그림자. 끄기: 더 깔끔하고 빠름."},
+    {"Soft contact shadows in corners and foliage. Off: cleaner image, a little faster.", "구석과 수풀의 부드러운 접촉 그림자. 끄기: 더 깔끔한 화면, 약간 더 빠름."},
