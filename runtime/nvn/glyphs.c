@@ -623,20 +623,17 @@ static int face_vertex(int host) {
     }
 }
 
-void glyphs_hud_positions(int pos[4]) {
-    static const int k_presets[BUTTON_LAYOUT_COUNT][4] = {
-        {0, 1, 2, 3},  // BUTTON_LAYOUT_AUTO (fallback: Nintendo)
-        {0, 1, 2, 3},  // BUTTON_LAYOUT_NINTENDO: East A, South B, North X, West Y
-        {1, 0, 2, 3},  // BUTTON_LAYOUT_SWAP_AB:  South A, East B, North X, West Y
-        {1, 0, 3, 2},  // BUTTON_LAYOUT_XBOX:     South A, East B, West X, North Y
-        {0, 1, 3, 2},  // BUTTON_LAYOUT_SWAP_XY:  East A, South B, West X, North Y
-        {1, 3, 0, 2},  // BUTTON_LAYOUT_GAMECUBE: South A, West B, East X, North Y
-    };
-    int layout = g_settings.button_layout;
-    if (layout > BUTTON_LAYOUT_AUTO && layout < BUTTON_LAYOUT_COUNT) {
-        memcpy(pos, k_presets[layout], 4 * sizeof(int));
-        return;
+int glyphs_pad_family(void) {
+    switch (g_settings.button_icons) {
+    case ICONS_XBOX: return 1;
+    case ICONS_PLAYSTATION: return 2;
+    case ICONS_STEAMDECK: return 3;
+    case ICONS_NINTENDO: return 0;
+    default: return bind_label_family();
     }
+}
+
+static void hud_positions_from_bindings(int pos[4]) {
     int p[4], mask = 0;
     for (int i = 0; i < 4; i++) {
         p[i] = face_vertex(g_bind_pad[BIND_A + i]);
@@ -658,7 +655,29 @@ void glyphs_hud_positions(int pos[4]) {
         memcpy(pos, p, sizeof p);
         return;
     }
-    memcpy(pos, k_presets[0], 4 * sizeof(int));
+    static const int k_nintendo[4] = {0, 1, 2, 3};
+    memcpy(pos, k_nintendo, sizeof k_nintendo);
+}
+
+void glyphs_hud_positions(int pos[4]) {
+    static const int k_presets[BUTTON_LAYOUT_COUNT][4] = {
+        {0, 1, 2, 3},  // BUTTON_LAYOUT_AUTO (fallback: Nintendo)
+        {0, 1, 2, 3},  // BUTTON_LAYOUT_NINTENDO: East A, South B, North X, West Y
+        {1, 0, 2, 3},  // BUTTON_LAYOUT_SWAP_AB:  South A, East B, North X, West Y
+        {1, 0, 3, 2},  // BUTTON_LAYOUT_XBOX:     South A, East B, West X, North Y
+        {0, 1, 3, 2},  // BUTTON_LAYOUT_SWAP_XY:  East A, South B, West X, North Y
+        {1, 3, 0, 2},  // BUTTON_LAYOUT_GAMECUBE: South A, West B, East X, North Y
+    };
+    int layout = g_settings.button_layout;
+    if (layout > BUTTON_LAYOUT_AUTO && layout < BUTTON_LAYOUT_COUNT) {
+        if (layout == BUTTON_LAYOUT_XBOX && glyphs_pad_family() != 0) {
+            hud_positions_from_bindings(pos);
+            return;
+        }
+        memcpy(pos, k_presets[layout], 4 * sizeof(int));
+        return;
+    }
+    hud_positions_from_bindings(pos);
 }
 
 static int g_hud_built[4];
@@ -674,7 +693,9 @@ bool glyphs_hud_positions_stale(void) {
     if (!g_hud_built_valid) return false;
     int pos[4];
     glyphs_hud_positions(pos);
-    return memcmp(pos, g_hud_built, sizeof pos) != 0;
+    for (int i = 0; i < 4; i++)
+        if ((pos[i] == 3) != (g_hud_built[i] == 3)) return true;
+    return false;
 }
 
 // ---- the face buttons' characters follow the actions in play
@@ -725,6 +746,16 @@ static float getf(uint64_t p, unsigned off) {
     if (p) memcpy(&v, (const void *)(uintptr_t)(p + off), 4);
     return v;
 }
+static void hud_base_rot(bool has_al, int to, float *rz, float *sx) {
+    if (has_al) {
+        *rz = to == 1 ? -90.0f : to == 2 ? 90.0f : to == 3 ? 180.0f : 0.0f;
+        *sx = 1.0f;
+    } else {
+        *rz = to == 0 ? 90.0f : to == 2 ? 180.0f : to == 3 ? -90.0f : 0.0f;
+        *sx = to == 2 ? -1.0f : 1.0f;
+    }
+}
+
 static int face_vertex(int host);
 // The panes' new places show from the game's next layout pass, a frame after the glyph sheet's new character: the
 // character waits for them (RUNE_SETTLE: 1.5 frames), or for one frame "Y Activate" showed in the slot's own corner.
@@ -749,9 +780,12 @@ static bool rune_slot(int host, int *moved) {  // host < 0: back to the slot's o
     if (there && to == applied) return to == own || now - applied_ns >= settle;
     if (there) { applied = to, applied_ns = now; return to == own; }
     uint64_t base = act_a_slot_pane("P_Base_00"), capture = act_a_slot_pane("N_CaptureA_00");
+    float rz = 0.0f, sx = 1.0f;
+    bool has_al = !g_hud_built_valid || g_hud_built[0] == 0 || g_hud_built[0] == 3;
+    hud_base_rot(has_al, to, &rz, &sx);
     setf(btn, 0x30, k_act_xy[to][0]), setf(btn, 0x34, k_act_xy[to][1]);           // (translate)
-    setf(base, 0x44, (to == 2 || to == 3) ? 180.0f : 0.0f), setf(base, 0x48, to == 2 ? -1.0f : 1.0f);  // (rotate z, scale x)
-    setf(capture, 0x30, k_act_xy[to][0] + 60), setf(capture, 0x34, k_act_xy[to][1]);
+    setf(base, 0x44, rz), setf(base, 0x48, sx);                                  // (rotate z, scale x)
+    setf(capture, 0x30, k_act_xy[to][0] + (to == 3 ? -60.0f : 60.0f)), setf(capture, 0x34, k_act_xy[to][1]);
     static const char *const letters[4] = {0, "T_B_00", "T_X_00", "T_Y_00"};  // (B X Y: pos[1..3])
     for (int i = 1; i < 4; i++) {
         uint64_t t = act_a_slot_pane(letters[i]);
@@ -762,6 +796,38 @@ static bool rune_slot(int host, int *moved) {  // host < 0: back to the slot's o
     return to == own;
 }
 
+static void hud_diamond_sync(const int pos[4], bool a_rune_active) {
+    if (!g_hud_built_valid || !in_play()) return;
+    static const char *const k_btn[4] = {"N_BtnA_00", "N_BtnB_00", "N_BtnX_00", "N_BtnX_00"};
+    static const char *const k_base[4] = {"P_Base_00", "P_BaseB_00", "P_BaseX_00", "P_BaseY_00"};
+    static const char *const k_cap[4] = {"N_CaptureA_00", "N_CaptureB_00", "N_CaptureX_00", "N_CaptureY_00"};
+    static const char *const k_dim[4][4] = {
+        {NULL, "T_B_00", "T_X_00", "T_Y_00"},
+        {"T_A_01", NULL, "T_X_00", "T_Y_00"},
+        {"T_A_00", "T_B_00", NULL, "T_Y_00"},
+        {"T_A_00", "T_B_00", "T_X_00", NULL},
+    };
+    for (int w = 0; w < 4; w++) {
+        if (w == 0 && a_rune_active) continue;
+        if ((g_hud_built[w] == 3) != (pos[w] == 3)) continue;
+        int to = pos[w];
+        bool built_al = g_hud_built[w] == 0 || g_hud_built[w] == 3;
+        float rz = 0.0f, sx = 1.0f;
+        hud_base_rot(built_al, to, &rz, &sx);
+        uint64_t btn = act_hud_slot_pane(w, k_btn[w]);
+        uint64_t base = act_hud_slot_pane(w, k_base[w]);
+        uint64_t cap = act_hud_slot_pane(w, k_cap[w]);
+        setf(btn, 0x30, k_act_xy[to][0]), setf(btn, 0x34, k_act_xy[to][1]);
+        setf(base, 0x44, rz), setf(base, 0x48, sx);
+        setf(cap, 0x30, k_act_xy[to][0] + (to == 3 ? -60.0f : 60.0f)), setf(cap, 0x34, k_act_xy[to][1]);
+        for (int i = 0; i < 4; i++) {
+            if (!k_dim[w][i]) continue;
+            uint64_t t = act_hud_slot_pane(w, k_dim[w][i]);
+            setf(t, 0x30, k_dim_xy[pos[i]][0]), setf(t, 0x34, k_dim_xy[pos[i]][1]);
+        }
+    }
+}
+
 // Controls > Prompts follow action bindings (g_settings.prompts_follow); off: the Switch layer everywhere and the slot
 // in its own corner (put back if the setting goes off with the slot moved)
 static void resolve_face(void) {
@@ -770,6 +836,9 @@ static void resolve_face(void) {
     int rune_host = rune ? g_act_pad[ACT_ACTIVATE_RUNE] : -1, moved = -1;
     if ((play || !on) && !rune_slot(rune_host, &moved)) rune = false;  // (the characters follow once the slot is there)
     g_letter_swap = rune ? moved : -1;
+    int pos[4];
+    glyphs_hud_positions(pos);
+    hud_diamond_sync(pos, rune);
     for (int dev = 0; dev < 2; dev++)
         for (int i = 0; i < 4; i++) {
             int layer = dev ? g_bind_key[BIND_A + i] : g_bind_pad[BIND_A + i];
@@ -796,6 +865,7 @@ static int face_key(int b) { return b >= BIND_A && b <= BIND_Y ? g_face[1][b - B
 static uint32_t generation(bool cursor) {
     int k = resolve_kind();
     uint32_t h = 2166136261u ^ (uint32_t)k;
+    h = (h ^ (uint32_t)g_settings.button_layout) * 16777619u;
     resolve_face();
     for (int d = 0; d < 2; d++)
         for (int i = 0; i < 4; i++) h = (h ^ (uint16_t)g_face[d][i]) * 16777619u;
@@ -1147,8 +1217,19 @@ static bool layout_draw(const LayoutIcon *li, uint32_t w, uint32_t h, const uint
     Box b = {ox + (bx0 + bx1 + 1) * k / 2, oy + (by0 + by1 + 1) * k / 2, (by1 - by0 + 1) * k, (bx1 - bx0 + 1) * k};
     Canvas cv;
     if (!canvas_init(&cv, (int)s)) return false;
-    int copy = 0;
-    bool drawn = draw_glyph(&cv, b, li->code, resolve_kind(), &copy);  // (Nintendo: the game's own, even with other bindings)
+    int copy = 0, kind = resolve_kind();
+    bool drawn = draw_glyph(&cv, b, li->code, kind, &copy);  // (Nintendo: the game's own, even with other bindings)
+    if (!drawn && kind == ICONS_NINTENDO && copy) {
+        if (copy >= 0xE040 && copy <= 0xE043) {
+            static const char *const k_nin_face[4] = {"A", "B", "X", "Y"};
+            round_label(&cv, b, k_nin_face[copy - 0xE040]);
+            drawn = true;
+        } else if (copy >= 0xE044 && copy <= 0xE047) {
+            static const char *const k_nin_sh[4] = {"L", "R", "ZL", "ZR"};
+            tab_label(&cv, b, k_nin_sh[copy - 0xE044]);
+            drawn = true;
+        }
+    }
     if (drawn)
         for (uint32_t y = 0; y < h * s; y++)
             for (uint32_t x = 0; x < w * s; x++) {  // (bilinear from the canvas; at 48x48 the canvas's own pixels)
