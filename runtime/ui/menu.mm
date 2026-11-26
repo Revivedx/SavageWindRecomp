@@ -25,6 +25,7 @@
 #include "imgui_internal.h"  // (NavCursorVisible)
 #include "osk.h"
 #include "console.h"
+#include "benchmark_ui.h"
 #ifdef SW_METAL
 #include "imgui_impl_metal.h"
 #else
@@ -37,6 +38,7 @@ extern "C" bool vk_feedback_once(void);  // runtime/nvn/vulkan/exec.c (Video > S
 
 extern "C" {
 #include "../amiibo.h"
+#include "../benchmark.h"
 #include "../bookmarks.h"
 #include "../collectibles.h"
 #include "../control.h"
@@ -330,6 +332,12 @@ bool menu_handle_event(const SDL_Event *e) {
     }
     // typing (a text field, the on-screen keyboard, the name entry): keys are text, not menu shortcuts
     bool typing = g_kbd.load() == 1 || console_is_open() || (g_open.load() && g_text_busy.load());
+    if (!g_open.load() && !console_is_open() && bench_active() &&
+        ((e->type == SDL_EVENT_KEY_DOWN && !e->key.repeat && e->key.scancode == SDL_SCANCODE_ESCAPE) ||
+         (e->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN && e->gbutton.button == g_bind_pad[BIND_B]))) {
+        bench_cancel();
+        return true;
+    }
     if (e->type == SDL_EVENT_KEY_UP && e->key.scancode == SDL_SCANCODE_ESCAPE)
         input_pc_escape(false);
     if (pc_cursor_enabled() && !capturing() && !typing && !game_options_input_hold() &&
@@ -2972,6 +2980,7 @@ static const char *page_name(int id) {
     case 11: return "Teleport";
     case 12: return "Mods";
     case 13: return "Achievements";
+    case 15: return "Benchmark";
     }
     return "";
 }
@@ -2993,6 +3002,7 @@ static int game_pages(UiNavPage *out) {
     int n = 0;
     out[n++] = {12, "Mods", ICON_PUZZLE, 0, true};
     out[n++] = {13, "Achievements", ICON_TROPHY, 0, true};  // (runtime/ui/achievements_ui.mm)
+    out[n++] = {15, "Benchmark", ICON_SLIDERS, 0, true};    // (runtime/ui/benchmark_ui.mm)
     // (Cheats, Teleport: only when started with -dev or SAVAGEWIND_DEV=1: cheats are developer mode, as the
     // console's give, tp and time)
     if (control_enabled()) out[n++] = {10, "Cheats", ICON_MAGIC, 0, true}, out[n++] = {11, "Teleport", ICON_LOCATION, 0, true};
@@ -3021,6 +3031,12 @@ static void page_body(int id, float scale, bool in_game) {
     case 10: tab_cheats(); break;
     case 11: tab_teleport(); break;
     case 13: ach_ui_tab(); break;
+    case 15: {
+        bool close = false;
+        bench_ui_tab(&close);
+        if (close) set_open(false);
+        break;
+    }
     case 12: {
         bool want_restart = false;
         mods_tab_draw(in_game, &want_restart);
@@ -3255,7 +3271,7 @@ static bool menu_draws(bool *pointer_hover = NULL, float *pointer_box = NULL, bo
     if (gyro_show) *gyro_show = gyro_on;
     return g_open.load() || g_kbd.load() == 1 || g_sizes.load() || console_is_open() || gyro_on || hover ||
            g_settings.perf_overlay != PERF_OFF || act_log_enabled() || quick_inventory_sort_hint() || quick_drop_hint_state() ||
-           collect_map_shown() || ach_ui_active() || SDL_GetTicks() < g_notice_until.load();
+           collect_map_shown() || ach_ui_active() || bench_hud_visible() || SDL_GetTicks() < g_notice_until.load();
 }
 
 bool menu_render_needed(void) { return menu_draws(); }
@@ -3341,6 +3357,7 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
     }
 
     if (g_settings.perf_overlay != PERF_OFF) perf_overlay_draw(io, scale);
+    if (!open && !kbd && !sizes && !con && bench_hud_visible()) bench_ui_overlay(io.DisplaySize.x, io.DisplaySize.y, scale);
     ach_ui_toasts(io.DisplaySize.x, io.DisplaySize.y, scale);
     notice_draw(io, scale);
     if (act_log_enabled()) act_overlay_draw(io, scale);

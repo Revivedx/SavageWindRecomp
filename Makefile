@@ -619,6 +619,15 @@ test-output-scale: $(B)/test_output_scale
 
 .PHONY: test-output-scale
 
+$(B)/test_benchmark: tests/test_benchmark.c runtime/benchmark.c runtime/benchmark.h
+	@mkdir -p $(B)
+	$(CC) -O1 $(OSFLAGS) -Iruntime -o $@ $< -lm
+
+test-benchmark: $(B)/test_benchmark
+	$(B)/test_benchmark
+
+.PHONY: test-benchmark
+
 $(B)/test_window_size: tests/test_window_size.c runtime/window_size.c $(RT_HDRS)
 	@mkdir -p $(B)
 	$(CC) -O1 -DSDL_STATIC_LIB $(OSFLAGS) $(DEPINC) -Iruntime -o $@ tests/test_window_size.c runtime/window_size.c -lSDL3 -lpthread -lm
