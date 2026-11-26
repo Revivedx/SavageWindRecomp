@@ -735,6 +735,12 @@ test-save-convert: $(B)/test_save_convert
 
 .PHONY: test-save-convert
 
+# The texture pack converter (tools/hdpack_convert.py) on a synthetic game and pack (no game files needed)
+test-hdpack-convert:
+	python3 tools/test_hdpack_convert.py
+
+.PHONY: test-hdpack-convert
+
 # Save profiles (runtime/services/save_profiles.c): names, create / copy / rename / delete, the active profile and the
 # legacy `save` folder, on tiny fake folders in a temporary directory (no game files, no real saves)
 $(B)/test_save_profiles: tools/test_save_profiles.c runtime/services/save_profiles.c runtime/services/save_profiles.h runtime/services/save_convert.c runtime/services/save_convert.h runtime/services/archive.c runtime/services/archive.h

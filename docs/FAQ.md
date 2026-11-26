@@ -537,6 +537,11 @@ on the start screen, or F1 in game) and restart. The tab also sets the load orde
 the Switch version 1.9.0 fit best; Wii U and Cemu packs need adapting, because the file formats differ. On Alpha 6
 (0.6.0), a mod's `romfs` folder can be loaded with the launch option `SAVAGEWIND_ROMFS_OVERLAY=<folder>`.
 
+Texture packs made for the game's 1.6.0 update, such as HDPacks.com's 4K pack, crash or never finish loading on
+1.9.0 as they are. `python3 tools/hdpack_convert.py <game files folder> <pack's RomFS folder> mods/<name>` makes
+a 1.9.0 mod of only their textures from your own game files. Packs this big also need more game memory:
+`game_memory_mb = 6144` in `savagewind.ini`. The mod holds parts of your game files, so don't share it.
+
 **Mods are other people's work.** Savage Wind doesn't check, test or support them, and isn't responsible for what they
 do, including if they break the game or your saves. Back up your saves before trying one. `savagewind.log` lists the
 mods each run loads, so a bug report with mods on first gets asked to try again with every mod off. If the bug is still
