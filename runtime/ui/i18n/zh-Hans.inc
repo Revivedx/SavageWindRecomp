@@ -1556,3 +1556,5 @@ T("Press the sprint button once while moving and Link keeps sprinting until he s
 T("30 fps until F5 again", "30 fps，直到再次按 F5")
 T("Frame rate as set again", "帧率恢复为设置值")
 T("30 fps for a physics puzzle, until pressed again:  F5", "物理谜题时 30 fps，再按一次恢复:  F5")
+T("Cutscenes at 16:9", "过场动画保持 16:9")
+T("Keeps in-engine cutscenes at 16:9 with bars instead of filling wider or taller screens.", "将游戏内过场动画保持在 16:9 并显示黑边，而不铺满更宽或更高的屏幕。")

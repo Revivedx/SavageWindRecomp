@@ -69,6 +69,7 @@ Settings g_settings = {
     .wide_view = true,
     .stars = STARS_BRIGHTEST,  // (Video > Stars: the player test picked x8; the game's own barely show on PC)
     .hud_edges = false,
+    .cutscenes_16_9 = false,
     .hdr_peak_nits = 0,  // (not set yet: the first start reads the ICC peak, else 1000; then it is a normal setting)
     .hdr_game_nits = 203,  // (HGIG reference white)
     .hdr_ui_nits = 203,    // (the HUD/menu; HGIG reference white by default)
@@ -526,6 +527,7 @@ void settings_load(void) {
         else if (!strcmp(key, "swmm_mods")) g_settings.swmm_mods = atoi(val) != 0;
         else if (!strcmp(key, "wide_view")) g_settings.wide_view = atoi(val) != 0;
         else if (!strcmp(key, "hud_edges")) g_settings.hud_edges = atoi(val) != 0;
+        else if (!strcmp(key, "cutscenes_16_9")) g_settings.cutscenes_16_9 = atoi(val) != 0;
         else if (!strcmp(key, "hdr")) {
             for (int i = 0; i < HDR_COUNT; i++)
                 if (!strcmp(val, k_hdr[i])) g_settings.hdr = i;
@@ -926,6 +928,7 @@ bool settings_save_to(const char *path) {
     fprintf(f, "sharper_text = %s\n", g_settings.sharper_text == 4 ? "4x" : g_settings.sharper_text == 2 ? "2x" : "off");
     fprintf(f, "wide_view = %d\n", g_settings.wide_view);
     fprintf(f, "hud_edges = %d\n", g_settings.hud_edges);
+    fprintf(f, "cutscenes_16_9 = %d\n", g_settings.cutscenes_16_9);
     fprintf(f, "hdr = %s\n", k_hdr[g_settings.hdr >= 0 && g_settings.hdr < HDR_COUNT ? g_settings.hdr : HDR_AUTO]);
     fprintf(f, "sparse_heap = %s\n", k_sparse_heap[g_settings.sparse_heap >= 0 && g_settings.sparse_heap < SPARSE_HEAP_COUNT ?
                                                        g_settings.sparse_heap : SPARSE_HEAP_AUTO]);

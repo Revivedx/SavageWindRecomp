@@ -488,6 +488,9 @@ void build_items(void) {
     v.push_back(toggle(P_VIDEO, "HUD at edges", "On windows taller than 16:9 with Fill wide screens, anchors the top and bottom HUD to the window edges.",
                        [](const Item &) { return (int)g_settings.hud_edges; },
                        [](const Item &, int x) { g_settings.hud_edges = x; }, 0));
+    v.push_back(toggle(P_VIDEO, "Cutscenes at 16:9", "Keeps in-engine cutscenes at 16:9 with bars instead of filling wider or taller screens.",
+                       [](const Item &) { return (int)g_settings.cutscenes_16_9; },
+                       [](const Item &, int x) { g_settings.cutscenes_16_9 = x; }, 0));
     v.push_back(choice(P_VIDEO, "Field of view", "How much the camera shows in play. Cutscenes keep their own.",
                        [](const Item &) { return N(k_fov); },
                        [](const Item &, int x) {

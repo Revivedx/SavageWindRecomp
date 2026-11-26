@@ -1556,3 +1556,5 @@ T("Press the sprint button once while moving and Link keeps sprinting until he s
 T("30 fps until F5 again", "30 fps fino al prossimo F5")
 T("Frame rate as set again", "Frequenza dei fotogrammi come impostata")
 T("30 fps for a physics puzzle, until pressed again:  F5", "30 fps per un enigma di fisica, finché non la premi di nuovo:  F5")
+T("Cutscenes at 16:9", "Filmati in 16:9")
+T("Keeps in-engine cutscenes at 16:9 with bars instead of filling wider or taller screens.", "Mantiene i filmati di gioco in 16:9 con bande invece di riempire schermi più larghi o più alti.")

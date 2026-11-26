@@ -1556,3 +1556,5 @@ T("Press the sprint button once while moving and Link keeps sprinting until he s
 T("30 fps until F5 again", "もう一度F5を押すまで30fps")
 T("Frame rate as set again", "フレームレートを設定どおりに戻しました")
 T("30 fps for a physics puzzle, until pressed again:  F5", "物理パズル用に30fps（もう一度押すまで）:  F5")
+T("Cutscenes at 16:9", "ムービーを16:9で表示")
+T("Keeps in-engine cutscenes at 16:9 with bars instead of filling wider or taller screens.", "ゲーム内ムービーを広い画面や縦長の画面に合わせず、黒帯付きの16:9で表示します。")

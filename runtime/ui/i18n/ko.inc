@@ -1556,3 +1556,5 @@ T("Press the sprint button once while moving and Link keeps sprinting until he s
 T("30 fps until F5 again", "F5를 다시 누를 때까지 30fps")
 T("Frame rate as set again", "프레임 속도를 설정대로 되돌렸습니다")
 T("30 fps for a physics puzzle, until pressed again:  F5", "물리 퍼즐용 30fps, 다시 누를 때까지:  F5")
+T("Cutscenes at 16:9", "컷신 16:9 비율 유지")
+T("Keeps in-engine cutscenes at 16:9 with bars instead of filling wider or taller screens.", "인게임 컷신을 더 넓거나 높은 화면에 채우지 않고 레터박스 16:9로 유지합니다.")

@@ -186,6 +186,7 @@ typedef struct {
     int sharper_text;    // the game's font sheets enlarged this many times (2 or 4; 0: off), runtime/nvn/text_upscale.c
     bool wide_view;      // a window that isn't 16:9 shows more of the world instead of bars (runtime/nvn/output_scale.c)
     bool hud_edges;      // on windows taller than 16:9 with wide_view, anchor HUD to the window edges
+    bool cutscenes_16_9; // keep in-engine cutscenes at 16:9 with bars on wider or taller windows (#838)
     int hdr;             // HDR_* (runtime/nvn/vulkan/device.c hdr_*)
     int hdr_white;       // nits of SDR white in HDR (0: what Windows gives SDR content on that monitor)
     int hdr_peak_nits;   // peak: scene roll-off and final cap for every element (0: not set yet; first start reads ICC)
