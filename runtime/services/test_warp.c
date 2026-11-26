@@ -1,4 +1,4 @@
-// (test only, never a player feature) Start the game somewhere else: values of game_data.sav rewritten as the game
+// Start a test run somewhere else: values of game_data.sav rewritten as the game
 // reads the file, which itself stays as it is. With a scratch save folder (SAVAGEWIND_SAVE_DIR) and "Continue", a
 // scripted test run loads straight into another region, at another hour or in other weather.
 //
@@ -142,33 +142,37 @@ void test_warp_patch(uint8_t *d, uint64_t size) {
     }
 }
 
-// TimeMgr's time of day, 0..360 = 24 h (NULL until the world exists). ksys::world::Manager [world_mgr]
-// (+0x5c0 count, +0x5c8 its managers; [0] = TimeMgr, the time at +0xb8), as SAVAGEWIND_CLOCK_PROBE reads it
-// (runtime/hle/framepace.c).
-static float *time_of_day(void) {
-    if (!g_site.world_mgr) return NULL;
-    uint64_t wm = *(uint64_t *)(uintptr_t)g_site.world_mgr;
-    if (!wm || !*(uint32_t *)(uintptr_t)(wm + 0x5c0)) return NULL;
-    uint64_t mgrs = *(uint64_t *)(uintptr_t)(wm + 0x5c8), tm = mgrs ? *(uint64_t *)(uintptr_t)mgrs : 0;
-    return tm ? (float *)(uintptr_t)(tm + 0xb8) : NULL;
-}
-
-// The requested held hour (-2: SAVAGEWIND_TEST_TIME not read yet, -1: not held).
-static float held_tod = -2;
-static uint64_t sampled_manager, game_data_site;
-static uint64_t frozen_manager;
-static float saved_speed, pending_tod = -1;
-
 static uint64_t read_pointer(uint64_t addr) {
     uint64_t p = 0;
     return control_mem_peek(addr, &p, sizeof p) ? p : 0;
 }
 
+// TimeMgr's time of day, 0..360 = 24 h (NULL until the world exists). ksys::world::Manager [world_mgr]
+// (+0x5c0 count, +0x5c8 its managers; [0] = TimeMgr, the time at +0xb8), as SAVAGEWIND_CLOCK_PROBE reads it
+// (runtime/hle/framepace.c).
+static uint64_t time_manager(void) {
+    if (!g_site.world_mgr) return 0;
+    uint64_t wm = read_pointer(g_site.world_mgr);
+    uint32_t count;
+    if (!wm || !control_mem_peek(wm + 0x5c0, &count, sizeof count) || !count) return 0;
+    return read_pointer(read_pointer(wm + 0x5c8));
+}
+
+static float *time_of_day(void) {
+    uint64_t tm = time_manager();
+    return tm ? (float *)(uintptr_t)(tm + 0xb8) : NULL;
+}
+
+// The requested held hour (-2: SAVAGEWIND_TEST_TIME not read yet, -1: not held).
+static float held_tod = -2;
+static uint64_t frozen_manager;
+static float saved_speed, pending_tod = -1;
+
 // TimeMgr::calc reloads WM_Time from GameDataMgr each update. Its vtable's calc slot starts with an ADRP/ADD
 // reference to that singleton. Decode that reference rather than pinning a 1.9.0 address or changing the game
 // library's site table. Require the whole load/branch sequence and a singleton in main's data segment.
-static uint64_t time_data_site(uint64_t tm) {
-    if (tm == sampled_manager && game_data_site) return game_data_site;
+static uint64_t game_data_manager(uint64_t tm) {
+    if (!tm) return 0;
     uint64_t calc = read_pointer(read_pointer(tm) + 0x30);
     uint32_t code[32];
     if (calc < MAIN_BASE || calc >= g_site.main_data ||
@@ -181,31 +185,68 @@ static uint64_t time_data_site(uint64_t tm) {
         int64_t pages = (int64_t)(imm ^ 0x100000) - 0x100000;
         uint64_t site = ((calc + 4 * i) & ~0xfffull) + pages * 4096 + ((code[i + 1] >> 10) & 0xfff);
         if (site < g_site.main_data || site + 8 > g_site.main_end) continue;
-        sampled_manager = tm;
-        return game_data_site = site;
+        return read_pointer(site);
     }
     return 0;
+}
+
+// The pending and current buffers contain matching arrays for each flag type.
+static uint64_t flag_array(uint64_t mgr, int buffer, unsigned type_offset, uint32_t *count) {
+    uint64_t data = read_pointer(read_pointer(mgr + 0xbd8 + 8 * buffer));
+    if (!data || !control_mem_peek(data + type_offset + 8, count, sizeof *count)) return 0;
+    return read_pointer(data + type_offset + 0x10);
+}
+
+static bool flag_getter(uint64_t flag, uint32_t *load) {
+    uint64_t getter = read_pointer(read_pointer(flag) + 0x88);
+    uint32_t code[2];
+    if (!getter || !control_mem_peek(getter, code, sizeof code) || code[1] != 0xd65f03c0) return false;
+    *load = code[0];
+    return true;
+}
+
+// Resolve both s32 values afresh because loading a save can replace the buffers.
+bool game_data_s32_values(uint32_t hash, uint64_t values[2]) {
+    uint64_t mgr = game_data_manager(time_manager());
+    uint32_t pending_count, current_count;
+    if (!mgr) return false;
+    uint64_t pending = flag_array(mgr, 0, 0x10, &pending_count);
+    uint64_t current = flag_array(mgr, 1, 0x10, &current_count);
+    if (!pending || !current || pending_count != current_count || current_count > 65536) return false;
+    for (uint32_t i = 0; i < current_count; i++) {
+        uint64_t primary = read_pointer(current + 8 * i);
+        uint32_t flag_hash;
+        if (!primary || !control_mem_peek(primary + 0x1c, &flag_hash, sizeof flag_hash) || flag_hash != hash)
+            continue;
+        uint64_t proxy = read_pointer(pending + 8 * i);
+        uint32_t proxy_load, primary_load;
+        if (!proxy || read_pointer(proxy + 8) != primary ||
+            !flag_getter(proxy, &proxy_load) || proxy_load != 0xb9401000 ||      // ldr w0, [x0, #0x10]
+            !flag_getter(primary, &primary_load) || primary_load != 0xb9401800) // ldr w0, [x0, #0x18]
+            return false;
+        values[0] = proxy + 0x10;
+        values[1] = primary + 0x18;
+        return true;
+    }
+    return false;
 }
 
 // The pending-write buffer uses proxy flags (value at +0x10, primary flag at +8); the current-read buffer uses
 // primary flags (value at +0x18, name hash at +0x1c). Verify each float getter and the primary's WM_Time hash.
 static bool time_flags(float *now, uint64_t flags[2]) {
-    uint64_t tm = (uintptr_t)now - 0xb8, site = time_data_site(tm);
-    uint64_t mgr = site ? read_pointer(site) : 0;
+    uint64_t tm = (uintptr_t)now - 0xb8, mgr = game_data_manager(tm);
     uint32_t handle;
     if (!mgr || !control_mem_peek(tm + 0xd4, &handle, sizeof handle) || handle == UINT32_MAX) return false;
     handle &= 0xffffff;
     for (int i = 0; i < 2; i++) {
-        uint64_t buffer = read_pointer(read_pointer(mgr + 0xbd8 + 8 * i));
         uint32_t count, hash;
-        if (!buffer || !control_mem_peek(buffer + 0x28, &count, sizeof count) || handle >= count) return false;
-        uint64_t array = read_pointer(buffer + 0x30);
-        uint64_t flag = array ? read_pointer(array + 8 * handle) : 0;
-        uint64_t getter = read_pointer(read_pointer(flag) + 0x88), primary = flag;
-        uint32_t code[2], value_offset;
-        if (!getter || !control_mem_peek(getter, code, sizeof code) || code[1] != 0xd65f03c0) return false;
-        if (code[0] == 0xbd401800) value_offset = 0x18;  // ldr s0, [x0, #0x18]; ret
-        else if (code[0] == 0xbd401000) {               // ldr s0, [x0, #0x10]; ret
+        uint64_t array = flag_array(mgr, i, 0x20, &count);
+        if (!array || handle >= count) return false;
+        uint64_t flag = read_pointer(array + 8 * handle), primary = flag;
+        uint32_t load, value_offset;
+        if (!flag_getter(flag, &load)) return false;
+        if (load == 0xbd401800) value_offset = 0x18;  // ldr s0, [x0, #0x18]; ret
+        else if (load == 0xbd401000) {               // ldr s0, [x0, #0x10]; ret
             value_offset = 0x10;
             primary = read_pointer(flag + 8);
         } else return false;
@@ -311,6 +352,6 @@ void test_warp_frame(uint64_t frame) {
 
 RT_ON_RESET(test_warp_reset) {
     held_tod = -2;
-    sampled_manager = game_data_site = frozen_manager = 0;
+    frozen_manager = 0;
     pending_tod = -1;
 }

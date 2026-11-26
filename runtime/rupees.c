@@ -1,13 +1,9 @@
 // Cheats: Infinite rupees (the wallet kept at 9999, from the Savage Wind overlay's Cheats tab or `rupees lock`) and
-// `rupees <n>` (the wallet set once). No patch in the game code: a thread of ours finds the rupee count's game data
-// flag in the game's memory and writes it: a set at once, the top-up every RUPEE_POLL_MS while the cheat is on.
+// `rupees <n>` (the wallet set once). Update both GameDataMgr buffers so the next transaction starts with the
+// new balance. Set once on demand or top up every RUPEE_POLL_MS while the cheat is on.
 //
-// The game keeps each game data flag as an object on its heap (ksys::gdt, made once as it starts): an s32 flag is
-// 0x28 bytes - +0 its class (vtable, in main), +0x18 its value, +0x1c the crc32 of its name (the save's hash). The
-// s32 class is found from a flag every version has (MaxHartValue), then the CurrentRupee object among the objects of
-// that class. Both are looked for only while there is something to write, and the object is checked again before
-// each write (a new game, or a load, may lay the heap out again). From Slop of the Wild, where the same reader also
-// fed its achievements.
+// The hearts cheat uses the heap search from Slop of the Wild, with MaxHartValue to identify the s32 vtable.
+// A primary s32 flag is 0x28 bytes: +0 the vtable, +0x18 the value, and +0x1c the CRC32 of its name.
 #include <errno.h>
 #include <pthread.h>
 #include <stdbool.h>
@@ -17,6 +13,7 @@
 #include <time.h>
 
 #include "control.h"
+#include "control_mem.h"
 #include "cpu.h"
 #include "game_sites.h"
 #include "hle.h"
@@ -25,7 +22,7 @@
 #include "rt.h"
 #include "settings.h"
 
-#define RUPEE_POLL_MS 5000         // (a scan of the heap is long: no one needs the top-up sooner than this)
+#define RUPEE_POLL_MS 5000
 #define RUPEE_MAX 9999             // (the Infinite rupees top-up target)
 #define RUPEE_SET_MAX 999999       // (the game's own wallet limit)
 #define RUPEE_HASH 0x23149bf8u     // crc32("CurrentRupee")
@@ -43,7 +40,9 @@ static int32_t last_seen = -1;         // the count the thread last read (-1: no
 static int32_t want_hearts = -1;       // `hearts <3-30>`: heart containers to write (-1: none); under lock
 static int32_t want_hearts_tick = -1;  // live hearts update for game thread (Cpu *c in rt_item_tick)
 static int32_t last_hearts = -1;       // heart containers last read (-1: not found yet)
-static uint64_t vt_s32, rupee_obj, hart_max_obj, hart_cur_obj;
+static uint64_t vt_s32, hart_max_obj, hart_cur_obj;
+
+bool game_data_s32_values(uint32_t hash, uint64_t values[2]);  // services/test_warp.c
 
 static uint32_t rd32(uint64_t a) { return *(volatile uint32_t *)(uintptr_t)a; }
 static uint64_t rd64(uint64_t a) { return *(volatile uint64_t *)(uintptr_t)a; }
@@ -63,7 +62,7 @@ static uint64_t s32_class(uint64_t lo, uint64_t hi, uint32_t hash) {
     return 0;
 }
 
-// The CurrentRupee flag object, 0: not found (yet)
+// The requested primary flag object, 0: not found (yet)
 static uint64_t find_flag(uint32_t hash) {
     uint64_t lo = HEAP_BASE, hi = HEAP_BASE + kernel_heap_size();
     if (hi <= lo) return 0;
@@ -82,31 +81,40 @@ static bool still_flag(uint64_t obj, uint32_t hash) {
            rd64(obj) == vt_s32 && rd32(obj + 0x1c) == hash;
 }
 
+static bool update_wallet(int32_t set, bool infinite, bool *filled) {
+    uint64_t values[2];
+    int32_t pending, current;
+    if (!game_data_s32_values(RUPEE_HASH, values) ||
+        !control_mem_peek(values[0], &pending, sizeof pending) ||
+        !control_mem_peek(values[1], &current, sizeof current)) return false;
+    int32_t target = set;
+    bool top_up = infinite && (set >= 0 ? set : pending) < RUPEE_MAX;
+    if (top_up) target = RUPEE_MAX;
+    if (target >= 0) {
+        if (!control_mem_poke(values[0], &target, sizeof target) ||
+            !control_mem_poke(values[1], &target, sizeof target)) return false;
+        current = target;
+        if (set >= 0) LOG("[cheats] rupees: wallet set to %d\n", (int)target);
+        if (top_up && !*filled) {
+            *filled = true;
+            LOG("[cheats] infinite rupees: wallet filled\n");
+        }
+    }
+    __atomic_store_n(&last_seen, current, __ATOMIC_RELAXED);
+    return true;
+}
+
 static void *rupee_thread(void *arg) {
     (void)arg;
+    bool filled = false;
     pthread_mutex_lock(&lock);
     while (!stop_req) {
         int32_t set = want;
         int32_t set_h = want_hearts;
         pthread_mutex_unlock(&lock);
-        bool look_rupees = (g_settings.infinite_rupees || set >= 0) && kernel_heap_size();
+        bool infinite = g_settings.infinite_rupees;
+        bool wallet_updated = (infinite || set >= 0) && kernel_heap_size() && update_wallet(set, infinite, &filled);
         bool look_hearts = (set_h >= HEARTS_MIN) && kernel_heap_size();
-        if (look_rupees && !still_flag(rupee_obj, RUPEE_HASH)) {
-            rupee_obj = find_flag(RUPEE_HASH);
-            if (rupee_obj) LOG("[cheats] rupees: the rupee count is at %llx\n", (unsigned long long)rupee_obj);
-        }
-        if (look_rupees && rupee_obj) {
-            if (set >= 0) {
-                *(volatile uint32_t *)(uintptr_t)(rupee_obj + 0x18) = (uint32_t)set;
-                LOG("[cheats] rupees: wallet set to %d\n", (int)set);
-            }
-            if (g_settings.infinite_rupees && (int32_t)rd32(rupee_obj + 0x18) < RUPEE_MAX) {
-                *(volatile uint32_t *)(uintptr_t)(rupee_obj + 0x18) = RUPEE_MAX;
-                static bool said;
-                if (!said) said = true, LOG("[cheats] infinite rupees: wallet filled\n");
-            }
-            __atomic_store_n(&last_seen, (int32_t)rd32(rupee_obj + 0x18), __ATOMIC_RELAXED);
-        }
         if (look_hearts) {
             if (!still_flag(hart_max_obj, S32_HASH)) hart_max_obj = find_flag(S32_HASH);
             if (!still_flag(hart_cur_obj, HART_CUR_HASH)) hart_cur_obj = find_flag(HART_CUR_HASH);
@@ -122,7 +130,7 @@ static void *rupee_thread(void *arg) {
             }
         }
         pthread_mutex_lock(&lock);
-        if (set >= 0 && want == set && rupee_obj) want = -1;  // (written; not found yet: tried again at the next poll)
+        if (set >= 0 && want == set && wallet_updated) want = -1;  // retry until both buffers are ready
         if (set_h >= HEARTS_MIN && want_hearts == set_h && (hart_max_obj || hart_cur_obj || g_site.player_info)) want_hearts = -1;
         struct timespec until;
         clock_gettime(CLOCK_REALTIME, &until);
@@ -268,6 +276,6 @@ RT_ON_RESET(rupees_reset) {
         pthread_join(thread, NULL);
         running = false;
     }
-    vt_s32 = rupee_obj = hart_max_obj = hart_cur_obj = 0;
+    vt_s32 = hart_max_obj = hart_cur_obj = 0;
     want = last_seen = want_hearts = last_hearts = want_hearts_tick = -1;
 }
