@@ -439,6 +439,7 @@ deps-windows:
 dist:
 	@[ -f build/deps-win/lib/libavcodec.dll.a ] || { echo "make deps-windows first (LGPL FFmpeg)"; exit 1; }
 	@[ -d build/helper/swgen ] || { echo "make gen-helper first (the game code generator)"; exit 1; }
+	@[ -x build/helper/nxpatch/nxpatch.exe ] || { echo "make package-helper first (the NSP reader)"; exit 1; }
 	@! find tools -maxdepth 1 -name '*.py' -newer build/helper/swgen/swgen.exe | grep -q . || \
 	    { echo "make gen-helper first: tools/*.py changed since build/helper/swgen was frozen"; exit 1; }
 	@[ -x build/zig/zig.exe ] || { echo "tools/fetch_zig.sh first (the compiler)"; exit 1; }
@@ -451,6 +452,7 @@ dist:
 	tools/zig_slim.sh $(strip $(filter-out -Iruntime,$(GENFLAGS))) \
 	    $(if $(GENFLAGS_COMPAT),-- $(strip $(filter-out -Iruntime,$(GENFLAGS_COMPAT))))  # (zig, its runtime built ahead of time)
 	cp -R build/helper/swgen "$(DIST)/"
+	cp -R build/helper/nxpatch "$(DIST)/"
 	cp -R build/zig-slim "$(DIST)/zig"
 	cp runtime/cpu.h runtime/simd.h runtime/simd_fp.h runtime/simd_softfma.h runtime/gamelib.h tools/gamelib_entry.c \
 	    runtime/hle/hle_symbols.txt "$(DIST)/gamelib-src/"
@@ -503,10 +505,14 @@ gen-helper: build/gen-venv/.ok
 	$(if $(filter windows,$(PLATFORM)),$(GEN_VPY) tools/pe_no_cfg.py build/helper/swgen/swgen.exe)
 	@du -sh build/helper/swgen
 
-build/gen-venv/.ok:
+build/gen-venv/.ok: Makefile
 	$(GEN_PY) -m venv build/gen-venv
-	$(GEN_VPY) -m pip install -q capstone==5.0.9 unicorn==2.1.4 lz4==4.4.5 pyinstaller==6.22.3
+	$(GEN_VPY) -m pip install -q capstone==5.0.9 unicorn==2.1.4 lz4==4.4.5 pyinstaller==6.22.3 zstandard==0.25.0
 	touch $@
+
+.PHONY: package-helper
+package-helper:
+	bash tools/build_package_helper.sh $(if $(filter windows,$(PLATFORM)),win-x64,linux-$(if $(filter aarch64,$(ARCH)),arm64,x64)) build/helper/nxpatch
 
 # Linux: build/dist/Savage_Wind-<version>-<arch>.AppImage, built in Ubuntu 22.04 containers (podman) with SDL3, LGPL
 # FFmpeg, shaderc and the game code generator helper inside; the Vulkan loader and GPU drivers are the system's.

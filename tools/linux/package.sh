@@ -53,7 +53,12 @@ mkdir "$APPDIR/usr/bin/colour-luts" && cp third_party/luts/*.cube third_party/lu
 cp README.md LICENSE "$APPDIR/usr/bin/"  # (licenses and source links of the bundled components: README "License")
 cp recomplauncher.json "$APPDIR/"  # (RecompLauncher reads /recomplauncher.json from inside the AppImage)
 [ -d "$L/helper/swgen" ] || { echo "no game code generator helper: tools/linux/gen_helper.sh $ARCH first"; exit 1; }
-cp -R "$L/helper/swgen" build/zig "$APPDIR/usr/bin/"
+case "$ARCH" in
+    x86_64) RID=linux-x64 ;;
+    aarch64) RID=linux-arm64 ;;
+esac
+bash tools/build_package_helper.sh "$RID" "$L/helper/nxpatch"
+cp -R "$L/helper/swgen" "$L/helper/nxpatch" build/zig "$APPDIR/usr/bin/"
 mkdir "$APPDIR/usr/bin/gamelib-src"
 cp runtime/cpu.h runtime/simd.h runtime/simd_fp.h runtime/simd_softfma.h runtime/gamelib.h tools/gamelib_entry.c \
    runtime/hle/hle_symbols.txt "$APPDIR/usr/bin/gamelib-src/"

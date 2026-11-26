@@ -76,7 +76,8 @@ about 20 GB of free disk space.
    - **Linux and Steam Deck:** the file ending in `x86_64.AppImage`. Make it executable and run it
      ([docs/linux.md](docs/linux.md)).
    - **Linux on ARM:** the file ending in `aarch64.AppImage`. It is highly experimental.
-2. Start it and choose the folder with your extracted game (`exefs/` and `romfs/`). Then choose **Set up game files**.
+2. Start it and choose the folder with your extracted game (`exefs/` and `romfs/`), or choose **Import game packages**
+   to extract local NUP or NSP files into a new folder. Then choose **Set up game files**.
    It checks the version, copies the files and recompiles the game code once, about 15 minutes on a 12-thread CPU.
    Your own files aren't changed.
 3. Play. Settings and languages are in the game's Options. **Savage Wind Configuration** has your game files and the

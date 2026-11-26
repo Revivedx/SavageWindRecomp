@@ -6,10 +6,10 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 L=$PWD/build/linux/$1
 V=$L/gen-venv
-if [ ! -f "$V/.ok" ]; then
+if [ ! -f "$V/.ok" ] || [ tools/linux/gen_helper.sh -nt "$V/.ok" ]; then
     rm -rf "$V" && python3.12 -m venv "$V"
     "$V/bin/python" -m pip install -q --upgrade pip
-    "$V/bin/python" -m pip install -q capstone==5.0.9 unicorn==2.1.4 lz4==4.4.5 pyinstaller==6.22.3
+    "$V/bin/python" -m pip install -q capstone==5.0.9 unicorn==2.1.4 lz4==4.4.5 pyinstaller==6.22.3 zstandard==0.25.0
     touch "$V/.ok"
 fi
 "$V/bin/python" -m PyInstaller --noconfirm --clean --log-level WARN --distpath "$L/helper" --workpath "$L/pyinstaller" \

@@ -33,6 +33,7 @@ Run from a shell that has `C:\msys64\ucrt64\bin` on PATH (SDL3, FFmpeg, Vulkan, 
 ## Package
     make deps-windows   # once: FFmpeg built as LGPL only (build/deps-win; downloads its source, needs nasm)
     make gen-helper     # the game code generator without Python (build/helper/swgen)
+    make package-helper # the NSP reader (requires the .NET 10 SDK on the build machine)
     tools/fetch_zig.sh  # the compiler the start screen builds the game code with (build/zig)
     make dist           # -> build/dist/SavageWind-<version>-windows.zip (no game code inside)
 

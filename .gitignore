@@ -35,6 +35,7 @@ __pycache__/
 *.xci
 *.xcz
 *.nsp
+*.nup
 *.nsz
 *.nca
 dump/

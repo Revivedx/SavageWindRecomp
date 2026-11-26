@@ -27,6 +27,18 @@ extracted/
 The `main` module's build id tells the exact version; `python tools/sw_probe.py` (it reads `extracted/exefs`)
 prints it and what the recompiler will find there.
 
+## Importing packages
+
+On Windows and Linux, choose **Import game packages** on the game files page. Select a combined NUP or select
+the base, update and DLC packages together. Review the identified content, source files and release versions,
+then choose **Extract packages**. A game NUP must contain the **1.9.0** RomFS. For a game imported from NSP,
+select the base and matching update together. The importer checks the merged RomFS version before extraction.
+If you select several updates, it checks the newest one. DLC-only imports can be extracted separately.
+Encrypted NSPs need your local keys file.
+
+The launcher extracts into a new `extracted-import-*/files/` folder in the data directory and selects that
+folder for you. Choose **Set up game files** to check the game version and install the extracted files.
+
 ## The DLC
 
 Each DLC's RomFS goes in a folder of its own, named `aoc1/` and `aoc2/` as above, with its folders right inside it

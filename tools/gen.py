@@ -32,6 +32,10 @@ import sys
 import time
 from collections import Counter
 
+if __name__ == '__main__' and sys.argv[1:2] == ['--import-packages']:
+    from package_import import main as import_packages
+    sys.exit(import_packages(sys.argv[2:]))
+
 import capstone
 import unicorn as uc
 from unicorn import arm64_const as A

@@ -443,7 +443,7 @@ static void find_game(const std::string &dir, int depth, std::string &exefs, std
         if (n[0] == '.') continue;
         std::string ext = n.size() > 4 ? n.substr(n.size() - 4) : "";
         for (auto &ch : ext) ch = (char)tolower((unsigned char)ch);
-        if (ext == ".xci" || ext == ".nsp" || ext == ".nca" || ext == ".nsz" || ext == ".xcz") unusable = true;
+        if (ext == ".nup" || ext == ".xci" || ext == ".nsp" || ext == ".nca" || ext == ".nsz" || ext == ".xcz") unusable = true;
         if (is_dir(dir + "/" + n)) sub.push_back(dir + "/" + n);
     }
     closedir(d);
@@ -1205,6 +1205,223 @@ static void SDLCALL picked(void *, const char *const *files, int) {
     if (!files[0]) return;
     select_game_folder(files[0]);
 }
+
+#ifndef __APPLE__
+static std::atomic<bool> g_importing{false}, g_import_cancel{false};
+static std::atomic<bool> g_import_approved{false};
+struct PackagePreview { std::string kind, version, filename; };
+static std::vector<PackagePreview> g_import_preview;  // guarded by g_lock
+static bool g_import_finished;  // guarded by g_lock
+static bool g_packages_selected;  // guarded by g_lock
+static std::string g_package_keys;  // a path selected for this session only; guarded by g_lock
+static const SDL_DialogFileFilter package_filter[] = {{"NUP / NSP", "nup;nsp"}};  // i18n-skip
+static const SDL_DialogFileFilter key_filter[] = {{"*.keys", "keys"}};  // i18n-skip
+
+static void SDLCALL picked_package_keys(void *, const char *const *files, int) {
+    if (!files || !files[0]) return;
+    pthread_mutex_lock(&g_lock);
+    if (!g_busy) g_package_keys = files[0];
+    pthread_mutex_unlock(&g_lock);
+}
+
+static bool draw_package_review(ImVec2 size) {
+    pthread_mutex_lock(&g_lock);
+    std::vector<PackagePreview> items = g_import_preview;
+    pthread_mutex_unlock(&g_lock);
+    if (items.empty() || g_import_cancel || g_import_approved) return false;
+    const char *popup = "##package-review";
+    if (!ImGui::IsPopupOpen(popup)) ImGui::OpenPopup(popup);
+    ImGui::SetNextWindowPos(ImVec2(size.x * 0.5f, size.y * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+    if (ImGui::BeginPopupModal(popup, NULL, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar)) {
+        ImGui::TextUnformatted(tr("Import game packages"));
+        ImGui::Separator();
+        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + size.x * 0.5f);
+        for (const auto &item : items) {
+            const bool base = item.kind == "base", update = item.kind == "update";
+            const char *addon = item.kind == "aoc1" ? "1" : "2";
+            if (base) ImGui::TextUnformatted(tr("Base game"));
+            else if (update) ImGui::TextUnformatted(tr("Game update"));
+            else ImGui::Text("%s %s", tr("Downloadable content"), addon);
+            if (!item.version.empty()) ImGui::TextDisabled(tr("Version %s"), item.version.c_str());
+            ImGui::TextUnformatted(item.filename.c_str());
+            ImGui::Spacing();
+        }
+        ImGui::PopTextWrapPos();
+        if (ImGui::Button(tr("Extract packages"))) {
+            g_import_approved = true;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button(tr("Cancel")) || ImGui::IsKeyPressed(ImGuiKey_Escape, false) ||
+            ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false)) {
+            g_import_cancel = true;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+    return true;
+}
+
+static std::string import_packages(const std::vector<std::string> &packages, const std::string &keys) {
+    namespace fs = std::filesystem;
+    char helper[1100], script[1100] = "", nxpatch[1100];
+    if (!rt_resource("swgen/swgen" PLAT_EXE_SUFFIX, NULL, helper, sizeof helper) &&
+        !(rt_resource(NULL, "tools/" PLAT_VENV_PYTHON, helper, sizeof helper) &&
+          rt_resource(NULL, "tools/gen.py", script, sizeof script))) {
+        set_job("Package reader is missing", true);
+        return {};
+    }
+    bool have_nxpatch = rt_resource("nxpatch/nxpatch" PLAT_EXE_SUFFIX,
+                                    "build/helper/nxpatch/nxpatch" PLAT_EXE_SUFFIX, nxpatch, sizeof nxpatch);
+    std::error_code ec;
+    // A fresh directory beside extracted/, with no user-owned files inside it.
+    std::string stage = std::string(rt_data_root()) + "/extracted-import-" + std::to_string(SDL_GetTicksNS());
+    if (!fs::create_directory(fs::u8path(stage), ec)) {
+        set_job("Could not extract game packages", true);
+        return {};
+    }
+    std::string folder = stage + "/files", log = stage + "/progress", cancel = stage + "/cancel";
+    std::string confirm = stage + "/confirm";
+    if (!fs::create_directory(fs::u8path(folder), ec)) {
+        fs::remove(fs::u8path(stage), ec);
+        set_job("Could not extract game packages", true);
+        return {};
+    }
+    std::vector<std::string> args = {helper};
+    if (*script) args.push_back(script);
+    args.insert(args.end(), {"--import-packages", "--out", folder, "--cancel", cancel, "--confirm", confirm});
+    if (have_nxpatch) args.insert(args.end(), {"--nxpatch", nxpatch});
+    args.insert(args.end(), {"--keys", keys.empty() ? std::string(rt_data_root()) + "/prod.keys" : keys});
+    for (const auto &version : VERSIONS)
+        if (version.supported) args.insert(args.end(), {"--game-version", version.name});
+    args.push_back("--");
+    args.insert(args.end(), packages.begin(), packages.end());
+    std::vector<const char *> argv;
+    for (const auto &a : args) argv.push_back(a.c_str());
+    argv.push_back(NULL);
+
+    PlatProc process = plat_spawn(argv.data(), log.c_str(), false);
+    std::string error, pending;
+    std::vector<PackagePreview> items;
+    long log_offset = 0;
+    int result = process ? -1 : 1;
+    bool sent_cancel = false, sent_confirm = false;
+    while (process) {
+        result = plat_proc_wait(process, false);
+        // Reopen the growing log on each poll, as gamebuild does. On Windows the helper
+        // keeps its write handle open for the entire review.
+        if (FILE *stream = fopen(log.c_str(), "rb")) {
+            char buf[1024];
+            if (fseek(stream, log_offset, SEEK_SET) == 0) {
+                while (size_t n = fread(buf, 1, sizeof buf, stream)) {
+                    pending.append(buf, n);
+                    log_offset += (long)n;
+                }
+            }
+            fclose(stream);
+            size_t start = 0;
+            for (size_t end; (end = pending.find('\n', start)) != std::string::npos; start = end + 1) {
+                std::string line = pending.substr(start, end - start);
+                if (!line.empty() && line.back() == '\r') line.pop_back();
+                unsigned long long value;
+                if (sscanf(line.c_str(), "total\t%llu", &value) == 1) g_total = value, g_done = 0;  // i18n-skip
+                else if (sscanf(line.c_str(), "progress\t%llu", &value) == 1) g_done = value;  // i18n-skip
+                else if (line.compare(0, 8, "failure\t") == 0) error = line.substr(8);  // i18n-skip
+                else if (line.compare(0, 5, "item\t") == 0) {  // i18n-skip
+                    size_t version = line.find('\t', 5);
+                    if (version == std::string::npos) continue;
+                    size_t filename = line.find('\t', version + 1);
+                    if (filename != std::string::npos)
+                        items.push_back({line.substr(5, version - 5), line.substr(version + 1, filename - version - 1),
+                                         line.substr(filename + 1)});
+                } else if (line == "review") {
+                    pthread_mutex_lock(&g_lock);
+                    g_import_preview = items;
+                    pthread_mutex_unlock(&g_lock);
+                }
+            }
+            pending.erase(0, start);
+        }
+        if (result != -1) break;
+        if (g_import_cancel && !sent_cancel) {
+            if (SDL_IOStream *file = SDL_IOFromFile(cancel.c_str(), "wb")) {  // i18n-skip
+                SDL_CloseIO(file);
+                sent_cancel = true;
+            }
+        }
+        if (g_import_approved && !g_import_cancel && !sent_confirm) {
+            if (SDL_IOStream *file = SDL_IOFromFile(confirm.c_str(), "wb")) {  // i18n-skip
+                SDL_CloseIO(file);
+                sent_confirm = true;
+                set_job("Extracting game packages...");
+            }
+        }
+        SDL_Delay(50);
+    }
+    if (!result && !g_import_cancel) {
+        fs::remove(fs::u8path(log), ec);
+        fs::remove(fs::u8path(confirm), ec);
+        return folder;
+    }
+    fs::remove_all(fs::u8path(stage), ec);
+    if (error == "cancelled" || g_import_cancel) set_job("Package import cancelled.");
+    else if (error == "keys") set_job("Choose the keys file for NSP packages", true);
+    else if (error == "helper" || !process) set_job("Package reader is missing", true);
+    else if (error == "base") set_job("Add the matching base game NSP", true);
+    else if (error == "update") set_job("Add the version %s update NSP", true);
+    else if (error == "version") set_job(NOT_SUPPORTED, true);
+    else if (error == "title") set_job("No Breath of the Wild content was found", true);
+    else if (error == "space") set_job("Not enough free disk space", true);
+    else if (error == "conflict") set_job("Choose one copy of each game package", true);
+    else if (result) set_job("Could not extract game packages", true);
+    return {};
+}
+
+static void *import_thread(void *data) {
+    auto *packages = static_cast<std::vector<std::string> *>(data);
+    pthread_mutex_lock(&g_lock);
+    std::string keys = g_package_keys;
+    pthread_mutex_unlock(&g_lock);
+    set_job("Inspecting game packages...");
+    std::string folder = import_packages(*packages, keys);
+    delete packages;
+    if (!folder.empty()) set_job("Packages extracted. Select Set up game files.");
+    pthread_mutex_lock(&g_lock);
+    if (!folder.empty()) g_src = folder;
+    g_import_finished = true;
+    g_import_preview.clear();
+    g_importing = false;
+    g_busy = false;
+    pthread_mutex_unlock(&g_lock);
+    return NULL;
+}
+
+static void SDLCALL picked_packages(void *, const char *const *files, int) {
+    if (!files) { set_job("Could not open the package picker", true); return; }
+    if (!files[0]) return;
+    pthread_mutex_lock(&g_lock);
+    if (g_busy) { pthread_mutex_unlock(&g_lock); return; }
+    g_packages_selected = true;
+    g_busy = g_importing = true;
+    g_import_cancel = false;
+    g_import_approved = false;
+    g_done = 0, g_total = 0, g_build_frac = -1, g_copy_skipped = false;
+    pthread_mutex_unlock(&g_lock);
+    auto *packages = new std::vector<std::string>;
+    for (; *files; ++files) packages->push_back(*files);
+    pthread_t worker;
+    if (!pthread_create(&worker, NULL, import_thread, packages)) {
+        pthread_detach(worker);
+        return;
+    }
+    delete packages;
+    set_job("Could not extract game packages", true);
+    pthread_mutex_lock(&g_lock);
+    g_importing = false;
+    g_busy = false;
+    pthread_mutex_unlock(&g_lock);
+}
+#endif
 
 // ------------------------------------------------------------------ the user's own Nintendo fonts (not shipped)
 // runtime/hle/pl.c loads fonts/ first, else a close substitute (Hiragino Sans). Import copies recognized files only.
@@ -2470,7 +2687,15 @@ extern "C" void launcher_run(const char *root, int mode) {
         while (SDL_PollEvent(&e)) {
             if (page == SETTINGS && bind_capture_event(&e)) continue;  // (waiting for a new binding: controls_ui.mm)
             if (!launcher_pad_event(e)) ImGui_ImplSDL3_ProcessEvent(&e);
-            if (e.type == SDL_EVENT_QUIT) exit(0);
+            if (e.type == SDL_EVENT_QUIT) {
+#ifndef __APPLE__
+                if (g_importing) {
+                    g_import_cancel = true;
+                    while (g_importing) SDL_Delay(50);
+                }
+#endif
+                exit(0);
+            }
             if (e.type == SDL_EVENT_WINDOW_FOCUS_GAINED) {
                 pthread_mutex_lock(&g_lock);
                 bool b = g_busy;
@@ -2481,10 +2706,16 @@ extern "C" void launcher_run(const char *root, int mode) {
         // extraction finished: re-check
         pthread_mutex_lock(&g_lock);
         bool busy = g_busy;
+#ifndef __APPLE__
+        bool imported = g_import_finished;
+        g_import_finished = false;
+#else
+        bool imported = false;
+#endif
         RtDlcCheck dlc_st = g_dlc;
         pthread_mutex_unlock(&g_lock);
         g_file_size.set_suspended(busy);
-        if (was_busy && !busy) {
+        if (was_busy && !busy && !imported) {
             status = check_game_files(g_root);
             if (status.empty() && g_setup_only) {  // set up: on into the game (after the first-start note)
                 if (g_settings.menu_tip_seen) play = true;
@@ -2843,6 +3074,9 @@ extern "C" void launcher_run(const char *root, int mode) {
                 pthread_mutex_lock(&g_lock);
                 std::string src = g_src, job = g_job, job_hint = g_job_hint;
                 bool failed = g_job_failed;
+#ifndef __APPLE__
+                bool packages_selected = g_packages_selected, keys_selected = !g_package_keys.empty();
+#endif
                 pthread_mutex_unlock(&g_lock);
                 bool ready = status.empty() && !busy;  // (set up: the window offers to delete them, or set them up again)
                 bool shipped_release = post_update_shipped();
@@ -3008,6 +3242,19 @@ extern "C" void launcher_run(const char *root, int mode) {
                     if (opt_action("Game files folder", src_v.c_str(), src_d.c_str(), true))
                         SDL_ShowOpenFolderDialog(picked, NULL, win, NULL, false);
                     if (!src.empty()) check_left_of_value(src_v);
+#ifndef __APPLE__
+                    std::string packages_value = tr(packages_selected ? "Selected" : "Choose...");
+                    if (busy) opt_disable_next();
+                    if (opt_action("Import game packages", packages_value.c_str(),
+                                   "Extract NUP or NSP files into a folder for setup.", true))
+                        SDL_ShowOpenFileDialog(picked_packages, NULL, win, package_filter, 1, NULL, true);
+                    if (packages_selected) check_left_of_value(packages_value);
+                    std::string keys_value = tr(keys_selected ? "Selected" : "Choose...");
+                    if (busy) opt_disable_next();
+                    if (opt_action("Choose the keys file for NSP packages", keys_value.c_str(), "", true))
+                        SDL_ShowOpenFileDialog(picked_package_keys, NULL, win, key_filter, 1, NULL, false);
+                    if (keys_selected) check_left_of_value(keys_value);
+#endif
                     if (busy) opt_disable_next();
                     {
                         static char path_buf[1024];
@@ -3182,7 +3429,11 @@ extern "C" void launcher_run(const char *root, int mode) {
                     g_confirm_delete = g_confirm_setup = false, back = true;  // (B / Esc: back out of the question first)
                 content_focus = ImGui::IsWindowFocused(ImGuiFocusedFlags_ChildWindows);
                 static bool test_busy = getenv("SAVAGEWIND_LAUNCHER_SHOT") && strstr(getenv("SAVAGEWIND_LAUNCHER_SHOT"), ":extracting");
-                if (busy || test_busy) {  // working: everything dimmed, a card with a progress bar in front (input waits)
+                bool review = false;
+#ifndef __APPLE__
+                if (busy && g_importing) review = draw_package_review(ds);
+#endif
+                if ((busy || test_busy) && !review) {  // working: everything dimmed, a card with a progress bar in front
                     ImDrawList *fg = ImGui::GetForegroundDrawList();
                     ImVec2 o = ImGui::GetMainViewport()->Pos;
                     fg->AddRectFilled(o, ImVec2(o.x + ds.x, o.y + ds.y), IM_COL32(0, 0, 0, 150));
@@ -3191,9 +3442,18 @@ extern "C" void launcher_run(const char *root, int mode) {
                     bool recompiling = g_build_frac >= 0, dlc_check = g_dlc_checking;
                     const char *title = tr(dlc_check ? "Downloadable content"
                                            : recompiling ? "Recompiling the game" : "Setting up the game files");
-                    const char *const notes[] = {tr("This only needs to be done once and may take a while."),
-                                                 tr("Esc or B stops it: what is done is kept.")};
+                    const char *notes[] = {tr("This only needs to be done once and may take a while."),
+                                           tr("Esc or B stops it: what is done is kept.")};
                     int nnotes = dlc_check ? 0 : recompiling ? 1 : 0;
+#ifndef __APPLE__
+                    if (g_importing) {
+                        title = tr("Import game packages");
+                        notes[0] = tr("Esc or B cancels the import.");
+                        nnotes = 1;
+                        if (ImGui::IsKeyPressed(ImGuiKey_Escape, false) || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false))
+                            g_import_cancel = true;
+                    }
+#endif
                     if (update_apply_progress() >= 0) {
                         f = update_apply_progress();
                         title = tr("Updating Savage Wind");

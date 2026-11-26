@@ -23,7 +23,7 @@ a = Analysis(
     pathex=[TOOLS],
     binaries=collect_dynamic_libs('capstone') + collect_dynamic_libs('unicorn')
              + [(p, 'unicorn/lib') for p in _uc_versioned],
-    datas=[],
+    datas=[(os.path.join(TOOLS, 'package_nup', 'LICENSE'), 'package_nup')],
     hiddenimports=collect_submodules('unicorn'),  # (it imports its arch modules by name at run time)
     excludes=['tkinter', 'pydoc', 'doctest', 'unittest', 'pdb', 'IPython', 'numpy', 'setuptools', '_distutils_hack',
               'pkg_resources', 'ssl', '_ssl', '_hashlib', '_multibytecodec', '_codecs_cn', '_codecs_hk',

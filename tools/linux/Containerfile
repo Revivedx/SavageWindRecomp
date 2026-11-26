@@ -20,3 +20,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get install -y --no-install-recommends python3.12 python3.12-venv python3.12-dev clang-21 lld-21 llvm-21 \
     && rm -rf /var/lib/apt/lists/* \
     && for t in clang clang++ ld.lld llvm-ar llvm-nm llvm-ranlib llvm-strip; do ln -sf $t-21 /usr/bin/$t; done
+
+# The amd64 container publishes the self-contained NSP helper for both AppImage targets.
+ARG DOTNET_SDK=10.0.401
+RUN if [ "$(uname -m)" = x86_64 ]; then \
+      mkdir -p /opt/dotnet \
+      && curl -fsSL "https://dotnetcli.blob.core.windows.net/dotnet/Sdk/$DOTNET_SDK/dotnet-sdk-$DOTNET_SDK-linux-x64.tar.gz" -o /tmp/dotnet.tar.gz \
+      && tar -xzf /tmp/dotnet.tar.gz -C /opt/dotnet \
+      && rm /tmp/dotnet.tar.gz \
+      && ln -s /opt/dotnet/dotnet /usr/local/bin/dotnet; \
+    fi

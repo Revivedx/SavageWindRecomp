@@ -150,7 +150,7 @@ stb_image_write in `third_party/stb`.)
 
 Then from the repo root:
 
-    python3 -m venv tools/venv && tools/venv/bin/pip install lz4 capstone unicorn
+    python3 -m venv tools/venv && tools/venv/bin/pip install lz4 capstone unicorn zstandard
     make -j         # the start screen only (no game code yet): set up the game files there, or put extracted/ here
     make gen        # once: recompile the game from your own game files
     make -j         # -> build/savagewind and the game code library build/swgame.so
