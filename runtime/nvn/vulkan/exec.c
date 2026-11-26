@@ -9116,12 +9116,13 @@ static void wait_built(_Atomic int *state) {  // (0 building: until built or fai
 
 // Map zoom blur off: switching levels, the game stops drawing the old level's tiles a frame or two before the new
 // level's are in, and the map's terrain picture (2250x1080) is then the coarsest level alone (135x135 tiles enlarged
-// many times): a blocky flash, which the blur hid; zooming out, the new level's tiles also come in a few at a time. The
-// game draws a coarsest-level tile under every place in view and a finer one over each that is in (a closest-level
-// tile, 3000 pixels or more, over up to four), so a picture whose finer tiles cover fewer places than its coarsest ones
-// isn't whole. The last whole picture is kept here and put back on the frames that aren't, for at most MAP_HOLD_MAX in
-// a row.
-enum { MAP_HOLD_MAX = 60 };
+// many times): a blocky flash, which the blur hid. The game draws a coarsest-level tile under every place in view and
+// a finer one over each that is in (a closest-level tile, 3000 pixels or more, over up to four). A picture is taken as
+// whole when the finer tiles cover as many places as the coarsest, or when the counts have stayed the same for three
+// frames (at the widest levels the finer ones never cover the whole view). The last whole picture is kept here and
+// put back on the frames where the finer cover fell to under half of that picture's, for at most MAP_HOLD_MAX in a
+// row: the gap itself, not the tiles coming in afterwards (the game's own look, a few places at the edges).
+enum { MAP_HOLD_MAX = 8 };
 static struct { VkImage img; VmaAllocation mem; uint64_t serial; VkFormat format; uint32_t w, h; bool valid; } map_hold;
 static void map_hold_copy(TexBackend *b, bool save) {
     if (map_hold.img && (map_hold.serial != b->serial || map_hold.format != b->format || map_hold.w != b->width ||
@@ -9255,6 +9256,8 @@ static void draw_(CmdRec *r, bool indexed) {
     static uint64_t map_frame = UINT64_MAX, map_target_frame = UINT64_MAX;
     static NvnTexture *map_target;  // (this frame's only: map_target_frame)
     static unsigned map_fine, map_coarse, map_held;  // (this frame's places covered: by finer levels, the coarsest)
+    static unsigned map_last_fine, map_last_coarse, map_same;  // (the previous map frame's, and frames unchanged since)
+    static unsigned map_whole_fine;  // (the held picture's)
     NvnTexture *rt0 = st.rt.ncolor > 0 ? st.rt.color[0] : NULL;
     if (!g_settings.map_zoom_blur && rt0 && rt0->target == 1 && rt0->width == 2250 && rt0->height == 1080 &&
         pr->fi->ntex > 0) {  // (a tile of the map's picture: finer than the coarsest level's 135x135)
@@ -9268,13 +9271,19 @@ static void draw_(CmdRec *r, bool indexed) {
         NvnTexture *t = shader_texture_object(1, &pr->fi->tex[0]);
         if (t && t->width == 2250 && t->height == 1080) {
             if (map_frame + 1 != renderer_present_count() && map_frame != renderer_present_count())
-                map_hold.valid = false;  // (the map just opened: not last visit's picture)
+                map_hold.valid = false, map_whole_fine = 0;  // (the map just opened: not last visit's picture)
             map_frame = renderer_present_count();
             if (!g_settings.map_zoom_blur && map_target_frame == map_frame) {
                 TexBackend *b = vk_tex(map_target, true);
                 if (b && b->image && b->samples == 1 && b->levels >= 1 && b->layers >= 1) {
-                    if (map_fine && map_fine >= map_coarse) map_hold_copy(b, true), map_held = 0;
-                    else if (map_held < MAP_HOLD_MAX) map_hold_copy(b, false), map_held++;
+                    map_same = map_fine == map_last_fine && map_coarse == map_last_coarse ? map_same + 1 : 0;
+                    map_last_fine = map_fine, map_last_coarse = map_coarse;
+                    if ((map_fine && map_fine >= map_coarse) || map_same >= 2) {
+                        map_hold_copy(b, true), map_held = 0;
+                        map_whole_fine = map_fine;
+                    } else if (map_fine * 2 < map_whole_fine && map_held < MAP_HOLD_MAX) {
+                        map_hold_copy(b, false), map_held++;
+                    } else map_held = 0;
                 }
             }
         }
