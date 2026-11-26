@@ -9114,6 +9114,50 @@ static void wait_built(_Atomic int *state) {  // (0 building: until built or fai
     perfcount_add(PC_BUILD_WAIT_NS, SDL_GetTicksNS() - t0);
 }
 
+// Map zoom blur off: switching levels, the game stops drawing the old level's tiles a frame or two before the new
+// level's are in, and the map's terrain picture (2250x1080) is then the coarsest level alone (135x135 tiles enlarged
+// many times): a blocky flash, which the blur hid; zooming out, the new level's tiles also come in a few at a time. The
+// game draws a coarsest-level tile under every place in view and a finer one over each that is in (a closest-level
+// tile, 3000 pixels or more, over up to four), so a picture whose finer tiles cover fewer places than its coarsest ones
+// isn't whole. The last whole picture is kept here and put back on the frames that aren't, for at most MAP_HOLD_MAX in
+// a row.
+enum { MAP_HOLD_MAX = 60 };
+static struct { VkImage img; VmaAllocation mem; uint64_t serial; VkFormat format; uint32_t w, h; bool valid; } map_hold;
+static void map_hold_copy(TexBackend *b, bool save) {
+    if (map_hold.img && (map_hold.serial != b->serial || map_hold.format != b->format || map_hold.w != b->width ||
+                         map_hold.h != b->height)) {
+        vk_defer_image(map_hold.img, map_hold.mem);
+        map_hold.img = VK_NULL_HANDLE;
+        map_hold.valid = false;
+    }
+    if (!map_hold.img) {
+        if (!save) return;
+        VkImageCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D, .format = b->format,
+                                .extent = {b->width, b->height, 1}, .mipLevels = 1, .arrayLayers = 1,
+                                .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
+                                .usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT};
+        VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+        if (vmaCreateImage(g_vk.vma, &ci, &ai, &map_hold.img, &map_hold.mem, NULL) != VK_SUCCESS) {
+            map_hold.img = VK_NULL_HANDLE;
+            return;
+        }
+        map_hold.serial = b->serial, map_hold.format = b->format, map_hold.w = b->width, map_hold.h = b->height;
+        vk_end_pass();
+        vk_image_init_layout(vk_cmd(), map_hold.img, VK_IMAGE_ASPECT_COLOR_BIT);
+    }
+    if (!save && !map_hold.valid) return;
+    vk_end_pass();
+    VkCommandBuffer cb = vk_cmd();
+    vk_full_barrier(cb);
+    VkImageCopy c = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                     .extent = {b->width, b->height, 1}};
+    if (save) rec_CmdCopyImage(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, map_hold.img, VK_IMAGE_LAYOUT_GENERAL, 1, &c);
+    else rec_CmdCopyImage(cb, map_hold.img, VK_IMAGE_LAYOUT_GENERAL, b->image, VK_IMAGE_LAYOUT_GENERAL, 1, &c);
+    vk_full_barrier(cb);
+    map_hold.valid = true;
+}
+RT_ON_RESET(map_hold_reset) { map_hold.valid = false; }
+
 static void draw_(CmdRec *r, bool indexed) {
     if (profd) prof_tp_ = SDL_GetTicksNS();
     ProfZone pz0 = PZ_NOW();
@@ -9201,9 +9245,50 @@ static void draw_(CmdRec *r, bool indexed) {
     if (!g_settings.depth_of_field && g_cur_fs_hash == UINT64_C(0xf7731492223eb16a)) { stat_skipped++; return; }
     // Map zoom blur off: as it opens and after each zoom, the world map blurs the screen (1280x720, four passes each
     // way) and blends that back over the map for about half a second, through a mask and a ramp. Its two blend draws
-    // are skipped while the map is open (the blur passes themselves are shared with other effects).
+    // are skipped while the map is open (the blur passes themselves are shared with other effects): known open from the
+    // screens, or from the map's terrain picture (2250x1080) put on screen earlier this frame (fs c94630386244616e), as
+    // the screens don't say so on every way into the map.
+    // Zooming in to the closest level, the blur is blended through that same draw instead: the screen shrunk to 320x180,
+    // blurred and enlarged to 1280x720, put over the map through a dot mask (192x192) for about 100 frames.
+    // The game has several programs for that blend (c94630386244616e, d1d87dfe0c81ad63 and more): any draw reading the
+    // blurred 1280x720 image with a square mask after the map's picture this frame is taken as one.
+    static uint64_t map_frame = UINT64_MAX, map_target_frame = UINT64_MAX;
+    static NvnTexture *map_target;  // (this frame's only: map_target_frame)
+    static unsigned map_fine, map_coarse, map_held;  // (this frame's places covered: by finer levels, the coarsest)
+    NvnTexture *rt0 = st.rt.ncolor > 0 ? st.rt.color[0] : NULL;
+    if (!g_settings.map_zoom_blur && rt0 && rt0->target == 1 && rt0->width == 2250 && rt0->height == 1080 &&
+        pr->fi->ntex > 0) {  // (a tile of the map's picture: finer than the coarsest level's 135x135)
+        NvnTexture *t = shader_texture_object(1, &pr->fi->tex[0]);
+        if (map_target_frame != renderer_present_count()) map_fine = map_coarse = 0;
+        map_target = rt0, map_target_frame = renderer_present_count();
+        if (t && t->width == t->height && t->width >= 300) map_fine += t->width >= 3000 ? 4 : 1;
+        else if (t && t->width == t->height && t->width >= 64) map_coarse++;
+    }
+    if (g_cur_fs_hash == UINT64_C(0xc94630386244616e) && pr->fi->ntex > 0) {
+        NvnTexture *t = shader_texture_object(1, &pr->fi->tex[0]);
+        if (t && t->width == 2250 && t->height == 1080) {
+            if (map_frame + 1 != renderer_present_count() && map_frame != renderer_present_count())
+                map_hold.valid = false;  // (the map just opened: not last visit's picture)
+            map_frame = renderer_present_count();
+            if (!g_settings.map_zoom_blur && map_target_frame == map_frame) {
+                TexBackend *b = vk_tex(map_target, true);
+                if (b && b->image && b->samples == 1 && b->levels >= 1 && b->layers >= 1) {
+                    if (map_fine && map_fine >= map_coarse) map_hold_copy(b, true), map_held = 0;
+                    else if (map_held < MAP_HOLD_MAX) map_hold_copy(b, false), map_held++;
+                }
+            }
+        }
+    }
+    if (!g_settings.map_zoom_blur && map_frame == renderer_present_count() && pr->fi->ntex == 2) {
+        NvnTexture *t = shader_texture_object(1, &pr->fi->tex[0]), *m = shader_texture_object(1, &pr->fi->tex[1]);
+        if (t && m && t->width == 1280 && t->height == 720 && m->width == m->height && m->width <= 256) {
+            stat_skipped++;
+            return;
+        }
+    }
     if (!g_settings.map_zoom_blur && (g_cur_fs_hash == UINT64_C(0x6da1591e7d7e6726) ||
-        g_cur_fs_hash == UINT64_C(0xdfddd20310007579)) && framepace_map_ui()) { stat_skipped++; return; }
+        g_cur_fs_hash == UINT64_C(0xdfddd20310007579)) &&
+        (map_frame == renderer_present_count() || framepace_map_ui())) { stat_skipped++; return; }
     // The bloom's fixed tap offsets must address adjacent console-size texels.
     // Enlarging those images spaces the taps apart and produces separate copies
     // of emissive details; odd mip scratch sizes also stopped inheriting scale.
@@ -9539,6 +9624,14 @@ static void draw_(CmdRec *r, bool indexed) {
             k.s.blend_on |= (uint8_t)(1u << i);
             memcpy(k.s.blend[i] + 1, st.blend[i] + 1, 6);  // (the factors and ops; 0 is the target index, 7 padding)
         }
+    }
+    // Map zoom blur off: on a zoom the map's terrain capture (2250x1080) fades the old level's tiles out and the new
+    // level's in (fs 10e88719ecc264ca, alpha-blended), over the coarsest level magnified many times: the blur seen in
+    // the zoom. Those tiles are drawn opaque instead (colour only; the capture's alpha is left as it is).
+    if (!g_settings.map_zoom_blur && g_cur_fs_hash == UINT64_C(0x10e88719ecc264ca) && st.rt.color[0] &&
+        st.rt.color[0]->target == 1 && st.rt.color[0]->width == 2250 && st.rt.color[0]->height == 1080) {
+        k.s.blend_on &= (uint8_t)~1u;
+        k.s.write_mask[0] &= 0x7;
     }
     if (ps.mvec >= 0 && (pr->fi->mvec || pr->fi->mvec_still)) k.s.write_mask[ps.mvec] = 0xF;  // (mvec.c: only motion and still programs write it)
     if (ps.mvec >= 0 && pr->fi->mvec_mask) {  // (the reactive mask: .z alone, the strongest effect kept)
