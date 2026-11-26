@@ -194,7 +194,8 @@ static bool format_is_float(VkFormat f) {  // (uncompressed: these can hold NaN 
 //             forward-shaded surfaces take their shadows from it (issue #101)
 //   RS_MAP    AppMap's terrain capture (2250x1080: its 1500x720 layout at 1.5x, exec.c map_capture_patch): RS_OUT's
 //             vertical scale on both axes. At its guest size it held one map texel per 1080p pixel, so at 4K the map
-//             was the 1080p picture stretched 2x
+//             was the 1080p picture stretched 2x. Also the HUD minimap's capture (288x288: its 192x192 pane at 1.5x,
+//             drawn from the map tiles and put through the round mask onto the HUD), for the same reason
 static float g_rs[4][2] = {{1, 1}, {1, 1}, {1, 1}, {1, 1}};
 static uint32_t g_shadow_size;
 void renderer_get_scale(float *sx, float *sy) { *sx = g_rs[RS_OUT][0]; *sy = g_rs[RS_OUT][1]; }
@@ -255,6 +256,7 @@ static uint8_t tex_scale_group(const NvnTexture *t) {
     if (!vk_shadow_direct() && vk_is_shadow_copy(t)) return RS_SHADOW;  // (the copy's readers use the cascades instead)
     if ((t->target != 1 && t->target != 4) || t->samples > 1 || !(t->flags & 9) || t->width < 32 || t->height < 16) return RS_NONE;
     if (t->target == 1 && t->width == 2250 && t->height == 1080) return RS_MAP;  // (and its depth target, if any)
+    if (t->target == 1 && t->width == 288 && t->height == 288 && t->format == 0x3d) return RS_MAP;  // (the minimap's)
     float a = (float)t->width / (float)t->height;
     if (a < 1.74f || a > 1.81f) return RS_NONE;
     if (t->flags & 1) return RS_OUT;  // NVN_TEXTURE_FLAGS_DISPLAY: the images the game presents
