@@ -392,10 +392,12 @@ def _title_tick(gen, a):
 
 def _title_event(gen, a):
     # The title screen menu's button handler (x0 = menu, x1 = button, its id at +0x44): the amiibo settings button
-    # (0x6c; Savage Wind has no amiibo support) is Quit, which asks where to
+    # (0x6c; Savage Wind has no amiibo support) is Quit, which asks where to (1); Options and Achievements open Savage
+    # Wind's menu instead of the Options screen (2: the handler does nothing)
     assert _word(gen, a) == _sub_sp(0x60), hex(_word(gen, a))
-    return ('{ extern int rt_title_event(uint32_t); '
-            f'if (rt_title_event(LD32(c->x[1] + 0x44))) {{ {_quit_dialog(gen, a + 4, "c->x[0]")} return; }} '
+    return ('{ extern int rt_title_event(uint32_t); int r = rt_title_event(LD32(c->x[1] + 0x44)); '
+            f'if (r == 1) {{ {_quit_dialog(gen, a + 4, "c->x[0]")} return; }} '
+            'if (r == 2) return; '
             'c->sp -= 0x60; }'
             f'  /* {a:#x}: sub sp, sp, #0x60 (title menu: button) */')
 

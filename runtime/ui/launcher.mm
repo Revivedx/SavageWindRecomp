@@ -45,6 +45,7 @@
 #include "imgui_impl_vulkan.h"
 #endif
 #include "imgui_impl_sdl3.h"
+#include "../sheikah_cursor.h"
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -2517,6 +2518,7 @@ extern "C" void launcher_run(const char *root, int mode) {
             ImGui_ImplVulkan_NewFrame();
 #endif
             ImGui_ImplSDL3_NewFrame();
+            if (ImGui::GetMouseCursor() == ImGuiMouseCursor_Arrow) sheikah_cursor_use(win);  // (not the system's arrow)
             // the backend (manual mode, no gamepads of its own) clears HasGamepad every frame, and ImGui then drops the
             // controller presses launcher_pad_event fed in and turns gamepad navigation off: set it again while a
             // controller is connected

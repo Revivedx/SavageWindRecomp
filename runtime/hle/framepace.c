@@ -237,6 +237,12 @@ int framepace_shop_panes(float *xy, int max) {
 }
 bool framepace_paused(void) { return in_menu(); }
 
+// F5 (#994): 30 fps until F5 again, over the frame rate setting, for the physics puzzles that misbehave at high frame
+// rates (a chest Cryonis lifts, chains, the Sand Seal); not saved
+static _Atomic bool g_cap30;
+bool framepace_cap30(void) { return g_cap30; }
+bool framepace_cap30_toggle(void) { return g_cap30 = !g_cap30; }
+
 int framepace_target(void) {
     static int forced = -2, movie = -2, menu = -2, event = -2;
     if (forced == -2) forced = env_int("SAVAGEWIND_FPS", -1);
@@ -253,6 +259,7 @@ int framepace_target(void) {
     if (menu > 0 && (fps == 0 || fps > menu) && in_menu()) fps = menu;
     if (event > 0 && (fps == 0 || fps > event) && in_event()) fps = event;
     if (in_event() && event_at_30() && (fps == 0 || fps > 30)) fps = 30;
+    if (g_cap30 && (fps == 0 || fps > 30)) fps = 30;
     return fps;
 }
 

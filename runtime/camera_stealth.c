@@ -30,4 +30,8 @@ void rt_camera_stealth_leave(void) {
     g_camera_stealth_player = 0;
 }
 
+// The Camera rune is open (from its entry to its exit, normal or not): Video > Dynamic HUD shows the HUD then, since
+// the rune's viewfinder, zoom and shutter prompts are HUD (runtime/nvn/vulkan/exec.c hud_scale_now)
+bool rt_camera_rune_active(void) { return __atomic_load_n(&g_camera_stealth_player, __ATOMIC_RELAXED) != 0; }
+
 RT_ON_RESET(camera_stealth_reset) { rt_camera_stealth_leave(); }

@@ -63,6 +63,9 @@ SDL_WindowFlags SDL_GetWindowFlags(SDL_Window *w) {
 uint64_t plat_now_ns(void) { return now; }
 void plat_accessibility_shortcuts(bool allow) { (void)allow; }
 GameSites g_site;  // (no game: runtime/hle/bindings.c finds no HUD prompt)
+const char *g_game_version;  // (no game: bow_drawn is false)
+uint64_t g_heap_max;
+void sheikah_cursor_use(SDL_Window *w) { (void)w; }
 bool SDL_SetWindowRelativeMouseMode(SDL_Window *w, bool on) {
     (void)w; relative = on; relative_changes++; return true;
 }

@@ -15,6 +15,10 @@ uint64_t quick_drop_action_filter_buttons(uint64_t b) { return b; }
 int bind_pad_family(int type, int vendor, int product, const char *name, bool first) { (void)type, (void)vendor, (void)product, (void)name, (void)first; return 0; }
 
 GameSites g_site;
+const char *g_game_version;  // (no game: bow_drawn is false)
+uint64_t g_heap_max;
+void sheikah_cursor_use(SDL_Window *w) { (void)w; }
+int game_opt_get(int id) { (void)id; return 0; }  // (the game's defaults: no jump swap)
 Settings g_settings;
 int16_t g_bind_key[BIND_KEY_COUNT], g_bind_pad[BIND_KEY_COUNT];
 int16_t g_bind_key2[BIND_KEY_COUNT], g_bind_pad2[BIND_KEY_COUNT];  // (second bindings: none, as bindings.c act_init)

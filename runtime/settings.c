@@ -102,6 +102,7 @@ Settings g_settings = {
     .day_cycle_length = DAY_CYCLE_DEFAULT,
     .color_lut_strength = 100,
     .haze = 100,
+    .haze_low = -1,
     .bloom = true,
     .depth_of_field = true,
     .grass = true,
@@ -681,11 +682,16 @@ void settings_load(void) {
         else if (!strcmp(key, "damage_dealt")) g_settings.damage_dealt = atoi(val);
         else if (!strcmp(key, "toggle_zl")) g_settings.toggle_zl = atoi(val) != 0;
         else if (!strcmp(key, "toggle_zr")) g_settings.toggle_zr = atoi(val) != 0;
+        else if (!strcmp(key, "toggle_sprint")) g_settings.toggle_sprint = atoi(val) != 0;
         else if (!strcmp(key, "menu_text_size")) g_settings.menu_text_size = atoi(val);
         else if (!strcmp(key, "menu_remember_pos")) g_settings.menu_remember_pos = atoi(val) != 0;
         else if (!strcmp(key, "haze")) {  // (percent; an older ini's 0-50 reads as 75: HAZE_MIN)
             int v = atoi(val);
             g_settings.haze = v < HAZE_MIN ? HAZE_MIN : v > HAZE_MAX ? HAZE_MAX : v;
+        }
+        else if (!strcmp(key, "haze_low")) {  // (#915: below the menu's minimum, from this file only; -1 or none: unset)
+            int v = atoi(val);
+            g_settings.haze_low = v >= 0 && v < HAZE_MIN ? v : -1;
         }
         else if (!strcmp(key, "bloom")) g_settings.bloom = atoi(val) != 0;
         else if (!strcmp(key, "depth_of_field")) g_settings.depth_of_field = atoi(val) != 0;
@@ -986,9 +992,11 @@ bool settings_save_to(const char *path) {
     fprintf(f, "damage_dealt = %d\n", g_settings.damage_dealt);
     fprintf(f, "toggle_zl = %d\n", g_settings.toggle_zl ? 1 : 0);
     fprintf(f, "toggle_zr = %d\n", g_settings.toggle_zr ? 1 : 0);
+    fprintf(f, "toggle_sprint = %d\n", g_settings.toggle_sprint ? 1 : 0);
     fprintf(f, "menu_text_size = %d\n", g_settings.menu_text_size);
     fprintf(f, "menu_remember_pos = %d\n", g_settings.menu_remember_pos ? 1 : 0);
     fprintf(f, "haze = %d\n", g_settings.haze);
+    if (g_settings.haze_low >= 0) fprintf(f, "haze_low = %d\n", g_settings.haze_low);  // (only when the player wrote it)
     fprintf(f, "bloom = %d\n", g_settings.bloom ? 1 : 0);
     fprintf(f, "depth_of_field = %d\n", g_settings.depth_of_field ? 1 : 0);
     fprintf(f, "grass = %d\n", g_settings.grass ? 1 : 0);

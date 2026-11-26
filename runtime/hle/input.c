@@ -27,6 +27,8 @@
 #include "../prof.h"
 #include "../pc_cursor.h"
 #include "../pc_bow.h"
+#include "../sheikah_cursor.h"
+#include "../game_flags.h"
 #include "../quick_drop_action.h"
 
 enum {
@@ -472,8 +474,29 @@ int rt_cam_pitch(float *y) {
 
 // tools/patches.py _cam_pitch_aim: CameraAiming's scale for the vertical part (float bits): its latStickScale, or,
 // from the mouse, its lngStickScale (the horizontal part's)
+static _Atomic uint64_t aim_camera_ns;  // (when an aiming camera last ran: rt_cam_pitch_scale)
 uint32_t rt_cam_pitch_scale(uint32_t lat, uint32_t lng) {
+    aim_camera_ns = plat_now_ns();
     return cam_mouse && cam_native_on() ? lng : lat;
+}
+
+// Link's bow is drawn: in 1.9.0 the bow's state machine is at the player + 0x1f8c (0 idle, 1 nocking, 2 drawing or
+// held drawn, 3 shot, 4 nocking again); guest memory read as it is, checked to lie in the heap
+static bool bow_drawn(void) {
+    if (!g_site.player_info || !g_game_version || strcmp(g_game_version, "1.9.0")) return false;
+    uint64_t pinfo = *(const volatile uint64_t *)(uintptr_t)g_site.player_info;
+    if (pinfo < HEAP_BASE || pinfo + 0x68 > HEAP_BASE + HEAP_MAX) return false;
+    uint64_t player = *(const volatile uint64_t *)(uintptr_t)(pinfo + 0x60);
+    if (player < HEAP_BASE || player + 0x1f90 > HEAP_BASE + HEAP_MAX) return false;
+    uint32_t state = *(const volatile uint32_t *)(uintptr_t)(player + 0x1f8c);
+    return state >= 1 && state <= 4;
+}
+
+// Link aims: the bow drawn, or an aiming camera (the scope, a held item to throw) turned in the last quarter second.
+// Video > Dynamic HUD shows the HUD then, the aiming reticle being HUD (runtime/nvn/vulkan/exec.c hud_scale_now).
+bool input_aiming(void) {
+    uint64_t t = aim_camera_ns;
+    return bow_drawn() || (t && plat_now_ns() - t < 250000000ull);
 }
 
 // A left-button drag in the inventory's Rotate mode, with the PC pointer on (runtime/pc_cursor.c): the drag turns Link
@@ -546,6 +569,7 @@ void input_mouse_update(SDL_Window *w) {
     vibration_update(pad, win_focused && !host_test);
     static bool cur;
     pc_cursor_window(w);
+    if (w) sheikah_cursor_use(w);  // (the pointer the F1 menu and a free mouse show: Savage Wind's, not the system's)
     bool want = w && win_focused && g_settings.mouse_camera && !pc_cursor_active() && !menu_input_captured() && !menu_cursor_free() &&
                 !getenv("SAVAGEWIND_INPUT") && !getenv("SAVAGEWIND_HOST_INPUT");
     // Absolute map input needs its coordinates but already draws the game's own pointer.
@@ -621,7 +645,12 @@ bool input_user_blocked(const SDL_Event *e) {
 
 // The device the player used last (button icons, runtime/nvn/glyphs.c): a key, a mouse button or a mouse turn, or a
 // controller's button or stick
-int input_last_device(void) { return pad ? last_device : DEVICE_KEYBOARD; }
+int input_last_device(void) {
+    static int test = -1;  // (SAVAGEWIND_TEST_PAD_ICONS=1: as if a controller were in use, for checking its icons in tests)
+    if (test < 0) test = getenv("SAVAGEWIND_TEST_PAD_ICONS") && atoi(getenv("SAVAGEWIND_TEST_PAD_ICONS"));
+    if (test) return DEVICE_PAD;
+    return pad ? last_device : DEVICE_KEYBOARD;
+}
 
 // Controller family for the Controls tab labels (runtime/hle/bindings.c): 0 Nintendo / other / none, 1 Xbox, 2 PlayStation,
 // 3 Steam Deck (a Valve pad - the Deck's own controls, or Steam Input's virtual one - in Steam Deck mode).
@@ -1155,6 +1184,26 @@ static uint64_t toggle_buttons(uint64_t b, bool in_play) {
     return b;
 }
 
+// Accessibility > Toggle sprint (#1102): a press of the sprint button (B; X when the game's own option swaps jump and
+// cancel) while Link moves keeps it held until he stops (the left stick back at rest), it is pressed again, or a menu,
+// a cutscene or a talk takes over. Not on horseback, where B slows the horse.
+static bool sprint_latched, prev_phys_sprint;
+RT_ON_RESET(toggle_sprint_reset) { sprint_latched = prev_phys_sprint = false; }
+static bool horse_riding(void);
+static uint64_t toggle_sprint(uint64_t b, int32_t lx, int32_t ly, bool in_play) {
+    static uint64_t swap_checked;
+    static int swap;  // (the game's JumpButtonChange: read twice a second, not every poll)
+    uint64_t now = plat_now_ns();
+    if (now - swap_checked > 500000000ull) swap_checked = now, swap = game_opt_get(GOPT_JUMP_SWAP);
+    int btn = swap ? BTN_X : BTN_B;
+    bool phys = (b >> btn) & 1, moving = (int64_t)lx * lx + (int64_t)ly * ly >= 8000ll * 8000;
+    if (!g_settings.toggle_sprint || !in_play || horse_riding() || !moving) sprint_latched = false;
+    else if (phys && !prev_phys_sprint) sprint_latched = !sprint_latched;
+    prev_phys_sprint = phys;
+    if (sprint_latched) b |= 1ull << btn;
+    return b;
+}
+
 static int32_t clamp_axis(int32_t v) { return v > 32767 ? 32767 : v < -32767 ? -32767 : v; }
 
 // NpadFullKeyState / NpadHandheldState / NpadJoy*State share this layout (0x28 bytes):
@@ -1227,6 +1276,8 @@ static void fill_state(Cpu *c) {
         if (dx || dy) lx = dx * m, ly = dy * m;
     }
     control_input_apply(&b, &lx, &ly, &rx, &ry);
+    // (after the control endpoint's buttons and sticks: a scripted press latches as a player's does)
+    b = toggle_sprint(b, lx, ly, !in_menu && !pc_cursor_active() && !framepace_in_event() && !framepace_dialogue_ui());
     b = unconsumed_buttons(b);
     { extern uint64_t quick_replace_buttons(uint64_t); b = quick_replace_buttons(b); }
     b = quick_drop_action_filter_buttons(b);

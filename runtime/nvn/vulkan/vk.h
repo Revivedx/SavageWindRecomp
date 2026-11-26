@@ -203,7 +203,8 @@ VkFormat vk_view_format(TexBackend *b, VkFormat want);  // want, or the image's 
 // made RGBA16F so the tonemap can keep highlights above white; hdr.c records the float image the present copy reads,
 // and device.c presents that instead of the clipped 8-bit copy.
 bool vk_hdr_targets_wanted(void);   // HDR not Off: the game's linear 10-bit final image is made RGBA16F
-bool vk_hdr_game_enabled(void);     // the swapchain is HDR10
+bool vk_hdr_game_enabled(void);     // the game's HDR picture: the swapchain is HDR10 and frame generation is off
+bool vk_hdr_output(void);           // the swapchain is HDR10
 void vk_hdr_nits(float *peak, float *game, float *ui);
 // The live HDR tonemap parameters (hdr.c): 5 vec4s, the push constant block of the HDR tonemap program.
 // game/UI, peak/game, SDR pivot, hue | blowout, vanilla saturation, bloom, clamp | tone mapper, exposure,

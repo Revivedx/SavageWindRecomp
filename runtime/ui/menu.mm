@@ -56,6 +56,8 @@ extern "C" {
 #include "../window_size.h"
 extern "C" {
 #include "../language.h"
+#include "../framepace.h"
+#include "../game_flags.h"
 }
 #include "menu.h"
 void input_reset(void);
@@ -106,6 +108,10 @@ static void push(const QEvent &e) {
 bool menu_is_open(void) { return g_open.load(); }
 static void set_open(bool open);
 extern "C" void menu_test_close(void) { set_open(false); }  // (SAVAGEWIND_MENU_CLOSE_AT)
+// From the game's thread (the pause menu's Options and Achievements buttons: runtime/ui/game_options.mm
+// rt_pause_button): open the menu on that page; the presenting thread does it (menu_draws)
+static std::atomic<int> g_page_open_request{-1};
+extern "C" void menu_open_page(int id) { g_page_open_request.store(id); }
 extern "C" void menu_test_open(void) {
     set_open(true);
     if (getenv("SAVAGEWIND_MENU_TAB")) { extern int g_tab_request_ext; g_tab_request_ext = atoi(getenv("SAVAGEWIND_MENU_TAB")); }
@@ -258,6 +264,25 @@ static void console_paste(void) {
     SDL_free(clip);
 }
 
+// A short notice at the top of the screen for two seconds (F5's frame rate cap)
+static char g_notice[160];
+static std::atomic<uint64_t> g_notice_until{0};
+static void menu_notice(const char *text) {
+    snprintf(g_notice, sizeof g_notice, "%s", text);
+    g_notice_until.store(SDL_GetTicks() + 2000);
+}
+static void notice_draw(const ImGuiIO &io, float scale) {
+    if (SDL_GetTicks() >= g_notice_until.load()) return;
+    ImDrawList *dl = ImGui::GetForegroundDrawList();
+    ImFont *f = ImGui::GetFont();  // (the menu font, made the default font when the overlay starts)
+    float fs = 30 * scale, pad = 14 * scale;
+    ImVec2 ts = f->CalcTextSizeA(fs, FLT_MAX, 0, g_notice);
+    ImVec2 a(io.DisplaySize.x * 0.5f - ts.x * 0.5f - pad, 28 * scale), b(a.x + ts.x + 2 * pad, a.y + ts.y + pad);
+    dl->AddRectFilled(a, b, IM_COL32(0x13, 0x14, 0x17, 225), 8 * scale);
+    dl->AddRect(a, b, UI_BORDER, 8 * scale, 0, 1.5f * scale);
+    dl->AddText(f, fs, ImVec2(a.x + pad, a.y + pad * 0.5f), UI_TEXT, g_notice);
+}
+
 bool menu_handle_event(const SDL_Event *e) {
     static bool back_down, start_down;
     if (e->type == SDL_EVENT_WINDOW_FOCUS_LOST || e->type == SDL_EVENT_WINDOW_FOCUS_GAINED) {
@@ -345,6 +370,10 @@ bool menu_handle_event(const SDL_Event *e) {
                 return true;
             }
             if (!typing) set_open(!g_open.load());  // (Esc with the menu open goes to ImGui below: it cancels a field)
+            return true;
+        }
+        if (!e->key.repeat && e->key.scancode == SDL_SCANCODE_F5 && !typing) {  // 30 fps until F5 again (#994)
+            menu_notice(framepace_cap30_toggle() ? tr("30 fps until F5 again") : tr("Frame rate as set again"));
             return true;
         }
         if (!e->key.repeat && e->key.scancode == SDL_SCANCODE_F10 && !typing) {  // performance overlay: off, FPS, full
@@ -1521,6 +1550,65 @@ static void tab_display(void) {
 #ifndef SW_METAL
     tab_colour();
 #endif
+    {   // (Accessibility > Colour vision of the game's Options screen: runtime/ui/game_options.mm)
+        void game_items_f1_rows(int which);
+        opt_section("Colour vision");
+        game_items_f1_rows(2);
+    }
+    opt_end();
+}
+
+// Gameplay: the game's own options (the console game's pause menu > System > Options: runtime/game_flags.c, in the
+// game's memory at once and in option.sav) and Savage Wind's gameplay settings. The game's Options button opens it
+// (runtime/ui/game_options.mm rt_pause_button).
+static bool gopt_toggle(const char *label, int id, const char *desc) {
+    bool v = game_opt_get(id) != 0;
+    if (!opt_toggle(label, &v, game_opt_default(id) != 0, desc)) return false;
+    game_opt_set(id, v);
+    return true;
+}
+
+static void tab_gameplay(void) {
+    void game_items_f1_rows(int which);
+    opt_begin("##gameplay", ImGui::GetFontSize() / 34);
+    opt_section("The game's options");
+    gopt_toggle("Invert vertical camera", GOPT_INVERT_Y, "Up on the stick or the mouse looks down, and down looks up.");
+    gopt_toggle("Invert horizontal camera", GOPT_INVERT_X, "Left on the stick or the mouse turns right, and right turns left.");
+    {
+        static const char *const names[] = {"Very slow", "Slow", "Normal", "Fast", "Very fast"};
+        int v = game_opt_get(GOPT_CAMERA_SPEED);
+        if (opt_choice("Camera sensitivity", &v, names, 5, game_opt_default(GOPT_CAMERA_SPEED),
+                       "How fast the camera turns with the stick.", false))
+            game_opt_set(GOPT_CAMERA_SPEED, v);
+    }
+    gopt_toggle("Swap jump and cancel", GOPT_JUMP_SWAP,
+                "Jump goes to the cancel button and cancel to the jump button (B and X on a Nintendo layout).");
+    gopt_toggle("Aim with motion controls", GOPT_MOTION_AIM,
+                "Tilting the controller aims the bow and the runes, on a controller with motion sensors.");
+    gopt_toggle("Fix minimap to north", GOPT_MINIMAP_NORTH, "The minimap keeps north up instead of turning with Link.");
+    {
+        static const char *const names[] = {"Normal", "Pro"};
+        int v = game_opt_get(GOPT_HUD_PRO);
+        if (opt_choice("HUD mode", &v, names, 2, game_opt_default(GOPT_HUD_PRO),
+                       "Pro leaves out the minimap, temperature, time, weather and noise: only the hearts, the stamina "
+                       "and what you hold."))
+            game_opt_set(GOPT_HUD_PRO, v);
+    }
+    {
+        static const char *const names[] = {"Regular", "Opaque"};
+        int v = game_opt_get(GOPT_MESSAGE_OPAQUE) - 1;
+        if (opt_choice("Message window", &v, names, 2, game_opt_default(GOPT_MESSAGE_OPAQUE) - 1,
+                       "Opaque: the text boxes hide what is behind them."))
+            game_opt_set(GOPT_MESSAGE_OPAQUE, v + 1);
+    }
+    gopt_toggle("Use amiibo", GOPT_AMIIBO, "The amiibo rune in the Sheikah Slate.");
+    const char *lang = language_text_folder();
+    if (lang && !strncmp(lang, "JP", 2))  // (furigana: the game offers it with Japanese text only)
+        gopt_toggle("Furigana", GOPT_RUBY, "Readings over the kanji in the game's Japanese text.");
+    if (opt_button("Restore the game's defaults", "Sets these options back to the game's own defaults."))
+        game_opt_defaults();
+    opt_section("Savage Wind");
+    game_items_f1_rows(0);
     opt_end();
 }
 
@@ -2142,12 +2230,23 @@ static void tab_about(void) {
                "Press ZL once in play to hold your shield or lock on; press ZL again to release.");
     opt_toggle("Toggle bow aim (ZR)", &g_settings.toggle_zr, false,
                "Press ZR once in play to draw and hold your bow; press ZR again to shoot.");
+    opt_toggle("Toggle sprint", &g_settings.toggle_sprint, false,
+               "Press the sprint button once while moving and Link keeps sprinting until he stops or you press it "
+               "again. Not on horseback.");
+    {   // (the rest of the game's Options screen's Controls page: runtime/ui/game_options.mm)
+        void game_items_f1_rows(int which);
+        opt_begin("##controls_more", ImGui::GetFontSize() / 34);
+        opt_section("Prompts and motion");
+        game_items_f1_rows(1);
+        opt_end();
+    }
     controls_bindings_draw(ImGui::GetFontSize() / 34);
     ImGui::Spacing();
     header("Menu");
     ImGui::TextUnformatted(tr("Open / close this menu:  F1, Esc, the controller's Home / Xbox / PlayStation button, or Back + Start"));
     ImGui::TextUnformatted(tr("Switch tabs:  L / R  (Q / E)        Back:  B  (Esc)"));
     ImGui::TextUnformatted(tr("Fullscreen:  F11 / Alt+Enter"));
+    ImGui::TextUnformatted(tr("30 fps for a physics puzzle, until pressed again:  F5"));
 }
 
 // Reboot (runtime/main.c): the game is gone - menu and name dialog close; the ImGui context stays.
@@ -2866,6 +2965,7 @@ static const char *page_name(int id) {
     case 2: return "Language";
     case 3: return "Saves";
     case 4: return "amiibo";
+    case 14: return "Gameplay";
     case 8: return "Controls";
     case 9: return "Quit";
     case 10: return "Cheats";
@@ -2878,7 +2978,8 @@ static const char *page_name(int id) {
 
 // The settings group (Controls, Video, Audio, Language, amiibo): both sidebars show it under SETTINGS
 int menu_settings_pages(UiNavPage *out, int max) {
-    const UiNavPage pages[] = {{8, "Controls", ICON_GAMEPAD, 1, true}, {0, "Video", ICON_DESKTOP, 1, true},
+    const UiNavPage pages[] = {{14, "Gameplay", ICON_GEAR, 1, true}, {8, "Controls", ICON_GAMEPAD, 1, true},
+                               {0, "Video", ICON_DESKTOP, 1, true},
                                {1, "Audio", ICON_VOLUME, 1, true}, {2, "Language", ICON_GLOBE, 1, true},
                                {4, "amiibo", ICON_STAR, 1, true}};
     int n = 0;
@@ -2914,6 +3015,7 @@ static void page_body(int id, float scale, bool in_game) {
     case 2: tab_language(in_game); break;
     case 3: saves_tab_draw(); break;
     case 4: tab_amiibo(); break;
+    case 14: tab_gameplay(); break;
     case 8: tab_about(); break;
     case 9: tab_quit(scale, in_game); break;
     case 10: tab_cheats(); break;
@@ -3071,11 +3173,11 @@ extern "C" void rec_drain(void);  // (runtime/nvn/vulkan/record.c)
 
 // Native-style selector prompt. Draw-only: input still belongs to the game.
 static void quick_inventory_hint_draw(const ImGuiIO &io) {
-    int kind = g_settings.button_icons;
+    int kind = g_settings.button_icons;  // (as runtime/nvn/glyphs.c resolve_kind: keys while the keyboard is in use)
+    if (input_last_device() == DEVICE_KEYBOARD) kind = ICONS_KEYBOARD;
     if (kind <= ICONS_AUTO || kind >= ICONS_COUNT) {
         int family = input_pad_family();
-        kind = input_last_device() == DEVICE_KEYBOARD ? ICONS_KEYBOARD :
-            family == 1 ? ICONS_XBOX : family == 2 ? ICONS_PLAYSTATION : ICONS_NINTENDO;
+        kind = family == 1 ? ICONS_XBOX : family == 2 ? ICONS_PLAYSTATION : ICONS_NINTENDO;
     }
     bool keyboard = kind == ICONS_KEYBOARD;
     int family = kind == ICONS_XBOX ? 1 : kind == ICONS_PLAYSTATION ? 2 : 0;
@@ -3140,6 +3242,11 @@ static void quick_inventory_hint_draw(const ImGuiIO &io) {
 // menu_render (which decides again, and drains itself) must agree on it. The pointer's hover box, the console and the
 // gyro drag were missing here: their frames went to the command buffer while the recorder thread was still filling it.
 static bool menu_draws(bool *pointer_hover = NULL, float *pointer_box = NULL, bool *gyro_show = NULL, GyroScene *gyro = NULL) {
+    if (int page = g_page_open_request.exchange(-1); page >= 0) {
+        extern int g_tab_request_ext;
+        set_open(true);
+        g_tab_request_ext = page;
+    }
     float box[4];
     GyroScene gs;
     bool hover = pc_cursor_hover_box(pointer_box ? pointer_box : box);
@@ -3148,7 +3255,7 @@ static bool menu_draws(bool *pointer_hover = NULL, float *pointer_box = NULL, bo
     if (gyro_show) *gyro_show = gyro_on;
     return g_open.load() || g_kbd.load() == 1 || g_sizes.load() || console_is_open() || gyro_on || hover ||
            g_settings.perf_overlay != PERF_OFF || act_log_enabled() || quick_inventory_sort_hint() || quick_drop_hint_state() ||
-           collect_map_shown() || ach_ui_active();
+           collect_map_shown() || ach_ui_active() || SDL_GetTicks() < g_notice_until.load();
 }
 
 bool menu_render_needed(void) { return menu_draws(); }
@@ -3235,6 +3342,7 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
 
     if (g_settings.perf_overlay != PERF_OFF) perf_overlay_draw(io, scale);
     ach_ui_toasts(io.DisplaySize.x, io.DisplaySize.y, scale);
+    notice_draw(io, scale);
     if (act_log_enabled()) act_overlay_draw(io, scale);
     if (!open && !kbd && !sizes && !con && (quick_inventory_sort_hint() || quick_drop_hint_state())) quick_inventory_hint_draw(io);
     if (!open && !kbd && !sizes && !con) collect_map_draw(io);

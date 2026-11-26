@@ -1499,6 +1499,10 @@ static void haze_walk_list(uint8_t *d, size_t n, size_t o, const uint32_t h[3], 
 }
 static void haze_patch(void) {
     int pct = g_settings.haze < HAZE_MIN ? HAZE_MIN : g_settings.haze > HAZE_MAX ? HAZE_MAX : g_settings.haze;
+    if (g_settings.haze_low >= 0 && g_settings.haze_low < HAZE_MIN) {  // (savagewind.ini's haze_low: the player's call, #915)
+        pct = g_settings.haze_low;
+        LOG("[fs] haze: %d %% from savagewind.ini's haze_low (below the menu's %d %%)\n", pct, HAZE_MIN);
+    }
     if (pct == 100 || R != &images[0] || R->npatches >= 16) return;
     static const char pack_path[] = "Pack/TitleBG.pack", name[] = "WorldMgr/normal.bwinfo";
     int k = 0;

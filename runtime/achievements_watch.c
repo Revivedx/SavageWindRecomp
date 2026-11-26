@@ -107,18 +107,61 @@ static void on_file(const char *path, const struct stat *st) {
     free(sorted), free(data);
 }
 
-void ach_game_wrote(const char *path) {
-    uint8_t *data;
-    size_t n;
-    if (!read_all(path, &data, &n)) return;
-    AchSave raw = {data, n}, s;
+// What the game just wrote, read at once (before the game may load the save back: after Ganon's end it does at once)
+// and judged on a thread of its own: the sort and the evaluation (about 10 ms for a 1 MB save) kept the game's saving
+// thread waiting (#1022). One thread, in order, so an older save is never judged after a newer one.
+typedef struct WroteJob { struct WroteJob *next; char *path; uint8_t *data; size_t n; time_t written; } WroteJob;
+static WroteJob *wrote_head, *wrote_tail;
+static pthread_mutex_t wrote_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t wrote_cv = PTHREAD_COND_INITIALIZER;
+static bool wrote_thread;
+
+static void wrote_judge(WroteJob *j) {
+    AchSave raw = {j->data, j->n}, s;
     uint8_t *sorted = ach_save_sort(&raw, &s);
-    struct stat st;
     if (ach_save_ok(&s)) {
-        int fresh = ach_update_played(path, &s, time(NULL), stat(path, &st) ? 0 : st.st_mtime);
-        if (fresh) LOG("[achievements] %d new from %s (written by the game)\n", fresh, path);
+        int fresh = ach_update_played(j->path, &s, time(NULL), j->written);
+        if (fresh) LOG("[achievements] %d new from %s (written by the game)\n", fresh, j->path);
     }
-    free(sorted), free(data);
+    free(sorted), free(j->data), free(j->path), free(j);
+}
+
+static void *wrote_worker(void *arg) {
+    (void)arg;
+    for (;;) {
+        pthread_mutex_lock(&wrote_lock);
+        while (!wrote_head) pthread_cond_wait(&wrote_cv, &wrote_lock);
+        WroteJob *j = wrote_head;
+        wrote_head = j->next;
+        if (!wrote_head) wrote_tail = NULL;
+        pthread_mutex_unlock(&wrote_lock);
+        wrote_judge(j);
+    }
+    return NULL;
+}
+
+void ach_game_wrote(const char *path) {
+    WroteJob *j = calloc(1, sizeof *j);
+    if (!j) return;
+    struct stat st;
+    j->path = strdup(path);
+    j->written = stat(path, &st) ? 0 : st.st_mtime;
+    if (!j->path || !read_all(path, &j->data, &j->n)) { free(j->path), free(j); return; }
+    pthread_mutex_lock(&wrote_lock);
+    if (!wrote_thread) {
+        pthread_t t;
+        wrote_thread = pthread_create(&t, NULL, wrote_worker, NULL) == 0;
+        if (wrote_thread) pthread_detach(t);
+    }
+    bool queued = wrote_thread;
+    if (queued) {
+        if (wrote_tail) wrote_tail->next = j;
+        else wrote_head = j;
+        wrote_tail = j;
+        pthread_cond_signal(&wrote_cv);
+    }
+    pthread_mutex_unlock(&wrote_lock);
+    if (!queued) wrote_judge(j);  // (no thread: judged here, as before)
 }
 
 // A save file that has vanished was deleted: its achievements go with it.

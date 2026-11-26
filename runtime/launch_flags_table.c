@@ -142,6 +142,7 @@ const LfInfo LF_TABLE[] = {
     {"SAVAGEWIND_FSR4_LINEAR", LF_KIND_TEXT, LF_GROUP_OTHER, "", ""},
     {"SAVAGEWIND_GAME_LIB", LF_KIND_TEXT, LF_GROUP_OTHER, "", ""},
     {"SAVAGEWIND_GAME_MEMORY_MB", LF_KIND_TEXT, LF_GROUP_OTHER, "", ""},
+    {"SAVAGEWIND_GAME_OPTIONS_SCREEN", LF_KIND_NUMBER, LF_GROUP_PLAY, "1", "The game's Options and Achievements buttons open its own Options screen instead of the Savage Wind menu."},
     {"SAVAGEWIND_GEN", LF_KIND_TEXT, LF_GROUP_BUILD, "", "The program that builds the game code."},
     {"SAVAGEWIND_GLYPH_DUMP", LF_KIND_SWITCH, LF_GROUP_DEV, "", ""},
     {"SAVAGEWIND_GPU", LF_KIND_TEXT, LF_GROUP_PLAY, "auto", "Which graphics card to use: a number, part of its name, or auto."},
@@ -403,6 +404,7 @@ const LfInfo LF_TABLE[] = {
     {"SAVAGEWIND_TEST_ACQUIRE_TIMEOUT", LF_KIND_TEXT, LF_GROUP_DEV, "", ""},
     {"SAVAGEWIND_TEST_FLAGS", LF_KIND_TEXT, LF_GROUP_DEV, "", ""},
     {"SAVAGEWIND_TEST_FREE_GB", LF_KIND_NUMBER, LF_GROUP_DEV, "", ""},
+    {"SAVAGEWIND_TEST_PAD_ICONS", LF_KIND_NUMBER, LF_GROUP_DEV, "", ""},
     {"SAVAGEWIND_TEST_STEAM_RUNNING", LF_KIND_TEXT, LF_GROUP_DEV, "", ""},
     {"SAVAGEWIND_TEST_TIME", LF_KIND_TEXT, LF_GROUP_DEV, "", ""},
     {"SAVAGEWIND_TEST_WARP", LF_KIND_TEXT, LF_GROUP_DEV, "", ""},
@@ -557,4 +559,4 @@ const LfInfo LF_TABLE[] = {
     {"SAVAGEWIND_XLATE_VERIFY", LF_KIND_TEXT, LF_GROUP_DEV, "", ""},
     {"SAVAGEWIND_YAZ0", LF_KIND_NUMBER, LF_GROUP_OTHER, "", ""},
 };
-const int LF_TABLE_N = 553;
+const int LF_TABLE_N = 555;

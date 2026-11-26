@@ -69,7 +69,7 @@ static const Setting settings[] = {
     B(hero_soul_water), I(damage_taken, 25, 400, NULL), I(damage_dealt, 25, 400, NULL),
     I(stamina_drain, 25, 400, NULL),
     I(text_language, 0, 0, NULL), I(voice_language, 0, 0, NULL), B(save_backups), B(stick_cam_on), I(stick_cam_x, STICK_CAM_MIN, STICK_CAM_MAX, NULL),
-    I(stick_cam_y, STICK_CAM_MIN, STICK_CAM_MAX, NULL), B(toggle_zl), B(toggle_zr), I(menu_text_size, 80, 150, NULL),
+    I(stick_cam_y, STICK_CAM_MIN, STICK_CAM_MAX, NULL), B(toggle_zl), B(toggle_zr), B(toggle_sprint), I(menu_text_size, 80, 150, NULL),
     B(menu_remember_pos), B(auto_continue), B(menu_tip_seen), B(camera_keep_stealth),
 };
 #undef B

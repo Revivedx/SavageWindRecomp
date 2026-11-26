@@ -4,6 +4,28 @@ What changed in each Savage Wind release. The `test` branch holds what the next 
 
 ## Next (on the `test` branch)
 
+- **The game's Options opens the F1 menu:** Pause > System > Options and the title menu's Options open the F1 menu on
+  a new Gameplay page. It has every setting of the game's own Options screen (camera inversion and sensitivity, jump
+  and cancel swap, motion aiming, minimap fixed to north, HUD mode, message window, amiibo, furigana) next to Savage
+  Wind's. The launch option `SAVAGEWIND_GAME_OPTIONS_SCREEN=1` brings back the game's own screen.
+- **Frame generation with Windows HDR on:** Video > Frame generation did nothing while Windows HDR was on. It now
+  works: the picture keeps the SDR tone mapping and is shown in HDR10.
+- **Dynamic HUD while aiming:** with Dynamic HUD on, the bow's reticle and the Camera rune's viewfinder show while you
+  aim.
+- **Button icons follow the keyboard:** with Button icons set to one controller, the icons still change to keys while
+  you use the keyboard.
+- **A Sheikah-style mouse pointer** in place of the Windows arrow, in the F1 menu, with a free mouse in play and in
+  Savage Wind Configuration.
+- **Toggle sprint** ([#1102](https://github.com/Revivedx/SavageWindRecomp/issues/1102)): F1 > Controls > Toggle
+  sprint. One press, and Link sprints until he stops.
+- **F5 caps the frame rate at 30** until you press it again, with a note at the top of the screen, for the physics
+  puzzles that still misbehave at high frame rates ([#994](https://github.com/Revivedx/SavageWindRecomp/issues/994),
+  [#425](https://github.com/Revivedx/SavageWindRecomp/issues/425)). It is not saved.
+- **PlayStation d-pad icons** are four arrow buttons ([#937](https://github.com/Revivedx/SavageWindRecomp/issues/937)).
+- **Less haze than the menu allows:** `haze_low = <0-74>` in `savagewind.ini` sets the haze below the menu's lowest
+  level of 75 % ([#915](https://github.com/Revivedx/SavageWindRecomp/issues/915)).
+- **Saving with achievements on** no longer slows down the game's saving thread: the save is checked on a thread of
+  its own ([#1022](https://github.com/Revivedx/SavageWindRecomp/issues/1022)).
 - **More memory for HD textures** ([#1135](https://github.com/Revivedx/SavageWindRecomp/pull/1135) by Zarigis): Mods >
   HD texture packs gives the game 6 GB of memory instead of its own 3 GB, so big HD texture packs load. It uses about
   3 GB more RAM, so it is off by default and needs 16 GB of RAM. Converting a texture pack made for 1.6.0 is SWMM+'s job.

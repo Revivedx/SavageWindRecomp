@@ -272,7 +272,7 @@ We are looking at reports of high use. Please post your log on the issue ([#525]
 The game was made to run at 30 fps, and Savage Wind corrects each system that assumes that as it's found. Some still
 break: physics puzzles, doors, platforms or scripted scenes. Tell us which one on
 **[#425](https://github.com/Revivedx/SavageWindRecomp/issues/425)**, with a save from just before it. Going down to 30
-fps gets you past it.
+fps gets you past it: **F5** caps the frame rate at 30 until you press it again, without changing your setting.
 
 ---
 

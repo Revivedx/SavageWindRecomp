@@ -31,6 +31,7 @@
 extern bool vk_dlssg_available(void);
 extern int vk_dlssg_max_mult(void);
 extern bool vk_dlss_available(void);
+extern bool vk_hdr_output(void);
 #endif
 
 #define MAX_TEX 16384.0
@@ -79,6 +80,14 @@ bool frame_gen_available(int fg) {
     return fg == FG_OFF;
 #else
     return fg == FG_OFF || fg == FG_FSR3 || (fg == FG_DLSS && vk_dlssg_available());
+#endif
+}
+
+bool frame_gen_hdr_sdr(void) {
+#ifdef SW_METAL
+    return false;
+#else
+    return vk_hdr_output();
 #endif
 }
 

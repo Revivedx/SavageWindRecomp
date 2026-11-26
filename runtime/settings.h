@@ -165,7 +165,8 @@ typedef struct {
     int motion_source;   // MOTION_SOURCE_*: where the motion comes from (Automatic: the controller, then the fallbacks)
     bool motion_lean;    // leaning the controller left / right (a steering wheel) also turns the aim
     char motion_dsu_axes[32];  // DSU server axes as the game takes them ("pitch yaw roll"; a name per slot, - flips it)
-    int button_icons;    // ICONS_*: the game's button prompts show this device's buttons (Automatic: the one in use)
+    int button_icons;    // ICONS_*: the game's button prompts show this device's buttons (Automatic: the one in use;
+                         // a controller's: its icons with a controller, keys while the keyboard is in use)
     int button_layout;   // BUTTON_LAYOUT_*: where A, B, X and Y sit on the HUD's four-button diamond (Automatic: bindings)
     bool async_shaders;  // draw on while new shaders compile (no stutter; what needs them is skipped meanwhile; on by
                          // default since settings_version 4; off: every draw waits for its shaders, as before)
@@ -220,6 +221,7 @@ typedef struct {
     int menu_speed;      // menu cursor and UI animation speed, percent (MENU_SPEED_CHOICES, runtime/hle/framepace.c)
     int draw_distance;   // DRAWDIST_*: how far placed actors are kept (runtime/draw_distance.c)
     int haze;            // the air's haze, percent of the game's (services/fs.c haze_patch; from the next start)
+    int haze_low;        // savagewind.ini only (#915): a haze below the menu's 75 %, 0-74 (the sky turns teal); -1 unset
     bool bloom;          // the glow around bright light (off: its draws clear their images: vulkan/exec.c)
     bool depth_of_field; // the distance blur over far pixels (off: its draw is skipped: vulkan/exec.c)
     bool grass;          // grass blades and crossed quads (off: draw_distance.c hides both layers)
@@ -263,6 +265,7 @@ typedef struct {
     int damage_dealt;        // percent of the damage everything else takes (DAMAGE_CHOICES)
     bool toggle_zl;          // press ZL once in play to hold shield / focus; press again to release (hle/input.c)
     bool toggle_zr;          // press ZR once in play to draw / hold bow; press again to release (hle/input.c)
+    bool toggle_sprint;      // a sprint press while moving keeps sprinting until Link stops (hle/input.c, #1102)
     int menu_text_size;      // overlay text scale, percent (80..150, ui/menu.mm)
     bool menu_remember_pos;  // remember last focused option and scroll position when reopening the F1 overlay
     int text_language;   // index in g_text_languages (runtime/language.h), 0: the host's

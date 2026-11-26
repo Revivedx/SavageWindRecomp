@@ -7,6 +7,7 @@
 #include <sys/stat.h>
 
 #include "control.h"
+#include "game_flags.h"
 #include "control_cells.h"
 #include "control_places.h"
 #include "discord_rpc.h"
@@ -48,7 +49,7 @@ void control_game_frame(uint64_t frame) {
     }
 }
 
-// ---- state: frame number, uptime, fps over the last second, hour of day
+// ---- state: frame number, uptime, fps over the last second, hour of day, whether a game menu or the F1 menu is up
 static void cmd_state(int argc, char **argv, ControlReply *r) {
     (void)argc; (void)argv;
     control_field_int(r, "frame", (int64_t)renderer_present_count());
@@ -58,6 +59,9 @@ static void cmd_state(int argc, char **argv, ControlReply *r) {
     float hour = test_warp_hour(&held);
     if (hour >= 0) control_field_num(r, "hour", hour);  // (left out before the world exists)
     control_field_bool(r, "hour_held", held);
+    extern bool framepace_menu_ui(void), menu_is_open(void);
+    control_field_bool(r, "game_menu", framepace_menu_ui());  // (the pause menu, the map, the inventory: a game menu is up)
+    control_field_bool(r, "overlay_menu", menu_is_open());     // (Savage Wind's F1 menu)
 }
 
 // ---- time [freeze | unfreeze | set <0-24> | <0-24>]: with no argument just the hour; a bare number is the same as set
@@ -219,6 +223,17 @@ static void cmd_camera(int argc, char **argv, ControlReply *r) {
     control_field_num(r, "dx", fwd[0]); control_field_num(r, "dy", fwd[1]); control_field_num(r, "dz", fwd[2]);
     control_field_num(r, "yaw", yaw);
     control_field_num(r, "pitch", pitch);
+}
+
+// ---- gameopt <id> [value]: one of the game's own options (runtime/game_flags.h GOPT_*), read or set as the F1
+// menu's Gameplay page does: in the game's memory and in option.sav
+static void cmd_gameopt(int argc, char **argv, ControlReply *r) {
+    if (argc != 2 && argc != 3) { control_fail(r, "Usage: gameopt <id 0-9> [value]"); return; }
+    int id = atoi(argv[1]);
+    if (id < 0 || id >= GOPT_COUNT) { control_fail(r, "No such option"); return; }
+    if (argc == 3) game_opt_set(id, atoi(argv[2]));
+    control_field_int(r, "value", game_opt_get(id));
+    control_field_bool(r, "live", game_opt_live(id));
 }
 
 // yaw and pitch in degrees (yaw 0 looks along +z and 90 along +x, pitch positive looks up); false when neither source exists.
@@ -482,6 +497,7 @@ void control_game_init(void) {
         {"state", "", "Frame number, uptime, fps and hour", cmd_state, CONTROL_PLAYER | CONTROL_READ},
         {"pos", "", "Show the position and copy it as a line for goto or an issue", cmd_pos, CONTROL_PLAYER | CONTROL_READ},
         {"camera", "", "Show the camera position and direction", cmd_camera, CONTROL_PLAYER | CONTROL_READ},
+        {"gameopt", "<id> [value]", "Read or set one of the game's own options (game_flags.h)", cmd_gameopt, 0},
         {"version", "", "Show the game version and system", cmd_version, CONTROL_PLAYER | CONTROL_READ},
         {"report", "", "Build an issue report and copy it", cmd_report, CONTROL_PLAYER},
     };

@@ -1543,7 +1543,12 @@ static float hud_scale_now(void) {
         // The quick selector the full-pouch replacement opens (runtime/quick_replace.c) shows as the D-pad's own does:
         // hidden as exploring HUD, its row of weapons was missing under the incoming item's card
         extern bool quick_replace_active(void);
-        if (quick_replace_active()) return (float)(g_settings.hud_size ? g_settings.hud_size : 100) / 100;
+        // ... and so do the Camera rune's viewfinder (its zoom, shutter and Compendium prompts) and the reticle while Link
+        // aims: hidden as exploring HUD, the rune showed no frame or prompts and the bow no reticle
+        // (runtime/camera_stealth.c, runtime/hle/input.c input_aiming)
+        extern bool rt_camera_rune_active(void), input_aiming(void);
+        if (quick_replace_active() || rt_camera_rune_active() || input_aiming())
+            return (float)(g_settings.hud_size ? g_settings.hud_size : 100) / 100;
         extern uint64_t rt_link_damage_ns(void);
         uint64_t dmg = rt_link_damage_ns();
         uint64_t now = plat_now_ns();
