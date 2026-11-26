@@ -119,7 +119,7 @@ uint64_t ui_layout_begin(Cpu *c) {
     if (count <= 0x4c || count > 256 || !ui_range(screens, count * 8)) return 0;
     const uint64_t *slots = (const uint64_t *)(uintptr_t)screens;
     unsigned kind = screen == slots[0x25] || screen == slots[0x2] || screen == slots[0x1c] ? UI_LAYOUT_HUD : screen == slots[0xc] ? UI_LAYOUT_CONTEXT :
-                    screen == slots[0xb] || screen == slots[0x11] || screen == slots[0x27] ||
+                    screen == slots[0x6] || screen == slots[0xb] || screen == slots[0x11] || screen == slots[0x27] ||
                     screen == slots[0x2d] || screen == slots[0x4a] || screen == slots[0x4c] ? UI_LAYOUT_DIALOGUE : UI_LAYOUT_NONE;
     // AppMap renders the minimap in play and the full map in pause. Keep their policies separate.
     if (screen == slots[0x2a]) {
