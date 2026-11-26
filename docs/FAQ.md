@@ -537,6 +537,11 @@ on the start screen, or F1 in game) and restart. The tab also sets the load orde
 the Switch version 1.9.0 fit best; Wii U and Cemu packs need adapting, because the file formats differ. On Alpha 6
 (0.6.0), a mod's `romfs` folder can be loaded with the launch option `SAVAGEWIND_ROMFS_OVERLAY=<folder>`.
 
+A sharper world map can be made from your own game files: `python3 tools/maphd.py <game files folder> mods/MapHD
+--esrgan <realesrgan-ncnn-vulkan>` cleans every map tile with Real-ESRGAN (hours on a GPU) and makes a mod of them.
+`--scale 2` stores the closer zoom levels at twice the size for windows above 1080p. The mod holds your game's map
+textures, so don't share it.
+
 **Mods are other people's work.** Savage Wind doesn't check, test or support them, and isn't responsible for what they
 do, including if they break the game or your saves. Back up your saves before trying one. `savagewind.log` lists the
 mods each run loads, so a bug report with mods on first gets asked to try again with every mod off. If the bug is still

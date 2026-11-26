@@ -735,6 +735,12 @@ test-save-convert: $(B)/test_save_convert
 
 .PHONY: test-save-convert
 
+# The map tool (tools/maphd.py) on synthetic map tiles (no game files, no Real-ESRGAN; needs numpy and Pillow)
+test-maphd:
+	python3 tools/test_maphd.py
+
+.PHONY: test-maphd
+
 # Save profiles (runtime/services/save_profiles.c): names, create / copy / rename / delete, the active profile and the
 # legacy `save` folder, on tiny fake folders in a temporary directory (no game files, no real saves)
 $(B)/test_save_profiles: tools/test_save_profiles.c runtime/services/save_profiles.c runtime/services/save_profiles.h runtime/services/save_convert.c runtime/services/save_convert.h runtime/services/archive.c runtime/services/archive.h
