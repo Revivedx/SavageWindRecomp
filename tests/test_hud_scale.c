@@ -245,5 +245,19 @@ int main(void) {
         assert(NEAR(g[24], .5f) && NEAR(g[25], .225f) && NEAR(g[23], -.2f));
     }
 
+    // Combined matrix layout position recovery for shop text matching (#1126)
+    {
+        float m11_16_9 = 2.7474774f, m00_16_9 = m11_16_9 / (16.0f / 9.0f), lx, ly;
+        float m_tall[16] = {m00_16_9, 0, 0, m00_16_9 * 320.0f, 0, -m11_16_9 * 0.9f, 0, m11_16_9 * 0.9f * 210.0f,
+                            0, 0, 0, 0, 0, 0, -1, 1000};
+        hud_combined_layout_xy(m_tall, 0.9f, &lx, &ly);
+        assert(NEAR(lx, 320.0f) && NEAR(ly, 210.0f));
+
+        float m_wide[16] = {m00_16_9 / 1.3125f, 0, 0, (m00_16_9 / 1.3125f) * -280.0f, 0, -m11_16_9, 0, m11_16_9 * -190.0f,
+                            0, 0, 0, 0, 0, 0, -1, 1000};
+        hud_combined_layout_xy(m_wide, 1.3125f, &lx, &ly);
+        assert(NEAR(lx, -280.0f) && NEAR(ly, -190.0f));
+    }
+
     puts("PASS: hud_scale");
 }

@@ -5325,12 +5325,15 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
         memcpy(text_matrix, g, sizeof text_matrix);
         for (int k = 0; k < 4; k++) text_matrix[k] /= shape;
         hud_cut = menu_cut;
+        float lx, ly;
+        hud_combined_layout_xy(text_matrix, shape, &lx, &ly);
         float tx = text_matrix[3] / text_matrix[15], ty = text_matrix[7] / text_matrix[15];
         if (hud_s != 1 && !hud_context_native(shape, tx, ty, edge_x, edge_y) &&
             !(hud_quick && hud_quick_keeps(tx, ty, edge_x, edge_y)))
             hud_scale_matrix(text_matrix, hud_s, hud_anchor_now(tx, edge_x, 0), hud_anchor_now(ty, edge_y, 1));
         if (hud_edge_active && shape > 1 && !hud_context_native(shape, tx, ty, edge_x, edge_y) &&
-            hud_edge_moves(edge_mode, ty, edge_y) && !(hud_quick && hud_quick_bar(tx, ty, edge_x, edge_y))) {
+            hud_edge_moves(edge_mode, ty, edge_y) && !(hud_quick && hud_quick_bar(tx, ty, edge_x, edge_y)) &&
+            !hud_shop_pane(lx, ly)) {
             float dx = hud_edge_dx(hud_anchor_now(tx, edge_x, 0), edge_x, shape);
             if (dx != 0) hud_edge_matrix_x(text_matrix, dx);
         }
@@ -5347,6 +5350,8 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
         memcpy(buf, g, n);
         buf[0] *= combined_scale[0], buf[3] *= combined_scale[0];
         buf[5] *= combined_scale[1], buf[7] *= combined_scale[1];
+        float lx, ly;
+        hud_combined_layout_xy(buf, shape, &lx, &ly);
         float tx = buf[3] / buf[15], ty = buf[7] / buf[15];
         if (hud_s != 1 && !hud_context_native(shape, tx, ty, edge_x, edge_y) &&
             !(hud_quick && hud_quick_keeps(tx, ty, edge_x, edge_y)))
@@ -5356,7 +5361,7 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
         if (map_chrome && fabsf(ty) > shape * (200.0f / 360))
             hud_edge_matrix(buf, copysignf(1 - shape, ty));
         if (hud_edge_active && !hud_context_native(shape, tx, ty, edge_x, edge_y) && hud_edge_moves(edge_mode, ty, edge_y) &&
-            !(hud_quick && hud_quick_bar(tx, ty, edge_x, edge_y))) {
+            !(hud_quick && hud_quick_bar(tx, ty, edge_x, edge_y)) && !hud_shop_pane(lx, ly)) {
             float ay = hud_anchor_now(ty, edge_y, 1);
             float dx = hud_edge_dx(hud_anchor_now(tx, edge_x, 0), edge_x, shape);
             float dy = hud_edge_dy(ay, edge_y, shape);
