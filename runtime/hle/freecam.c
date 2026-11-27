@@ -70,6 +70,15 @@ void rt_lookat(uint64_t cam) {
     log_cameras(cam);
     float *f = (float *)(uintptr_t)(cam + 0x38);
     if (!view_camera(f)) return;
+    {   // (testing) SAVAGEWIND_TEST_CAM="ex,ey,ez,ax,ay,az": the view cameras stand at e and look at a, Link plays on
+        static int tc = -1;
+        static float tv[6];
+        if (tc < 0) {
+            const char *e = getenv("SAVAGEWIND_TEST_CAM");
+            tc = e && sscanf(e, "%f,%f,%f,%f,%f,%f", &tv[0], &tv[1], &tv[2], &tv[3], &tv[4], &tv[5]) == 6;
+        }
+        if (tc) { memcpy(f, tv, sizeof tv); f[6] = 0, f[7] = 1, f[8] = 0; return; }
+    }
     if (!active) {
         memcpy(seen_eye, f, sizeof seen_eye);
         memcpy(seen_at, f + 3, sizeof seen_at);

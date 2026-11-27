@@ -59,6 +59,8 @@ typedef struct {
     uint8_t glsl;           // emit Vulkan GLSL (see the contract above) instead of MSL
     uint8_t point_size;     // vertex, GLSL: the draw is a point list; a shader that writes no point size writes 1.0
                             // (NVN's default size; without maintenance5 Vulkan leaves it undefined)
+    uint8_t rt_cap;         // vertex (GLSL): also writes each vertex's position, relative to the frame's ray tracing
+                            // origin, to the capture buffer (vulkan/raytrace.c; in the padding, as mvec_rt)
     uint32_t shared_size;   // compute: shared memory bytes (from the program's control section)
 } ShaderKey;
 
@@ -84,6 +86,7 @@ typedef struct {
     bool writes_depth, uses_discard, writes_point_size;
     bool mvec;              // a motion vector variant (ShaderKey mvec / mvec_rt): its pipeline layout has the push
                             // constants of the history offsets (vulkan/mvec.c, MVEC_PUSH)
+    bool rt_cap;            // a capture variant (ShaderKey rt_cap): its layout has the capture push constants (raytrace.h)
     bool mvec_mask;         // a reactive mask variant (ShaderKey mvec_rt with 0x80): writes the motion target's .z only
     bool mvec_still;        // a still variant (ShaderKey mvec_rt with 0x40): writes zero to the motion target
     bool hdr;               // the HDR tonemap variant: its pipeline layout has the live HDR parameters as push constants
@@ -119,6 +122,35 @@ extern bool maxwell_gmem_split, maxwell_gmem_snap, maxwell_gmem_bda;
 // (shaders.c xlate_id), so each choice keeps its own cached translations of them.
 extern bool maxwell_wet_fix;
 bool maxwell_wet_lighting(const uint8_t *blob, size_t max_size, int stage);
+// Ray traced sun shadows (vulkan/raytrace.c), set like maxwell_wet_fix: 0 off; 1: the game's deferred sun shadow
+// passes (maxwell_rt_shadow_pass) take the traced mask in place of what their cascade lookups give; 2: the darker of
+// the two. The mask is a texture at RT_MASK_BINDING of the fragment set, a texel a pixel of the pass (.r: the share of
+// its rays that reached the sun, .b: the share that did through an alpha-tested mesh, where the cascades decide, .g: 1
+// when it is this frame's). Part of those passes' ids.
+extern int maxwell_rt_shadow;
+bool maxwell_rt_shadow_pass(const uint8_t *blob, size_t max_size, int stage);
+#define RT_MASK_BINDING 95
+// ... and the light buffer smoothed (maxwell_rt_lb, with the traced shadows): the game lights the scene at half its
+// size and its composition passes (maxwell_rt_comp_pass, all of them) take for each pixel the light of one of the four
+// texels around it, the nearest in depth. Its own hard shadow edge hides that; the traced penumbra showed it as
+// two-pixel teeth. Their lookups of a texture the mask's size go through rt_lb: where the four texels are at one depth
+// (the mask's .a) the four are interpolated, elsewhere the game's choice stands. Part of those passes' ids.
+extern int maxwell_rt_lb;
+bool maxwell_rt_comp_pass(const uint8_t *blob, size_t max_size, int stage);
+// Ray traced reflections (vulkan/raytrace.c), set like maxwell_rt_shadow: the game's light composition passes that
+// look a reflection up in the environment cube (maxwell_rt_refl_pass) mix what a traced ray found into it, by how
+// sharp the lookup is (its level of detail). The traced colour is a texture at RT_REFL_BINDING of the fragment set, a
+// texel a pixel of the pass (.a: how much of it to trust, 0 where the ray found nothing on screen). Part of their ids.
+extern int maxwell_rt_refl;
+extern char maxwell_rt_refl_max[16];  // (the most of a sharp lookup the traced colour takes, a GLSL float: "0.95f")
+bool maxwell_rt_refl_pass(const uint8_t *blob, size_t max_size, int stage);
+#define RT_REFL_BINDING 96
+// ... and the composition passes of the material classes the game gives no reflection (maxwell_rt_radd_pass) add one:
+// the traced colour already weighed by the pixel's gloss (the top 3 bits of the albedo target's alpha, which those
+// passes turn into their specular exponent), a texture at RT_RADD_BINDING. maxwell_rt_radd: its strength (0: none).
+extern float maxwell_rt_radd;
+int maxwell_rt_radd_pass(const uint8_t *blob, size_t max_size, int stage);  // (2: the characters' class)
+#define RT_RADD_BINDING 97
 // Video > Stars (settings.h stars), set like maxwell_wet_fix: the night sky's star points' brightness and size
 // (1 and 1: the game's). maxwell_stars: 1 their vertex shader, 2 their fragment shader, 0 any other; part of ids.
 extern float maxwell_star_gain, maxwell_star_size;

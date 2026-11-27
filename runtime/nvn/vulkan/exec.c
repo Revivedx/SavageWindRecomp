@@ -32,6 +32,7 @@
 #include "fsr3.h"
 #include "fsr_api.h"
 #include "mvec.h"
+#include "raytrace.h"
 #include "xess.h"
 #include "../output_scale.h"
 #include "record.h"
@@ -2943,6 +2944,7 @@ typedef struct Prog {
     // program, [1] the reactive mask's. (Looked up through get_program for every scene draw, their keys made anew
     // each time, they cost the translating thread ~0.2 ms a frame.)
     void *mv[2][8];
+    struct Prog *cap;  // its ray tracing capture variant once built (draw_, raytrace.c)
     // The fragment material cache (stage_set_reuse, SAVAGEWIND_VK_STAGE_REUSE): whether set 1 can be kept, and the
     // uniform buffers it compares. (Last: in the middle they moved the fields every draw reads, ~2% of the render
     // thread at 720p with the cache off.)
@@ -3091,15 +3093,17 @@ static const VkPushConstantRange hdr_push_range = {VK_SHADER_STAGE_FRAGMENT_BIT,
 
 // A program can carry both ranges (the vertex motion-vector offsets and the fragment HDR parameters); their stages do
 // not overlap, so both keep offset 0.
-static int push_ranges(bool mvec, bool hdr, VkPushConstantRange ranges[2]) {
+// (mvec & 2: a ray tracing capture variant, raytrace.h: its push constants follow the motion program's, in one range)
+static int push_ranges(int mvec, bool hdr, VkPushConstantRange ranges[2]) {
     int n = 0;
-    if (mvec) ranges[n++] = mvec_push_range;
+    if (mvec & 2) ranges[n++] = (VkPushConstantRange){VK_SHADER_STAGE_VERTEX_BIT, 0, RTR_PUSH_OFF + RTR_PUSH};
+    else if (mvec) ranges[n++] = mvec_push_range;
     if (hdr) ranges[n++] = hdr_push_range;
     return n;
 }
 
 static VkPipelineLayout make_layout(const VkBindingInfo *binds, int nbinds, VkDescriptorSetLayout *set_layout, int nsets,
-                                    VkShaderStageFlags s0, VkShaderStageFlags s1, bool mvec, bool hdr) {
+                                    VkShaderStageFlags s0, VkShaderStageFlags s1, int mvec, bool hdr) {
     set_layout[0] = vk_set_layout(binds, nbinds, 0, s0);
     if (nsets > 1) set_layout[1] = vk_set_layout(binds, nbinds, 1, s1);
     VkPushConstantRange ranges[2];
@@ -3380,7 +3384,7 @@ static const ProgBuild *prog_build(const ShaderInfo *vi, const ShaderInfo *fi, b
     if (g_vk.gpl && v->set_layout && f->set_layout) {  // (the libraries' sets: "identically defined" by being the same;
         b->set_layout[0] = v->set_layout;               //  their dynamic uniform buffers were picked per stage, stage_layouts)
         b->set_layout[1] = f->set_layout;
-        bool mv = vi->mvec || fi->mvec;
+        int mv = (vi->mvec || fi->mvec) | (vi->rt_cap ? 2 : 0);
         bool hp = fi->hdr;
         VkPushConstantRange ranges[2];
         int nr = push_ranges(mv, hp, ranges);
@@ -3392,7 +3396,7 @@ static const ProgBuild *prog_build(const ShaderInfo *vi, const ShaderInfo *fi, b
     } else {
         ubo_dynamic_mark(b->binds, b->nbinds);
         b->layout = make_layout(b->binds, b->nbinds, b->set_layout, 2, VK_SHADER_STAGE_VERTEX_BIT, VK_SHADER_STAGE_FRAGMENT_BIT,
-                                vi->mvec || fi->mvec, fi->hdr);
+                                (vi->mvec || fi->mvec) | (vi->rt_cap ? 2 : 0), fi->hdr);
     }
     pthread_mutex_lock(&pb_lock);
     ProgBuild *o = pb_tab[slot];
@@ -4158,7 +4162,7 @@ static void stage_layouts(StageBuild *b, int stage) {
     b->set_layout = vk_set_layout(b->binds, b->nbinds, set, stage == STAGE_VERTEX ? VK_SHADER_STAGE_VERTEX_BIT : VK_SHADER_STAGE_FRAGMENT_BIT);
     VkDescriptorSetLayout sl[2] = {stage == STAGE_VERTEX ? b->set_layout : VK_NULL_HANDLE, b->set_layout};
     VkPushConstantRange ranges[2];
-    int nr = push_ranges(b->si->mvec, b->si->hdr && stage == STAGE_FRAGMENT, ranges);
+    int nr = push_ranges(b->si->mvec | (b->si->rt_cap ? 2 : 0), b->si->hdr && stage == STAGE_FRAGMENT, ranges);
     VkPipelineLayoutCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
                                      .flags = VK_PIPELINE_LAYOUT_CREATE_INDEPENDENT_SETS_BIT_EXT, .setLayoutCount = set + 1,
                                      .pSetLayouts = sl, .pushConstantRangeCount = (uint32_t)nr,
@@ -7959,6 +7963,9 @@ static inline __attribute__((always_inline)) VkDescriptorSet stage_set_prepare_i
             float sc[2]; uint32_t wh[2];
             if (ti < si->ntex && pre_ii && ti < 64) { ii[n] = pre_ii[ti]; sc[0] = tex_sc[sg][ti][0]; sc[1] = tex_sc[sg][ti][1]; wh[0] = tex_wh[sg][ti][0]; wh[1] = tex_wh[sg][ti][1]; }
             else if (ti < si->ntex) texture_info(stage, si, ti, &ii[n], sc, wh);
+            else if (b->binding == RT_MASK_BINDING) { ii[n] = rtr_mask_info(); sc[0] = sc[1] = 1; wh[0] = wh[1] = 0; }
+            else if (b->binding == RT_REFL_BINDING) { ii[n] = rtr_refl_info(); sc[0] = sc[1] = 1; wh[0] = wh[1] = 0; }
+            else if (b->binding == RT_RADD_BINDING) { ii[n] = rtr_radd_info(); sc[0] = sc[1] = 1; wh[0] = wh[1] = 0; }
             else { ii[n] = (VkDescriptorImageInfo){vk_default_sampler(true), vk_dummy_view(TEXTYPE_2D), VK_IMAGE_LAYOUT_GENERAL}; sc[0] = sc[1] = 1; wh[0] = wh[1] = 0; }
             if (ti < 64) {
                 tex_sc[sg][ti][0] = sc[0]; tex_sc[sg][ti][1] = sc[1];
@@ -7981,6 +7988,7 @@ static inline __attribute__((always_inline)) VkDescriptorSet stage_set_prepare_i
             w[n].pBufferInfo = &bi[n];
         } else if (b->type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) {
             bi[n] = b->binding == MVEC_HISTORY_BINDING ? mvec_history_info()
+                  : b->binding == RTR_CAP_BINDING      ? rtr_cap_info()
                   : b->binding == GSNAP_BUFFER_INDEX   ? gsnap_info(stage)
                   : b->binding == GMEM2_BUFFER_INDEX   ? gmem_info_hi()
                                                        : gmem_info();
@@ -8678,7 +8686,7 @@ bool vk_pso_warm(const ShaderInfo *vi, const ShaderInfo *fi, const uint8_t attr_
     if (v && f) {
         VkDescriptorSetLayout sl[2] = {0};
         VkPipelineLayout l = make_layout(binds, nb, sl, 2, VK_SHADER_STAGE_VERTEX_BIT, VK_SHADER_STAGE_FRAGMENT_BIT,
-                                         vi->mvec || fi->mvec, fi->hdr);
+                                         (vi->mvec || fi->mvec) | (vi->rt_cap ? 2 : 0), fi->hdr);
         PipeState s;
         memset(&s, 0, sizeof s);
         for (int a = 0; a < 32; a++) {  // (one buffer, 16 bytes an attribute: the layout does not matter)
@@ -9119,6 +9127,192 @@ static void wait_built(_Atomic int *state) {  // (0 building: until built or fai
     perfcount_add(PC_BUILD_WAIT_NS, SDL_GetTicksNS() - t0);
 }
 
+#include "rt_spike.h"
+// (SAVAGEWIND_RT_SPIKE, rt_spike.c) a draw of the scene's passes or of a shadow map, described for the ray tracing
+// measurement: its mesh, how many triangles, what its vertex shader reads besides the mesh.
+static void rt_spike_hook(Prog *pr, CmdRec *r, bool indexed) {
+    static NvnTexture *gb[8], *gb_depth;
+    uint64_t frame = renderer_present_count();
+    int slot = rt_spike_slot(frame);
+    uint8_t dg = st.rt.depth ? vk_texture_scale_group(st.rt.depth) : 0;
+    int ncol = 0;
+    for (int i = 0; i < st.rt.ncolor && i < 8; i++) ncol += st.rt.color[i] != NULL;
+    uint64_t count = r->x[2];
+    uint8_t pass = 0;
+    if (dg == RS_SHADOW) pass = 4;
+    else if (dg == RS_SCENE && st.ds[0] && count > 6) pass = ncol >= 2 ? 1 : ncol == 1 ? 2 : 3;
+    if (slot == 1) {  // what reads the shadow maps and the G-buffer, and into what
+        if (pass == 1) {
+            char buf[200];
+            int o = snprintf(buf, sizeof buf, "G-buffer targets:");
+            for (int i = 0; i < st.rt.ncolor && i < 8; i++) {
+                gb[i] = st.rt.color[i];
+                if (st.rt.color[i]) o += snprintf(buf + o, sizeof buf - (size_t)o, " %d: fmt %#x %ux%u;", i, st.rt.color[i]->format, st.rt.color[i]->width, st.rt.color[i]->height);
+            }
+            gb_depth = st.rt.depth;
+            snprintf(buf + o, sizeof buf - (size_t)o, " depth fmt %#x", st.rt.depth->format);
+            rt_spike_note(0, buf);
+        }
+        uint32_t gmask = 0, smask = 0;
+        NvnTexture *sh = NULL;
+        for (int i = 0; i < pr->fi->ntex; i++) {
+            NvnTexture *t = shader_texture_object(1, &pr->fi->tex[i]);
+            if (!t) continue;
+            if (vk_texture_scale_group(t) == RS_SHADOW || vk_is_shadow_copy(t)) { sh = t; smask |= vk_is_shadow_copy(t) ? 2 : 1; }
+            for (int k = 0; k < 8; k++) if (gb[k] && t == gb[k]) gmask |= 1u << k;
+            if (gb_depth && t == gb_depth) gmask |= 0x100;
+        }
+        if (smask || gmask) {
+            NvnTexture *o0 = NULL;
+            for (int i = 0; i < st.rt.ncolor && i < 8 && !o0; i++) o0 = st.rt.color[i];
+            if (!o0) o0 = st.rt.depth;
+            char buf[200];
+            int o = snprintf(buf, sizeof buf, "pass %d, %d targets (0: fmt %#x %ux%u), %s", pass, ncol, o0 ? o0->format : 0,
+                             o0 ? o0->width : 0, o0 ? o0->height : 0, count <= 6 ? "full screen" : "mesh");
+            if (smask) o += snprintf(buf + o, sizeof buf - (size_t)o, "; reads shadow %s%s fmt %#x %ux%ux%u target %u", smask & 1 ? "map" : "",
+                                     smask & 2 ? " copy" : "", sh->format, sh->width, sh->height, sh->depth, sh->target);
+            if (gmask) snprintf(buf + o, sizeof buf - (size_t)o, "; reads G-buffer targets %#x", gmask);
+            rt_spike_note(g_cur_fs_hash, buf);
+        }
+    }
+    if (!pass) return;
+    uint32_t topo = (uint32_t)r->x[0];
+    uint32_t tris = topo == 4 ? (uint32_t)(count / 3) : topo == 5 || topo == 6 || topo == 8 ? (uint32_t)(count > 2 ? count - 2 : 0) : topo == 7 ? (uint32_t)(count / 2) : 0;  // (NVN: 4 triangles, 5 strip, 6 fan, 7 quads, 8 quad strip)
+    uint32_t inst = (uint32_t)(indexed ? r->x[6] : r->x[4]);
+    if (!inst) inst = 1;
+    uint64_t skey = 0, in_hash = 0;
+    uint8_t flags = 0;
+    uint32_t vs_streams = 0;
+    for (uint32_t m = pr->vi->attr_mask & 0xFFFF & ((1u << (st.nattrib < 16 ? st.nattrib : 16)) - 1); m; m &= m - 1)
+        vs_streams |= 1u << ((st.attrib[__builtin_ctz(m)] >> 8) & 0x1F);
+    for (uint32_t m = vs_streams & 0xFFFF; m; m &= m - 1) {
+        int s = __builtin_ctz(m);
+        if (s >= st.nstream || !st.vbuf[s].addr) continue;
+        if (!st.stream[s][1]) skey = mvec_mix(skey, st.vbuf[s].addr);
+        else {
+            flags |= RT_SPIKE_INSTANCED;
+            if (slot >= 0) {
+                uint64_t n = (uint64_t)st.stream[s][0] * ((inst + st.stream[s][1] - 1) / st.stream[s][1]);
+                if (n > st.vbuf[s].size) n = st.vbuf[s].size;
+                if (n > 0x10000) n = 0x10000;
+                in_hash = mvec_mix(in_hash, vk_hash_bytes((const void *)(uintptr_t)st.vbuf[s].addr, n));
+            }
+        }
+    }
+    if (inst > 1) flags |= RT_SPIKE_INSTANCED;
+    for (uint32_t m = (uint32_t)(pr->vi->cbuf_mask >> 3) & 0x3FFF; m; m &= m - 1) {
+        int k = 3 + __builtin_ctz(m);
+        Range u = st.ubuf[0][k - 3];
+        if (!u.addr) continue;
+        uint64_t size = pr->vi->cbuf_size[k] ? pr->vi->cbuf_size[k] : 256;
+        if ((pr->vi->cbuf_dynamic & (1u << k)) && u.size) size = u.size > 0x10000 ? 0x10000 : u.size;
+        if (size > u.size && u.size) size = u.size;
+        if (size >= 2048) flags |= RT_SPIKE_SKINNED;
+        if (k != 3 && slot >= 0) in_hash = mvec_mix(in_hash, vk_hash_bytes((const void *)(uintptr_t)u.addr, size));
+    }
+    if (pr->vi->ntex) flags |= RT_SPIKE_VS_TEX;
+    for (int i = 0; i < pr->vi->ntex && !(flags & RT_SPIKE_VS_DRAWN_TEX); i++) {
+        NvnTexture *et = shader_texture_object(0, &pr->vi->tex[i]);
+        if (et && et->backend && ((TexBackend *)et->backend)->gpu_owned) flags |= RT_SPIKE_VS_DRAWN_TEX;
+    }
+    if (pr->fi->uses_discard) flags |= RT_SPIKE_DISCARD;
+    if (st.color_state[0] & 1) flags |= RT_SPIKE_BLEND;
+    if (st.ds[1]) flags |= RT_SPIKE_DEPTH_WRITE;
+    uint64_t ikey = mvec_mix(mvec_mix(indexed ? r->x[3] : skey, indexed ? (uint64_t)(uint32_t)r->x[4] : r->x[1]), count << 8 | topo);
+    uint64_t geo = mvec_mix(ikey, skey);
+    uint32_t verts = (uint32_t)count;
+    if (!rt_spike_geo_known(geo, &verts)) {
+        if (indexed && r->x[3]) {
+            uint32_t lo = ~0u, hi = 0;
+            for (uint64_t k = 0; k < count; k++) {
+                uint32_t v = r->x[1] == 0 ? ((const uint8_t *)(uintptr_t)r->x[3])[k] : r->x[1] == 1 ? ((const uint16_t *)(uintptr_t)r->x[3])[k]
+                                          : ((const uint32_t *)(uintptr_t)r->x[3])[k];
+                if (v == 0xFFFFFFFFu || (r->x[1] == 1 && v == 0xFFFF)) continue;  // (a restart index)
+                if (v < lo) lo = v;
+                if (v > hi) hi = v;
+            }
+            verts = hi >= lo ? hi - lo + 1 : 0;
+        }
+    }
+    rt_spike_geo(geo, tris, verts, frame);
+    RtSpikeDraw *d = rt_spike_draw(slot);
+    if (!d) return;
+    *d = (RtSpikeDraw){.pass = pass, .flags = flags, .topo = (uint8_t)topo, .tris = tris, .inst = inst, .geo = geo, .ikey = ikey,
+                       .in_hash = in_hash, .vs = st.program->stages[0].code_addr};
+}
+
+// Ray tracing (raytrace.c): the scene's depth target of the draws captured this frame, and the frame's structure built
+// and checked against it before the first full-screen draw into a smaller scene target (the deferred passes, drawn at
+// half size once the G-buffer is complete)
+static NvnTexture *rtr_depth;
+static NvnTexture *rtr_gb[8];  // (the G-buffer's colour targets of the captured draws: [5] is the scene's light buffer)
+static NvnTexture *scene_composite(Prog *pr, CmdRec *r);
+// (rtr_flip: the scene's targets hold the picture the other way up from the capture programs' ShaderKey flip_y, as
+// measured: with it the rays match the depth buffer; rtr_dm1: their depth_minus_one)
+static bool rtr_flip, rtr_dm1;
+static NvnTexture *rtr_mask_tex;  // (the target of the deferred shadow pass the mask was traced for)
+static void rtr_scene_flush(void) {
+    if (!rtr_depth || !rtr_depth->backend) return;
+    vk_end_pass();
+    TexBackend *b = vk_tex(rtr_depth, true);
+    static const VkComponentMapping id = {0};
+    VkImageView v = vk_image_view(b, VK_IMAGE_VIEW_TYPE_2D, b->format, 0, 1, 0, 1, id, VK_IMAGE_ASPECT_DEPTH_BIT);
+    // (the traced shadow mask: a texel a pixel of the pass about to be drawn, the game's deferred shadow at half size)
+    NvnTexture *t0 = NULL;
+    for (int i = 0; i < st.rt.ncolor && i < 8 && !t0; i++) t0 = st.rt.color[i];
+    TexBackend *mb = t0 ? vk_tex(t0, true) : NULL;
+    rtr_mask_tex = t0;
+    // (reflections: the G-buffer's normals, SAVAGEWIND_RT_NORMAL=<target>)
+    static int ntarget = -1;
+    if (ntarget < 0) ntarget = getenv("SAVAGEWIND_RT_NORMAL") ? atoi(getenv("SAVAGEWIND_RT_NORMAL")) & 7 : 3;
+    VkImageView nv = VK_NULL_HANDLE;
+    if (rtr_reflections() && rtr_gb[ntarget] && rtr_gb[ntarget]->backend) {
+        TexBackend *nb = vk_tex(rtr_gb[ntarget], true);
+        if (nb->width == b->width && nb->height == b->height)
+            nv = vk_image_view(nb, VK_IMAGE_VIEW_TYPE_2D, nb->format, 0, 1, 0, 1, id, VK_IMAGE_ASPECT_COLOR_BIT);
+    }
+    VkImageView av = VK_NULL_HANDLE;  // (the albedo target: its alpha holds the gloss)
+    if (nv && rtr_gb[1] && rtr_gb[1]->backend) {
+        TexBackend *ab = vk_tex(rtr_gb[1], true);
+        if (ab->width == b->width && ab->height == b->height)
+            av = vk_image_view(ab, VK_IMAGE_VIEW_TYPE_2D, ab->format, 0, 1, 0, 1, id, VK_IMAGE_ASPECT_COLOR_BIT);
+    }
+    rtr_flush_albedo(av);
+    rtr_flush(vk_cmd(), v, nv, b->width, b->height, mb ? mb->width : b->width / 2, mb ? mb->height : b->height / 2, rtr_flip, rtr_dm1,
+              g_cur_fs_hash);
+    st.rt_dirty = true;
+}
+
+// The reflections, again (raytrace.h rtr_reflect_late). rtr_gb_late: the game drew into the G-buffer after the flush.
+static bool rtr_gb_late;
+static bool rtr_comp_fs(uint64_t h) {
+    return h == 0xf607b5ab4c2f0720ull || h == 0x83398146712c7a25ull || h == 0xa8fbe9863c41ff3bull || h == 0xec9c39a52f0aac1eull ||
+           h == 0x885045460b17b7fbull || h == 0x966dae9aeabc743aull || h == 0x513a7bc28dd8faf8ull || h == 0xe107910420e44c9full ||
+           h == 0x93be9efe796c375bull || h == 0x970f06ddc0d6fa0aull || h == 0xb19a04739cefe2b2ull || h == 0xdae9df4164496f40ull;
+}
+static void rtr_scene_reflect(void) {
+    if (!rtr_depth || !rtr_depth->backend) return;
+    vk_end_pass();
+    TexBackend *b = vk_tex(rtr_depth, true);
+    static const VkComponentMapping id = {0};
+    VkImageView v = vk_image_view(b, VK_IMAGE_VIEW_TYPE_2D, b->format, 0, 1, 0, 1, id, VK_IMAGE_ASPECT_DEPTH_BIT);
+    static int ntarget = -1;
+    if (ntarget < 0) ntarget = getenv("SAVAGEWIND_RT_NORMAL") ? atoi(getenv("SAVAGEWIND_RT_NORMAL")) & 7 : 3;
+    VkImageView nv = VK_NULL_HANDLE, av = VK_NULL_HANDLE;
+    if (rtr_gb[ntarget] && rtr_gb[ntarget]->backend) {
+        TexBackend *nb = vk_tex(rtr_gb[ntarget], true);
+        if (nb->width == b->width && nb->height == b->height)
+            nv = vk_image_view(nb, VK_IMAGE_VIEW_TYPE_2D, nb->format, 0, 1, 0, 1, id, VK_IMAGE_ASPECT_COLOR_BIT);
+    }
+    if (nv && rtr_gb[1] && rtr_gb[1]->backend) {
+        TexBackend *ab = vk_tex(rtr_gb[1], true);
+        if (ab->width == b->width && ab->height == b->height)
+            av = vk_image_view(ab, VK_IMAGE_VIEW_TYPE_2D, ab->format, 0, 1, 0, 1, id, VK_IMAGE_ASPECT_COLOR_BIT);
+    }
+    rtr_reflect_late(vk_cmd(), v, nv, av);
+    st.rt_dirty = true;
+}
+
 static void draw_(CmdRec *r, bool indexed) {
     if (profd) prof_tp_ = SDL_GetTicksNS();
     ProfZone pz0 = PZ_NOW();
@@ -9336,6 +9530,23 @@ static void draw_(CmdRec *r, bool indexed) {
     }
     if (vk_hdr_game_enabled() && pr->fi && pr->fi->ntex == 2 && !pr->hdr && !pr->hdr_tried)
         hdr_make_tonemap_prog(pr);
+    // (ray traced reflections: the lit scene of this frame, kept for the next frame's rays to take colours from, once
+    //  the draw that composites it into the final image comes)
+    if (rtr_reflections() && rtr_gb[5] && rtr_gb[5]->backend && r->x[2] <= 6 && st.rt.ncolor && st.rt.color[0] &&
+        vk_texture_scale_group(st.rt.color[0]) == RS_OUT) {
+        static uint64_t done_frame = ~0ull;
+        NvnTexture *lit = done_frame != renderer_present_count() ? scene_composite(pr, r) : NULL;
+        if (lit) {  // (the image the final composite reads: the light buffer itself is reused after the scene is lit)
+            done_frame = renderer_present_count();
+            vk_end_pass();
+            TexBackend *lb = vk_tex(lit, false);
+            static int logged;
+            if (!logged++) LOG("[rt] reflections: the lit scene is %ux%u format %#x (the light buffer: %ux%u %#x), fs %016llx\n", lit->width, lit->height,
+                               lit->format, rtr_gb[5]->width, rtr_gb[5]->height, rtr_gb[5]->format, (unsigned long long)g_cur_fs_hash);
+            rtr_scene_done(vk_cmd(), lb->image, lb->format, lb->width, lb->height);
+            st.rt_dirty = true;
+        }
+    }
     scene_post(pr, r);
     if (pr->hdr && vk_hdr_game_enabled()) pr = pr->hdr;  // (the game's tonemap draw: the extended-curve variant, HDR only)
     fg_draw(pr, r);
@@ -9359,8 +9570,36 @@ static void draw_(CmdRec *r, bool indexed) {
         prof_gw_check += now - prof_stage_start;
         prof_stage_start = now;
     }
+    if (rtr_pending() && r->x[2] <= 6) {
+        // the frame's structure: before the first full-screen draw that reads a shadow map (the shadow maps are drawn
+        // after the G-buffer and their draws are captured too; what follows is the deferred sun shadow, which is what
+        // will trace), or else before the first one into the final image
+        NvnTexture *t0 = st.rt.ncolor && st.rt.color[0] ? st.rt.color[0] : st.rt.depth;
+        uint8_t g0 = t0 ? vk_texture_scale_group(t0) : 0;
+        bool go = g0 == RS_OUT;
+        if (rtr_shadow_passes()) {
+            for (int i = 0; i < pr->fi->ntex && !go && g0 != RS_SHADOW; i++) {
+                NvnTexture *t = shader_texture_object(1, &pr->fi->tex[i]);
+                go = t && vk_texture_scale_group(t) == RS_SHADOW;
+            }
+        } else if (t0 && rtr_depth && t0->width * 2 <= rtr_depth->width && g0 == RS_SCENE) go = true;
+        if (go) rtr_scene_flush();
+    }
+    // (the reflections again once the late G-buffer draws are over: the first full-screen draw elsewhere after them)
+    if (rtr_gb_late && rtr_reflect_waiting() && r->x[2] <= 6) {
+        int nc = 0;
+        for (int i = 0; i < st.rt.ncolor && i < 8; i++) nc += st.rt.color[i] != NULL;
+        if (nc < 5) { rtr_gb_late = false; rtr_scene_reflect(); }
+    }
+    if (rtr_reflect_open() && rtr_comp_fs(g_cur_fs_hash)) {
+        rtr_gb_late = false;
+        vk_end_pass();
+        rtr_reflect_done(vk_cmd());
+        st.rt_dirty = true;
+    }
     begin_pass();
     if (ps.void_) { stat_skipped++; return; }
+    if (rt_spike_period()) rt_spike_hook(pr, r, indexed);
     // ---- motion vectors (mvec.c): an opaque draw of a pass with the motion target is recorded (its identity and the
     // vertex shader's inputs, for the next frame); matched with one of the previous frame, it is drawn with its motion
     // program: the vertex shader also run on the previous frame's inputs, the fragment shader also writing the distance
@@ -9468,6 +9707,93 @@ static void draw_(CmdRec *r, bool indexed) {
             if (mp) pr->mv[1][ps.mvec] = mp;
         }
         if (mp) pr = mp, mvec_masked();
+    }
+    // ---- ray tracing capture (raytrace.c): a triangle list of the scene's G-buffer pass (or of a shadow map) is drawn
+    // with its capture program, whose vertex shader also writes the positions
+    if (rtr_mask_tex && ENV_ONCE("SAVAGEWIND_RT_MASK_READERS")) {  // (testing) which passes read the deferred shadow's target
+        static uint64_t seen[24];
+        int k = 0;
+        while (k < 23 && seen[k] && seen[k] != g_cur_fs_hash) k++;
+        if (!seen[k])
+            for (int i = 0; i < pr->fi->ntex && i < 64; i++)
+                if (shader_texture_object(1, &pr->fi->tex[i]) == rtr_mask_tex) {
+                    NvnTexture *rt0 = st.rt.ncolor ? st.rt.color[0] : NULL;
+                    seen[k] = g_cur_fs_hash;
+                    LOG("[rt] mask reader: fs %016llx, texture %d of %d, into %ux%u (the mask's target %ux%u), %llu indices\n",
+                        (unsigned long long)g_cur_fs_hash, i, pr->fi->ntex, rt0 ? rt0->width : 0, rt0 ? rt0->height : 0, rtr_mask_tex->width,
+                        rtr_mask_tex->height, (unsigned long long)r->x[2]);
+                }
+    }
+    int rt_cap_kind = 0;
+    // (a draw of 6 indices or fewer under a full viewport is a full-screen one only if its vertex shader reads no
+    //  camera: the flat ground and water are quads too, and left out they were holes in the structure)
+    bool rt_has_cam = (pr->vi->cbuf_mask & 8) && st.ubuf[0][0].addr && st.ubuf[0][0].size >= 176;
+    if (rtr_on() && st.rt.depth && (!fullscreen || rt_has_cam)) {
+        uint8_t dg = vk_texture_scale_group(st.rt.depth);
+        int ncol = 0;
+        for (int i = 0; i < st.rt.ncolor && i < 8; i++) ncol += st.rt.color[i] != NULL;
+        if (dg == RS_SCENE && ncol >= 5) rt_cap_kind = 1;
+        if (rt_cap_kind == 1 && rtr_reflect_waiting() && !rtr_pending()) rtr_gb_late = true;
+        else if (dg == RS_SCENE && st.rt.depth == rtr_depth && st.ds[0] && st.ds[1]) rtr_left_out(6, (uint32_t)r->x[2], true, g_cur_fs_hash);
+        else if (dg == RS_SHADOW && rtr_shadow_passes()) rt_cap_kind = 2;
+        // what of those passes is left out, and why (counted: raytrace.c's log)
+        int why = -1;
+        if (!rt_cap_kind) why = -1;
+        else if (r->x[0] != 4) why = 0;
+        else if (!st.ds[0]) why = 1;
+        else if (rt_cap_kind == 1 && (st.color_state[0] & 1)) why = 2;
+        else if (rt_cap_kind != 1 && !rt_has_cam) why = 3;  // (the scene's pass: placed by the scene's camera, raytrace.c)
+        else if ((uint64_t)(uint32_t)(indexed ? r->x[6] : r->x[4]) * r->x[2] > 600000) why = 4;  // (too many instances: grass)
+        if (rt_cap_kind == 2 && ENV_ONCE("SAVAGEWIND_RT_SHADOW_FS")) {  // (testing) the shadow maps' fragment shaders
+            static struct { uint64_t fs; uint32_t n, idx; } tab[48];
+            static uint32_t tt;
+            int k = 0;
+            while (k < 47 && tab[k].fs && tab[k].fs != g_cur_fs_hash) k++;
+            tab[k].fs = g_cur_fs_hash, tab[k].n++, tab[k].idx += (uint32_t)r->x[2];
+            if (++tt % 20000 == 0)
+                for (k = 0; k < 48 && tab[k].fs; k++) {
+                    if (tab[k].fs == g_cur_fs_hash)
+                        LOG("[rt] shadow fs %016llx (this one): discard %d, textures %d, vs cbufs %#x\n", (unsigned long long)tab[k].fs,
+                            pr->fi->uses_discard, pr->fi->ntex, pr->vi->cbuf_mask);
+                    LOG("[rt] shadow fs %016llx: %u draws, %u indices\n", (unsigned long long)tab[k].fs, tab[k].n, tab[k].idx);
+                }
+        }
+        if (rt_cap_kind == 2) {  // (testing) what the shadow maps' draws are
+            static uint32_t n[8], t;
+            n[why + 1]++;
+            if (++t % 20000 == 1) {
+                LOG("[rt] shadow draws: captured %u, not a list %u, no depth test %u, blended %u, no camera block %u, instanced %u | this one: "
+                    "vs cbufs %#x, slot 3 %llx size %llu, mode %llu, count %llu\n", n[0], n[1], n[2], n[3], n[4], n[5], pr->vi->cbuf_mask,
+                    (unsigned long long)st.ubuf[0][0].addr, (unsigned long long)st.ubuf[0][0].size, (unsigned long long)r->x[0], (unsigned long long)r->x[2]);
+                for (int k = 0; k < 14; k++) if ((pr->vi->cbuf_mask >> (3 + k)) & 1) LOG("[rt]   vs cbuf %d: size %llu, shader reads %u\n", 3 + k, (unsigned long long)st.ubuf[0][k].size, pr->vi->cbuf_size[3 + k]);
+            }
+        }
+        if (why >= 0) {
+            if (rt_cap_kind == 1) rtr_left_out(why, (uint32_t)r->x[2], st.ds[1] != 0, g_cur_fs_hash);
+            rt_cap_kind = 0;
+        }
+        if (rt_cap_kind) {
+            Prog *cp = pr->cap;
+            if (!cp) {
+                ShaderKey ck = pr->vkey, cf = pr->fkey;
+                ck.rt_cap = 1;
+                cp = get_program_(st.program, &ck, &cf);
+                if (cp && atomic_load(&cp->state) == 1) pr->cap = cp;
+                else cp = NULL;  // (built for the next frames)
+            }
+            if (cp) {
+                pr = cp;
+                if (rt_cap_kind == 1 && (st.depth_range[0][0] != 0.0f || st.depth_range[0][1] != 1.0f)) {
+                    static int logged;
+                    if (logged++ < 4) LOG("[rt] a captured draw with depth range %g..%g (fs %016llx)\n", st.depth_range[0][0], st.depth_range[0][1], (unsigned long long)g_cur_fs_hash);
+                }
+                if (rt_cap_kind == 1 && rtr_depth != st.rt.depth) memcpy(rtr_gb, st.rt.color, sizeof rtr_gb);
+                if (rt_cap_kind == 1) rtr_depth = st.rt.depth, rtr_flip = !cp->vkey.flip_y, rtr_dm1 = cp->vkey.depth_minus_one;
+            } else {
+                if (rt_cap_kind == 1) rtr_left_out(5, (uint32_t)r->x[2], st.ds[1] != 0, g_cur_fs_hash);
+                rt_cap_kind = 0;
+            }
+        }
     }
     if (st.rt.depth && !depth_read_only()) ps.ds_written = true;
     for (int i = 0; i < st.rt.ncolor && i < 8; i++)
@@ -9844,6 +10170,21 @@ have_pipe:
         memcpy(dc.dyn, dyn, (size_t)ndyn * 4);
     }
     if (mvec_draw) rec_CmdPushConstantsMvec(cb, pr->layout, mvec_seq);
+    if (rt_cap_kind) {
+        float rpc[RTR_PUSH / 4];
+        // A shadow map's cutout mesh with a bone palette (vertex constant buffer 5, a kilobyte or more): a character's
+        // hair or cloth. It casts whole in the rays: left to the cascades as the trees' leaves are, a character had
+        // two shadows, the rays' soft one of its solid parts and the cascades' sharp one where a ray met a cutout.
+        bool rt_skin_cut = rt_cap_kind == 2 && (pr->vi->cbuf_mask & 0x20) && st.ubuf[0][2].size >= 1024 && !ENV_ONCE("SAVAGEWIND_RT_NO_SKIN_CUT");
+        uint64_t geo = mvec_mix(mvec_mix(indexed ? r->x[3] : 0, indexed ? (uint64_t)(uint32_t)r->x[4] : r->x[1]), r->x[2] << 8 | (uint64_t)rt_cap_kind);
+        geo = mvec_mix(geo, indexed ? r->x[6] : r->x[4]);
+        geo = mvec_mix(geo, st.program->stages[0].code_addr);
+        for (uint32_t m = pipe_memo.k.s.used_streams & 0xFFFF; m; m &= m - 1) geo = mvec_mix(geo, st.vbuf[__builtin_ctz(m)].addr);
+        rtr_capture(renderer_present_count(), geo, rt_has_cam ? (const float *)(uintptr_t)st.ubuf[0][0].addr : NULL, indexed ? r->x[3] : 0, (uint32_t)r->x[1],
+                    (uint32_t)r->x[2], indexed ? 0 : (uint32_t)r->x[1], indexed ? (int32_t)r->x[4] : 0,
+                    (uint32_t)(indexed ? r->x[6] : r->x[4]), (uint32_t)(indexed ? r->x[5] : r->x[3]), !pr->fi->uses_discard || rt_skin_cut, !st.poly[0] ? 0 : ((st.poly[0] == 1) == (st.poly[1] == 1)) ? 1 : 2, rt_cap_kind, rpc);
+        rec_CmdPushConstants(cb, pr->layout, VK_SHADER_STAGE_VERTEX_BIT, RTR_PUSH_OFF, RTR_PUSH, rpc);
+    }
     if (pr->fi->hdr) {  // (live HDR tone-mapping settings: hdr.c vk_hdr_params)
         VkHdrParams hp;
         vk_hdr_params(&hp);

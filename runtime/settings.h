@@ -114,6 +114,12 @@ typedef struct {
     int antialias;       // AA_*: anti-aliasing of the game image before it is scaled to the window
     bool game_fxaa;      // the game's own FXAA, in its scene -> final image composite (vulkan/exec.c fxaa_patch)
     bool wet_fix;        // Video > Wet grass fix: tames the white glare of rain in sunshine (maxwell/translate.c maxwell_wet_lighting)
+    // Video > Ray tracing (nvn/vulkan/raytrace.c). rt and the two effects: from the next start, as the game's passes'
+    // translations are made then; the samples and the distance at once
+    bool rt, rt_shadows, rt_reflections;
+    bool rt_offscreen;   // the reflections' colour cache: what is off screen is reflected too (170 MB of video memory)
+    int rt_samples;      // the shadows' rays a pixel: 0..3 = 1, 2, 4, 8
+    int rt_distance;     // how far the rays go: 0 near, 1 medium, 2 far
     int stars;           // STARS_*: the night sky's stars, brighter and bigger (maxwell/translate.c maxwell_stars)
     int render_scale;    // 50%, 75%, 100% (RSCALE_100: the window's size), 125%, 150%, 200% (nvn/output_scale.c)
     int anisotropy;      // texture filtering: 0 the game's own, 1..4 = 2x, 4x, 8x, 16x (vulkan/textures.c)

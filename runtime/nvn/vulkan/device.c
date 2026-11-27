@@ -27,6 +27,7 @@
 #include "../../ui/menu.h"
 #include "../../window_size.h"
 #include "mvec.h"
+#include "raytrace.h"
 #include "vk.h"
 #include "shaders.h"
 #include "vram.h"
@@ -1057,6 +1058,39 @@ static void create_device(void) {
         next_feature = xess_features;
     }
     VkPhysicalDeviceFeatures2 f = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = next_feature};
+    // Ray tracing (raytrace.c, SAVAGEWIND_RT=1): acceleration structures and ray queries, where the device has them
+    VkPhysicalDeviceAccelerationStructureFeaturesKHR as_on = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR, .accelerationStructure = VK_TRUE};
+    VkPhysicalDeviceRayQueryFeaturesKHR rq_on = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR,
+                                                 .rayQuery = VK_TRUE, .pNext = &as_on};
+    bool rtr = false;
+    {   // (looked at whether asked for or not: the options' rows are greyed where it can't run)
+        VkPhysicalDeviceAccelerationStructureFeaturesKHR as_have = {
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR};
+        VkPhysicalDeviceRayQueryFeaturesKHR rq_have = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR,
+                                                       .pNext = &as_have};
+        VkPhysicalDeviceFeatures2 q = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &rq_have};
+        bool names = has_ext(ep, ne, VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME) && has_ext(ep, ne, VK_KHR_RAY_QUERY_EXTENSION_NAME) &&
+                     has_ext(ep, ne, VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
+        if (names) vkGetPhysicalDeviceFeatures2(g_vk.phys, &q);
+        rtr = names && as_have.accelerationStructure && rq_have.rayQuery && f12_have.bufferDeviceAddress &&
+              have.features.vertexPipelineStoresAndAtomics && g_vk.props.limits.maxPushConstantsSize >= RTR_PUSH_OFF + RTR_PUSH;
+        rtr_set_supported(rtr);
+        if (!rtr_wanted()) rtr = false;
+        else if (rtr) {
+            ext[n_ext++] = VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME;
+            ext[n_ext++] = VK_KHR_RAY_QUERY_EXTENSION_NAME;
+            ext[n_ext++] = VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME;
+            f12.bufferDeviceAddress = VK_TRUE;
+            as_on.pNext = f.pNext;
+            f.pNext = &rq_on;
+        } else {
+            LOG("[rt] ray tracing asked for but not possible here: extensions %d, acceleration structure %d, "
+                "ray query %d, buffer addresses %d, vertex stores %d, push constants %u\n", names, as_have.accelerationStructure,
+                rq_have.rayQuery, f12_have.bufferDeviceAddress, have.features.vertexPipelineStoresAndAtomics,
+                g_vk.props.limits.maxPushConstantsSize);
+        }
+    }
     VkPhysicalDeviceFeatures *b = &f.features, *h = &have.features;
     b->independentBlend = h->independentBlend;
     b->dualSrcBlend = h->dualSrcBlend;
@@ -1220,6 +1254,7 @@ static void create_device(void) {
     VK_CHECK(vkCreateDevice(g_vk.phys, &di, NULL, &g_vk.dev));
     free(ep);  // (read up to here: extended dynamic state and the FSR 4 checks above, #488)
     vk13_load();
+    rtr_device_ready(rtr);
     fsr_api_probe(g_vk.dev, g_vk.phys);  // (logs what AMD's FSR DLLs offer this device; a no-op without them)
     xess_probe(g_vk.inst, g_vk.dev, g_vk.phys);  // (makes the XeSS context where libxess.dll is next to the game)
     if (g_settings.upscaler == UPSCALE_FSR4 && !fsr4_available()) {  // (a settings file from a PC with an AMD Radeon)

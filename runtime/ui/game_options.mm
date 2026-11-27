@@ -45,6 +45,7 @@ extern "C" {
 #include "../problem_report.h"
 #include "../motion.h"
 #include "../settings.h"
+bool rtr_supported(void);  // (nvn/vulkan/raytrace.h)
 #include "../gamelib.h"
 #include "../color_grade.h"
 #include "../dlss_fetch.h"
@@ -958,6 +959,42 @@ void build_items(void) {
                        },
                        [](const Item &) { return g_settings.stars >= 0 && g_settings.stars < STARS_COUNT ? g_settings.stars : 0; },
                        [](const Item &, int x) { g_settings.stars = x; }, STARS_BRIGHTEST));
+    {   // Ray tracing (vulkan/raytrace.c): the switch and the effects from the next start (the game's passes' translations
+        // are made then), the samples and the distance at once. Greyed where the graphics card can't, and under the switch.
+        size_t first = v.size();
+        v.push_back(toggle(P_VIDEO_ADV, "Ray tracing", "Traces rays for the effects below. Needs a graphics card with ray tracing; heavy. From the next start.",
+                           [](const Item &) { return (int)g_settings.rt; }, [](const Item &, int x) { g_settings.rt = x; }, 0));
+        v.push_back(toggle(P_VIDEO_ADV, "Ray-traced shadows", "The sun's shadows traced: sharp where things touch, soft further away. From the next start.",
+                           [](const Item &) { return (int)g_settings.rt_shadows; }, [](const Item &, int x) { g_settings.rt_shadows = x; }, 1));
+        v.push_back(toggle(P_VIDEO_ADV, "Ray-traced reflections", "Water reflects the world around it, and Link. From the next start.",
+                           [](const Item &) { return (int)g_settings.rt_reflections; }, [](const Item &, int x) { g_settings.rt_reflections = x; }, 1));
+        v.push_back(toggle(P_VIDEO_ADV, "Off-screen reflections", "Also reflects what the camera saw before and no longer shows. About 170 MB of video memory. Turning it on: from the next start.",
+                           [](const Item &) { return (int)g_settings.rt_offscreen; }, [](const Item &, int x) { g_settings.rt_offscreen = x; }, 1));
+        v.push_back(choice(P_VIDEO_ADV, "Ray tracing samples", "Rays per pixel for the traced shadows. More: smoother edges, slower.",
+                           [](const Item &) { return 4; },
+                           [](const Item &, int x) {
+                               static const char *const n[4] = {"1", "2", "4", "8"};
+                               return n[x >= 0 && x < 4 ? x : 2];
+                           },
+                           [](const Item &) { return g_settings.rt_samples >= 0 && g_settings.rt_samples < 4 ? g_settings.rt_samples : 2; },
+                           [](const Item &, int x) { g_settings.rt_samples = x; }, 2));
+        v.push_back(choice(P_VIDEO_ADV, "Ray tracing distance", "How far the rays reach. Nearer: faster; distant shadows and reflections are lost.",
+                           [](const Item &) { return 3; },
+                           [](const Item &, int x) {
+                               static const char *const n[3] = {"Near", "Medium", "Far"};
+                               return tr(n[x >= 0 && x < 3 ? x : 2]);
+                           },
+                           [](const Item &) { return g_settings.rt_distance >= 0 && g_settings.rt_distance < 3 ? g_settings.rt_distance : 2; },
+                           [](const Item &, int x) { g_settings.rt_distance = x; }, 2));
+        v[first].value_off = [](const Item &, int) { return !rtr_supported(); };
+        for (size_t i = first; i < v.size(); i++) {
+            if (i > first) v[i].value_off = [](const Item &, int) { return !rtr_supported() || !g_settings.rt; };
+            static const char *descs[8];
+            descs[i - first] = v[i].desc;
+            v[i].arg = (int)(i - first);
+            v[i].desc_fn = [](const Item &it) { return tr(rtr_supported() ? descs[it.arg] : "Your graphics card doesn't support ray tracing."); };
+        }
+    }
     // Anisotropic filtering and sharpening (Vulkan: vulkan/textures.c sampler_aniso, vulkan/exec.c scene_post)
     v.push_back(choice(P_VIDEO_ADV, "Anisotropic filtering", "Sharper ground and paths at a distance. Off: as on the console.",
                        [](const Item &) { return N(k_aniso); },

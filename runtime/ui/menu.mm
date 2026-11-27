@@ -45,6 +45,7 @@ extern "C" {
 #include "../hle.h"
 #include "../items.h"
 #include "../settings.h"
+bool rtr_supported(void);  // (nvn/vulkan/raytrace.h)
 #include "../gamelib.h"
 #include "../quick_inventory_sort.h"
 #include "../quick_drop.h"
@@ -1227,6 +1228,30 @@ static void tab_display(void) {
         static const char *const stars[STARS_COUNT] = {"Original", "Bright", "Brighter", "Brightest"};
         opt_choice("Stars", &g_settings.stars, stars, STARS_COUNT, STARS_BRIGHTEST,
                    "How bright the night sky's stars are. Original: as the game draws them. From the next start.", false);
+    }
+    {   // Ray tracing (vulkan/raytrace.c), as the game's Options screen's rows
+        bool can = rtr_supported();
+        const char *no = "Your graphics card doesn't support ray tracing.";
+        opt_section("Ray tracing");
+        if (!can) opt_disable_next();
+        opt_toggle("Ray tracing", &g_settings.rt, false,
+                   can ? "Traces rays for the effects below. Needs a graphics card with ray tracing; heavy. From the next start." : no);
+        bool sub = can && g_settings.rt;
+        if (!sub) opt_disable_next();
+        opt_toggle("Ray-traced shadows", &g_settings.rt_shadows, true,
+                   can ? "The sun's shadows traced: sharp where things touch, soft further away. From the next start." : no);
+        if (!sub) opt_disable_next();
+        opt_toggle("Ray-traced reflections", &g_settings.rt_reflections, true, can ? "Water reflects the world around it, and Link. From the next start." : no);
+        if (!sub) opt_disable_next();
+        opt_toggle("Off-screen reflections", &g_settings.rt_offscreen, true,
+                   can ? "Also reflects what the camera saw before and no longer shows. About 170 MB of video memory. Turning it on: from the next start." : no);
+        static const char *const samples[4] = {"1", "2", "4", "8"};
+        if (!sub) opt_disable_next();
+        opt_choice("Ray tracing samples", &g_settings.rt_samples, samples, 4, 2, can ? "Rays per pixel for the traced shadows. More: smoother edges, slower." : no, false);
+        static const char *const dist[3] = {"Near", "Medium", "Far"};
+        if (!sub) opt_disable_next();
+        opt_choice("Ray tracing distance", &g_settings.rt_distance, dist, 3, 2,
+                   can ? "How far the rays reach. Nearer: faster; distant shadows and reflections are lost." : no, false);
     }
 #endif
     {   // supersampling (nvn/output_scale.c): applies at once

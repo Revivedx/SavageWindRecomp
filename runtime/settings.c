@@ -67,6 +67,7 @@ Settings g_settings = {
     .vsync = VSYNC_DEFAULT,
     .gpu = -1,
     .wide_view = true,
+    .rt_shadows = true, .rt_reflections = true, .rt_offscreen = true, .rt_samples = 2, .rt_distance = 2,  // (Video > Ray tracing itself: off)
     .stars = STARS_BRIGHTEST,  // (Video > Stars: the player test picked x8; the game's own barely show on PC)
     .hud_edges = false,
     .hdr_peak_nits = 0,  // (not set yet: the first start reads the ICC peak, else 1000; then it is a normal setting)
@@ -448,6 +449,12 @@ void settings_load(void) {
         }
         else if (!strcmp(key, "game_fxaa")) g_settings.game_fxaa = atoi(val) != 0;
         else if (!strcmp(key, "wet_fix")) g_settings.wet_fix = atoi(val) != 0;
+        else if (!strcmp(key, "rt")) g_settings.rt = atoi(val) != 0;
+        else if (!strcmp(key, "rt_shadows")) g_settings.rt_shadows = atoi(val) != 0;
+        else if (!strcmp(key, "rt_reflections")) g_settings.rt_reflections = atoi(val) != 0;
+        else if (!strcmp(key, "rt_offscreen")) g_settings.rt_offscreen = atoi(val) != 0;
+        else if (!strcmp(key, "rt_samples")) { int x = atoi(val); g_settings.rt_samples = x < 0 ? 0 : x > 3 ? 3 : x; }
+        else if (!strcmp(key, "rt_distance")) { int x = atoi(val); g_settings.rt_distance = x < 0 ? 0 : x > 2 ? 2 : x; }
         else if (!strcmp(key, "stars")) {
             static const char *const names[STARS_COUNT] = {"original", "bright", "brighter", "brightest"};
             for (int i = 0; i < STARS_COUNT; i++)
@@ -867,6 +874,9 @@ bool settings_save_to(const char *path) {
     fprintf(f, "antialias = %s\n", g_settings.antialias == AA_TAA ? "taa" : g_settings.antialias == AA_SMAA ? "smaa" : "off");
     fprintf(f, "game_fxaa = %d\n", g_settings.game_fxaa ? 1 : 0);
     fprintf(f, "wet_fix = %d\n", g_settings.wet_fix ? 1 : 0);
+    fprintf(f, "rt = %d\nrt_shadows = %d\nrt_reflections = %d\nrt_offscreen = %d\nrt_samples = %d\nrt_distance = %d\n", g_settings.rt ? 1 : 0,
+            g_settings.rt_shadows ? 1 : 0, g_settings.rt_reflections ? 1 : 0, g_settings.rt_offscreen ? 1 : 0, g_settings.rt_samples,
+            g_settings.rt_distance);
     {
         static const char *const names[STARS_COUNT] = {"original", "bright", "brighter", "brightest"};
         fprintf(f, "stars = %s\n", names[g_settings.stars >= 0 && g_settings.stars < STARS_COUNT ? g_settings.stars : 0]);
