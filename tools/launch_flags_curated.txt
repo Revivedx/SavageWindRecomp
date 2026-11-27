@@ -41,6 +41,8 @@ launcher SAVAGEWIND_LAUNCHER_MODE | | Test hook of the start screen.
 launcher SAVAGEWIND_LAUNCHER_SETUP | | Test hook of the start screen.
 launcher SAVAGEWIND_LAUNCHER_SHOT | | Test hook of the start screen.
 launcher SAVAGEWIND_LAUNCHER_SWMM_GO | | Test hook of the start screen.
+launcher SAVAGEWIND_LAUNCHER_PRESS_PLAY | | Test hook of the start screen.
+launcher SAVAGEWIND_LAUNCHER_TIP_GO | | Test hook of the start screen.
 
 build SAVAGEWIND_GEN | | The program that builds the game code.
 build SAVAGEWIND_CC | | The compiler that builds the game code.
