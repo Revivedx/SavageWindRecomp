@@ -41,6 +41,10 @@ bool rt_temporal(void);  // TAA, FSR 3 / 4, DLSS or XeSS: motion vectors and the
 void rt_jitter_set_phases(uint32_t n);  // (FSR 3: the jitter sequence's length, fsr3_jitter_phases)
 bool upscale_modes_available(void);  // (rendering below the window's size: needs render-target scaling)
 double upscale_mode_factor(int q);
+// The 3D scene's size for mode q, and the window it is brought up to (Video > Window size). Dynamic has no fixed
+// size. The size is the window divided by the mode's factor on each side: DLAA (DLSS's 1x) is the window itself,
+// Ultra Performance a third of it.
+bool upscale_mode_pixels(int q, int *render_w, int *render_h, int *base_w, int *base_h);
 double upscale_factor(void);
 bool upscale_mode_offered(int q);   // mode q can be chosen now (Ultra Performance with FSR 3 / 4 or DLSS: a 4K window)
 bool upscale_mode_is_dlaa(int q);   // mode q is named DLAA in the menus: Native with DLSS chosen

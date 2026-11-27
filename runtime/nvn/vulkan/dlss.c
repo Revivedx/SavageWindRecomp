@@ -1,16 +1,24 @@
+#if defined(__linux__) && !defined(_GNU_SOURCE)
+#define _GNU_SOURCE  // (dladdr)
+#endif
 // NVIDIA DLSS Super Resolution (Video > Upscaler) and Frame Generation (Video > Frame generation) through NGX, loaded
-// at run time. No NVIDIA SDK code, header or library is compiled in or linked: the NGX core is the NVIDIA driver's
-// own _nvngx.dll (found through HKLM\SOFTWARE\NVIDIA Corporation\Global\NGXCore), and the few NGX types, values and
-// parameter names used below are declared here from the SDK's documented interface. The DLSS libraries the core loads
-// for each feature, nvngx_dlss.dll and nvngx_dlssg.dll, are NVIDIA's own copies, which the setup downloads next to
-// savagewind.exe from NVIDIA's repository (dlss_fetch.c); without them, or without an NVIDIA RTX driver, NGX is not
-// loaded at all and both DLSS choices stay greyed out.
+// at run time. No NVIDIA SDK code, header or library is compiled in or linked. The NGX core is the NVIDIA driver's
+// own: _nvngx.dll on Windows (HKLM\SOFTWARE\NVIDIA Corporation\Global\NGXCore) and libnvidia-ngx.so.1 on Linux x86-64.
+// The few NGX types, values and parameter names used below are declared here from the SDK's documented interface.
+// The libraries the core loads are NVIDIA's own copies, which the setup downloads (dlss_fetch.c): nvngx_dlss.dll and
+// nvngx_dlssg.dll next to savagewind.exe on Windows, libnvidia-ngx-dlss.so.310.9.16 on Linux. Linux writes that file
+// into the executable's folder when the folder can be written, otherwise the data folder, and tells NGX that folder
+// (the Nix store and an AppImage are not writable). Without the library, or without an NVIDIA RTX driver, NGX is not
+// loaded and both DLSS choices stay greyed out. There is no Linux build of this on aarch64 here.
 //
-// NGX's parameter object is a C++ class whose virtual functions are called through its vtable: the Set overloads in
-// slots 0-7 and the Get overloads in 8-15, each group in reverse declaration order (MSVC's layout, the Windows core's).
-// vtable_ok checks that layout with a set-then-get round trip before anything relies on it.
+// NGX's parameter object is a C++ class whose virtual functions are called through its vtable. Windows is MSVC's
+// layout: each group of overloads in reverse declaration order. Linux is Itanium's (GCC/Clang): declaration order,
+// including the two D3D pointer overloads. vtable_ok checks the layout with a set-then-get round trip before anything
+// relies on it. If that fails on Linux, the same order without the two D3D slots is tried once, and if that fails too
+// DLSS stays off. The layout is not guessed again while the game runs.
 #include "dlss.h"
 #include "record.h"
+#include "../../dlss_fetch.h"
 
 #include <math.h>
 #include <stdatomic.h>
@@ -20,9 +28,16 @@
 
 #include "../../paths.h"
 
-#ifdef _WIN32
+#if defined(_WIN32) || (defined(__linux__) && defined(__x86_64__))
 
+#ifdef _WIN32
 #include <windows.h>
+#else
+#include <dlfcn.h>
+#include <stdint.h>
+#include <unistd.h>
+#include <wchar.h>
+#endif
 
 // ================================================================== NGX's interface (the SDK's documented ABI)
 typedef unsigned NgxResult;  // NVSDK_NGX_Result: 1 success, 0xBAD00000 | n failures
@@ -69,11 +84,16 @@ typedef struct {  // NVSDK_NGX_FeatureDiscoveryInfo
     const NgxCommonInfo *common;
 } NgxDiscoveryInfo;
 
+// Windows _nvngx.dll: Init_Ext2 takes the SDK version, then an optional parameter map (NULL here).
 typedef NgxResult (*PFN_Init)(unsigned long long app, const wchar_t *path, VkInstance, VkPhysicalDevice, VkDevice,
                               PFN_vkGetInstanceProcAddr, PFN_vkGetDeviceProcAddr, int version, const NgxParam *);
+// Linux libnvidia-ngx.so.1: the app-facing Init takes the proc addresses, then PathListInfo, then the SDK version.
+typedef NgxResult (*PFN_InitInfo)(unsigned long long app, const wchar_t *path, VkInstance, VkPhysicalDevice, VkDevice,
+                                  PFN_vkGetInstanceProcAddr, PFN_vkGetDeviceProcAddr, const NgxCommonInfo *, int version);
 typedef NgxResult (*PFN_ReqExt)(unsigned *ni, const char ***ie, unsigned *nd, const char ***de);
 typedef NgxResult (*PFN_FeatDevExt)(VkInstance, VkPhysicalDevice, const NgxDiscoveryInfo *, uint32_t *,
                                     VkExtensionProperties **);
+typedef NgxResult (*PFN_FeatReq)(VkInstance, VkPhysicalDevice, const NgxDiscoveryInfo *, void *);
 typedef NgxResult (*PFN_Params)(NgxParam **);
 typedef NgxResult (*PFN_DestroyParams)(NgxParam *);
 typedef NgxResult (*PFN_Create)(VkCommandBuffer, int feature, NgxParam *, NgxHandle **);
@@ -83,10 +103,16 @@ typedef NgxResult (*PFN_Release)(NgxHandle *);
 typedef NgxResult (*PFN_Shutdown)(VkDevice, unsigned *);
 
 static struct {
+#ifdef _WIN32
     HMODULE core;
+#else
+    void *core;
+#endif
     PFN_Init init;
+    PFN_InitInfo init_info;
     PFN_ReqExt req_ext;
     PFN_FeatDevExt feat_dev_ext;
+    PFN_FeatReq feat_req;
     PFN_Params caps, alloc_params;
     PFN_DestroyParams destroy_params;
     PFN_Create create;
@@ -105,8 +131,22 @@ typedef NgxResult (*GetU)(const NgxParam *, const char *, unsigned *);
 typedef NgxResult (*GetF)(const NgxParam *, const char *, float *);
 typedef NgxResult (*GetP)(const NgxParam *, const char *, void **);
 // The SDK declares Set(u64), Set(float), Set(double), Set(u32), Set(int), Set(ID3D11Resource *), Set(ID3D12Resource *),
-// Set(void *), then the Get overloads in the same order, then Reset; MSVC reverses each group of overloads.
-enum { S_P = 0, S_D12, S_D11, S_I, S_U32, S_D, S_F, S_U64, G_P, G_D12, G_D11, G_I, G_U32, G_D, G_F, G_U64 };
+// Set(void *), then the Get overloads in the same order, then Reset. MSVC reverses each group; Itanium keeps this order.
+static int S_P, S_D12, S_D11, S_I, S_U32, S_D, S_F, S_U64;
+static int G_P, G_D12, G_D11, G_I, G_U32, G_D, G_F, G_U64;
+static void slots_msvc(void) {  // reverse declaration order, the Windows core
+    S_P = 0; S_D12 = 1; S_D11 = 2; S_I = 3; S_U32 = 4; S_D = 5; S_F = 6; S_U64 = 7;
+    G_P = 8; G_D12 = 9; G_D11 = 10; G_I = 11; G_U32 = 12; G_D = 13; G_F = 14; G_U64 = 15;
+}
+static void slots_itanium(void) {  // declaration order, including the two D3D pointer slots
+    S_U64 = 0; S_F = 1; S_D = 2; S_U32 = 3; S_I = 4; S_D11 = 5; S_D12 = 6; S_P = 7;
+    G_U64 = 8; G_F = 9; G_D = 10; G_U32 = 11; G_I = 12; G_D11 = 13; G_D12 = 14; G_P = 15;
+}
+static void slots_itanium_nod3d(void) {  // the same order with those two overloads left out
+    S_U64 = 0; S_F = 1; S_D = 2; S_U32 = 3; S_I = 4; S_P = 5;
+    G_U64 = 6; G_F = 7; G_D = 8; G_U32 = 9; G_I = 10; G_P = 11;
+    S_D11 = S_D12 = G_D11 = G_D12 = 0;
+}
 static void p_seti(NgxParam *p, const char *n, int v) { ((SetI)p->vt->slot[S_I])(p, n, v); }
 static void p_setu(NgxParam *p, const char *n, unsigned v) { ((SetU)p->vt->slot[S_U32])(p, n, v); }
 static void p_setf(NgxParam *p, const char *n, float v) { ((SetF)p->vt->slot[S_F])(p, n, v); }
@@ -139,39 +179,20 @@ static bool ok(NgxResult r, const char *what) {
 }
 
 // ================================================================== loading NGX
-static wchar_t g_exe_dir[MAX_PATH];  // savagewind.exe's folder, where the DLSS libraries are (no trailing slash)
+static wchar_t g_snippet_dir[1024];  // where NVIDIA's feature libraries are (no trailing slash)
 static wchar_t g_data_dir[1024];     // NGX's logs and caches: the data folder
 
-// What NGX would load next to savagewind.exe (bit 0: nvngx_dlss.dll, Super Resolution; bit 1: nvngx_dlssg.dll,
-// Frame Generation). NGX is loaded only when one is there.
-static int dlls_here(void) {
-    static int have = -1;
-    if (have >= 0) return have;
-    have = 0;
-    DWORD len = GetModuleFileNameW(NULL, g_exe_dir, MAX_PATH);
-    if (!len || len >= MAX_PATH) return have;
-    while (len && g_exe_dir[len - 1] != L'\\' && g_exe_dir[len - 1] != L'/') len--;
-    g_exe_dir[len ? len - 1 : 0] = 0;
-    static const wchar_t *const names[2] = {L"nvngx_dlss.dll", L"nvngx_dlssg.dll"};
-    for (int i = 0; i < 2; i++) {
-        wchar_t p[MAX_PATH + 32];
-        _snwprintf(p, MAX_PATH + 32, L"%ls\\%ls", g_exe_dir, names[i]);
-        p[MAX_PATH + 31] = 0;
-        if (GetFileAttributesW(p) != INVALID_FILE_ATTRIBUTES) have |= 1 << i;
-    }
-    return have;
-}
-
-static bool try_load_core(const char *path) {
-    HMODULE h = LoadLibraryA(path);
-    if (!h) {
-        LOG("[dlss] cannot load %s (error %lu)\n", path, GetLastError());
-        return false;
-    }
-#define FN(f, name) N.f = (void *)GetProcAddress(h, name)
+static bool core_symbols(void *h) {
+#ifdef _WIN32
+#define FN(f, name) N.f = (void *)GetProcAddress((HMODULE)h, name)
+#else
+#define FN(f, name) N.f = dlsym(h, name)
+#endif
     FN(init, "NVSDK_NGX_VULKAN_Init_Ext2");
+    FN(init_info, "NVSDK_NGX_VULKAN_Init");
     FN(req_ext, "NVSDK_NGX_VULKAN_RequiredExtensions");
     FN(feat_dev_ext, "NVSDK_NGX_VULKAN_GetFeatureDeviceExtensionRequirements");
+    FN(feat_req, "NVSDK_NGX_VULKAN_GetFeatureRequirements");
     FN(caps, "NVSDK_NGX_VULKAN_GetCapabilityParameters");
     FN(alloc_params, "NVSDK_NGX_VULKAN_AllocateParameters");
     FN(destroy_params, "NVSDK_NGX_VULKAN_DestroyParameters");
@@ -180,8 +201,40 @@ static bool try_load_core(const char *path) {
     FN(release, "NVSDK_NGX_VULKAN_ReleaseFeature");
     FN(shutdown, "NVSDK_NGX_VULKAN_Shutdown1");
 #undef FN
-    if (!N.init || !N.req_ext || !N.caps || !N.alloc_params || !N.destroy_params || !N.create || !N.evaluate ||
-        !N.release) {
+    // Init_Ext2 is the entry both drivers actually export with the proc-address arguments. The plain Init on this
+    // Linux core takes the SDK version in that slot instead.
+    return N.init && N.req_ext && N.caps && N.alloc_params && N.destroy_params && N.create && N.evaluate && N.release;
+}
+
+#ifdef _WIN32
+// What NGX would load next to savagewind.exe (bit 0: nvngx_dlss.dll, Super Resolution; bit 1: nvngx_dlssg.dll,
+// Frame Generation). NGX is loaded only when one is there.
+static int dlls_here(void) {
+    static int have = -1;
+    if (have > 0) return have;  // (a miss is not remembered: Configuration can download the DLLs while running)
+    int now = 0;
+    DWORD len = GetModuleFileNameW(NULL, g_snippet_dir, 1024);
+    if (!len || len >= 1024) return 0;
+    while (len && g_snippet_dir[len - 1] != L'\\' && g_snippet_dir[len - 1] != L'/') len--;
+    g_snippet_dir[len ? len - 1 : 0] = 0;
+    static const wchar_t *const names[2] = {L"nvngx_dlss.dll", L"nvngx_dlssg.dll"};
+    for (int i = 0; i < 2; i++) {
+        wchar_t p[MAX_PATH + 32];
+        _snwprintf(p, MAX_PATH + 32, L"%ls\\%ls", g_snippet_dir, names[i]);
+        p[MAX_PATH + 31] = 0;
+        if (GetFileAttributesW(p) != INVALID_FILE_ATTRIBUTES) now |= 1 << i;
+    }
+    if (now) have = now;
+    return now;
+}
+
+static bool try_load_core(const char *path) {
+    HMODULE h = LoadLibraryA(path);
+    if (!h) {
+        LOG("[dlss] cannot load %s (error %lu)\n", path, GetLastError());
+        return false;
+    }
+    if (!core_symbols(h)) {
         LOG("[dlss] the NGX core %s lacks Vulkan entry points\n", path);
         FreeLibrary(h);
         memset(&N, 0, sizeof N);
@@ -217,12 +270,14 @@ static bool find_driverstore_core(const char *skip_path, char *out, size_t nout)
 }
 
 static bool core_load(void) {
-    if (N.tried) return N.loaded;
-    N.tried = 1;
+    if (N.loaded) return true;
     if (!dlls_here()) {
-        LOG("[dlss] NVIDIA's DLSS libraries are not next to savagewind.exe (the setup downloads them): DLSS off\n");
+        static int told;
+        if (!told++) LOG("[dlss] NVIDIA's DLSS libraries are not next to savagewind.exe (the setup downloads them): DLSS off\n");
         return false;
     }
+    if (N.tried) return false;
+    N.tried = 1;
     char dir[MAX_PATH] = {0}, path[MAX_PATH + 32] = {0};
     DWORD n = sizeof dir;
     bool have_reg = RegGetValueA(HKEY_LOCAL_MACHINE, "SOFTWARE\\NVIDIA Corporation\\Global\\NGXCore", "FullPath",
@@ -242,6 +297,113 @@ static bool core_load(void) {
     LOG("[dlss] NGX core %s\n", path);
     return true;
 }
+
+#else  // Linux x86-64
+
+// The feature library is loaded by the driver core and looks these up in the process. The core does not export
+// them; the SDK static library would have, and this build does not link that library. A missing one makes the
+// snippet unload. They return NGX's success value. GetDriverVersion is called as (0, 0, pointer).
+int NVSDK_NGX_GetDriverVersion(void *a, void *b, unsigned *version) {
+    (void)a;
+    (void)b;
+    if (version) *version = 620u << 16 | 70u;
+    return 1;
+}
+int NVSDK_NGX_VULKAN_Init_Ext1(void) { return 1; }
+int NVSDK_NGX_VULKAN_PopulateDeviceParameters_Impl(void) { return 1; }
+int NVSDK_NGX_SetRuntimeParamsCallback(void) { return 1; }
+int NVSDK_NGX_SetTelemetryCallback(void) { return 1; }
+int NVSDK_NGX_SetTelemetryEvaluateCallback(void) { return 1; }
+
+static bool utf8_to_wchar(const char *s, wchar_t *out, size_t cap) {
+    size_t n = 0;
+    const unsigned char *p = (const unsigned char *)s;
+    while (*p && n + 1 < cap) {
+        uint32_t cp;
+        if (*p < 0x80) cp = *p++;
+        else if ((*p & 0xE0) == 0xC0 && (p[1] & 0xC0) == 0x80) {
+            cp = (uint32_t)((*p & 0x1F) << 6 | (p[1] & 0x3F));
+            p += 2;
+        } else if ((*p & 0xF0) == 0xE0 && (p[1] & 0xC0) == 0x80 && (p[2] & 0xC0) == 0x80) {
+            cp = (uint32_t)((*p & 0x0F) << 12 | (p[1] & 0x3F) << 6 | (p[2] & 0x3F));
+            p += 3;
+        } else if ((*p & 0xF8) == 0xF0 && (p[1] & 0xC0) == 0x80 && (p[2] & 0xC0) == 0x80 && (p[3] & 0xC0) == 0x80) {
+            cp = (uint32_t)((*p & 0x07) << 18 | (p[1] & 0x3F) << 12 | (p[2] & 0x3F) << 6 | (p[3] & 0x3F));
+            p += 4;
+        } else return false;
+        out[n++] = (wchar_t)cp;
+    }
+    if (*p) return false;
+    out[n] = 0;
+    return true;
+}
+
+// Bit 0: libnvidia-ngx-dlss.so, Super Resolution. Bit 1: libnvidia-ngx-dlssg.so, frame generation, when it is in the
+// same folder (the setup downloads Super Resolution; frame generation stays off without its own library).
+static int dlls_here(void) {
+    static int have = -1;
+    if (have > 0) return have;  // (a miss is not remembered: Configuration can download the library while running)
+    int now = 0;
+    char dir[1024];
+    if (!dlss_fetch_dir(dir, sizeof dir) || !utf8_to_wchar(dir, g_snippet_dir, sizeof g_snippet_dir / sizeof *g_snippet_dir))
+        return 0;
+    static const char *const names[2] = {"libnvidia-ngx-dlss.so." DLSS_FETCH_VERSION,
+                                         "libnvidia-ngx-dlssg.so." DLSS_FETCH_VERSION};
+    for (int i = 0; i < 2; i++) {
+        char path[1200];
+        snprintf(path, sizeof path, "%s/%s", dir, names[i]);
+        if (access(path, R_OK) == 0) now |= 1 << i;
+    }
+    if (now && have <= 0) LOG("[dlss] feature libraries in %s\n", dir);
+    if (now) have = now;
+    return now;
+}
+
+static bool try_load_core(const char *path) {
+    // RTLD_GLOBAL: the feature library is loaded by the core afterwards and resolves NVSDK_NGX_* in it.
+    void *h = dlopen(path, RTLD_NOW | RTLD_GLOBAL);
+    if (!h) {
+        const char *err = dlerror();
+        LOG("[dlss] cannot load %s (%s)\n", path, err ? err : "dlopen failed");
+        return false;
+    }
+    if (!core_symbols(h)) {
+        LOG("[dlss] the NGX core %s lacks Vulkan entry points\n", path);
+        dlclose(h);
+        memset(&N, 0, sizeof N);
+        N.tried = 1;
+        return false;
+    }
+    N.core = h;
+    return true;
+}
+
+static bool core_load(void) {
+    if (N.loaded) return true;
+    if (!dlls_here()) {
+        static int told;
+        if (!told++)
+            LOG("[dlss] NVIDIA's DLSS library is not in the library folder (Savage Wind Configuration downloads it): DLSS off\n");
+        return false;
+    }
+    if (N.tried) return false;
+    N.tried = 1;
+    const char *path = dlss_fetch_core();
+    if (!path || !try_load_core(path)) {
+        LOG("[dlss] no usable NGX core (libnvidia-ngx.so.1): DLSS off\n");
+        return false;
+    }
+    const char *data = rt_data_root();
+    if (!data || !utf8_to_wchar(data, g_data_dir, sizeof g_data_dir / sizeof *g_data_dir)) {
+        LOG("[dlss] invalid application data path: DLSS off\n");
+        return false;
+    }
+    N.loaded = 1;
+    LOG("[dlss] NGX core %s\n", path);
+    return true;
+}
+
+#endif
 
 // ================================================================== extensions (before the instance and the device)
 static const char **g_instance_exts, **g_device_exts;
@@ -282,7 +444,7 @@ void vk_dlss_required_device_extensions(const char ***names, unsigned *count) {
         uint32_t nf = 0;
         VkExtensionProperties *ep = NULL;
         NgxCommonInfo common = {{NULL, 0}, NULL, {NULL, 0, false}};
-        const wchar_t *paths[1] = {g_exe_dir};
+        const wchar_t *paths[1] = {g_snippet_dir};
         common.paths.path = paths, common.paths.length = 1;
         NgxDiscoveryInfo di = {NGX_VERSION_API, NGX_FEATURE_FRAMEGENERATION, {0, {.app_id = NGX_APP_ID}}, g_data_dir,
                                &common};
@@ -322,9 +484,26 @@ static bool g_available;               // DLSS Super Resolution runs here (RTX)
 static bool g_fg_available;            // DLSS Frame Generation runs here (RTX 40 and later)
 static int g_fg_max_mult = 2;          // frames on screen for each drawn it makes here (MultiFrameCountMax + 1)
 
-static bool vtable_ok(void) {
+static bool slot_callable(void *fn) {
+#ifdef __linux__
+    Dl_info info;
+    return fn && dladdr(fn, &info);
+#else
+    (void)fn;
+    return true;
+#endif
+}
+
+static bool vtable_ok(bool log_fail) {
     NgxParam *p = NULL;
-    if (!NGX_OK(N.alloc_params(&p)) || !p) return false;
+    if (!NGX_OK(N.alloc_params(&p)) || !p || !p->vt) return false;
+    if (!slot_callable(p->vt->slot[S_I]) || !slot_callable(p->vt->slot[S_U32]) || !slot_callable(p->vt->slot[S_F]) ||
+        !slot_callable(p->vt->slot[S_P]) || !slot_callable(p->vt->slot[G_I]) || !slot_callable(p->vt->slot[G_U32]) ||
+        !slot_callable(p->vt->slot[G_F]) || !slot_callable(p->vt->slot[G_P])) {
+        N.destroy_params(p);
+        if (log_fail) LOG("[dlss] NGX parameter slots are not in the core: DLSS off\n");
+        return false;
+    }
     int i = 0;
     unsigned u = 0;
     float f = 0;
@@ -337,19 +516,83 @@ static bool vtable_ok(void) {
                 u == 4000000000u && p_getf(p, "SavageWind.Test.F", &f) && f == 1.25f &&
                 p_getp(p, "SavageWind.Test.P", &v) && v == (void *)p;
     N.destroy_params(p);
-    if (!good) LOG("[dlss] NGX parameter layout check failed (i=%d u=%u f=%g p=%p): DLSS off\n", i, u, f, v);
+    if (!good && log_fail) LOG("[dlss] NGX parameter layout check failed (i=%d u=%u f=%g p=%p): DLSS off\n", i, u, f, v);
     return good;
 }
 
+static bool ngx_start(void) {
+#ifdef _WIN32
+    slots_msvc();
+#else
+    // This driver's NVSDK_NGX_VULKAN_Init takes the SDK version where the proc-address argument is. Init_Ext2 matches
+    // Windows: proc addresses, then the version. On Linux its last pointer is the path list, not a parameter map.
+#endif
+#ifndef _WIN32
+    // The core looks for the feature library in the directory of argv[0], resolved from the current directory, and
+    // in any folder named here. rt_paths_init has already moved into the data folder, so a relative launch
+    // (./build/savagewind) would miss it; step back to the starting directory for the search. The absolute folder
+    // covers a Nix store or an AppImage, which cannot hold the file.
+    if (N.feat_req && g_vk.inst && g_vk.phys && g_snippet_dir[0]) {
+        NgxCommonInfo common;
+        memset(&common, 0, sizeof common);
+        const wchar_t *paths[1] = {g_snippet_dir};
+        common.paths.path = paths;
+        common.paths.length = 1;
+        NgxDiscoveryInfo di = {NGX_VERSION_API, NGX_FEATURE_SUPERSAMPLING, {0, {.app_id = NGX_APP_ID}}, g_data_dir,
+                               &common};
+        unsigned char req[512];
+        memset(req, 0, sizeof req);
+        N.feat_req(g_vk.inst, g_vk.phys, &di, req);
+    }
+    char cwd_back[1024];
+    bool cwd_moved = false;
+    const char *start = rt_start_dir();
+    if (start && start[0] && getcwd(cwd_back, sizeof cwd_back) && strcmp(cwd_back, start) && !chdir(start))
+        cwd_moved = true;
+#endif
+#ifndef _WIN32
+    NgxCommonInfo path_info;
+    memset(&path_info, 0, sizeof path_info);
+    const wchar_t *snippet_paths[1] = {g_snippet_dir};
+    path_info.paths.path = snippet_paths;
+    path_info.paths.length = g_snippet_dir[0] ? 1u : 0u;
+#endif
+    bool inited = ok(N.init(NGX_APP_ID, g_data_dir, g_vk.inst, g_vk.phys, g_vk.dev, vkGetInstanceProcAddr,
+                            vkGetDeviceProcAddr, NGX_VERSION_API,
+#ifndef _WIN32
+                            (NgxParam *)&path_info
+#else
+                            NULL
+#endif
+                            ),
+                     "init");
+#ifndef _WIN32
+    if (cwd_moved) chdir(cwd_back);
+#endif
+    if (!inited) return false;
+#ifdef _WIN32
+    return vtable_ok(true);
+#else
+    slots_itanium();
+    if (vtable_ok(false)) {
+        LOG("[dlss] parameter layout: Itanium\n");
+        return true;
+    }
+    slots_itanium_nod3d();
+    if (!vtable_ok(true)) return false;
+    LOG("[dlss] parameter layout: Itanium, no D3D slots\n");
+    return true;
+#endif
+}
+
 bool vk_dlss_init(void) {
-    if (g_initialized) return g_ngx_up;
+    if (g_ngx_up) return true;
+    if (!g_vk.phys || !g_vk.dev) return false;  // (the menu can ask before the device exists)
+    if (!dlls_here()) return false;             // (not latched: the file may arrive after the first frame)
+    if (g_initialized) return false;
     g_initialized = true;
-    if (!g_vk.phys || !g_vk.dev || !core_load()) return false;
-    if (!ok(N.init(NGX_APP_ID, g_data_dir, g_vk.inst, g_vk.phys, g_vk.dev, vkGetInstanceProcAddr, vkGetDeviceProcAddr,
-                   NGX_VERSION_API, NULL),
-            "init"))
-        return false;
-    if (!vtable_ok()) return false;
+    if (!core_load()) return false;
+    if (!ngx_start()) return false;
     g_ngx_up = true;
     if (!ok(N.caps(&g_capability_params), "capabilities") || !g_capability_params) return true;
     int sr = 0, fg = 0, sr_driver = 0, fg_driver = 0;
@@ -413,7 +656,10 @@ static void release_feature(void) {
     g_mv_scale_set = false;
 }
 
-bool vk_dlss_available(void) { return g_available; }
+bool vk_dlss_available(void) {
+    if (!g_available) vk_dlss_init();  // (the library may have been downloaded since the device was made)
+    return g_available;
+}
 
 // The model NGX runs (its render presets). Left to NGX, DLSS 310 picks its transformer models, and for Performance a
 // heavier one still: at 4K on an RTX 3060, 5.1 ms a frame in Quality and 11 ms in Performance, against 8.1 ms for the

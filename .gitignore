@@ -13,6 +13,9 @@ generated-*/
 /splash.png
 # build output, caches, saves and settings
 build/
+# a Nix build's symlink (flake.nix); the lock file is tracked
+/result
+/result-*
 /profile/
 /cache/
 save/

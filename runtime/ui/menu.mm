@@ -620,6 +620,7 @@ static void load_fonts(void) {
 // Before a frame: another menu language may need other glyphs - the fonts and their texture are made again
 extern "C" void vk_imgui_fonts_changed(void);  // (runtime/nvn/vulkan/imgui_glue.cpp)
 extern "C" const char *vk_hdr_icc_description(void);  // (runtime/nvn/vulkan/device.c)
+extern "C" const char *vk_hdr_output_name(void);
 static void fonts_follow_language(void) {
     bool hint_fonts = g_settings.quick_sort || g_settings.quick_drop || g_settings.quick_replace || g_settings.collectibles_map;
     bool need_hint_fonts = hint_fonts && g_romfs_dir && !g_hint_font_attempted;
@@ -1152,7 +1153,7 @@ static void tab_display(void) {
             uds += std::string("\n\n") + tr("AMD FSR 4: like FSR 3, but AMD's machine learning rebuilds the image. For AMD Radeon "
                                               "graphics cards on Windows. Sharpening sets its own sharpening.");
         uds += std::string("\n\n") + tr("NVIDIA DLSS: like FSR 3, but NVIDIA's machine learning rebuilds the image. For NVIDIA "
-                                          "RTX graphics cards on Windows, with NVIDIA's DLSS library, which Savage Wind "
+                                          "RTX graphics cards on Windows and Linux, with NVIDIA's DLSS library, which Savage Wind "
                                           "Configuration downloads.") +
                " " + tr("Its DLAA mode keeps the full resolution and only smooths edges.");  // (own key: the one above keeps its translations)
         if (upscaler_available(UPSCALE_XESS))  // (its own paragraph: the ones above keep their translations)
@@ -1173,9 +1174,11 @@ static void tab_display(void) {
         for (int i = 0; i < NU; i++) if (ups_value[i] == UPSCALE_DEFAULT) udef = i;
         if (opt_choice_avail("Upscaler", &ui, &shown, ups, avail, NU, udef, ud))
             g_settings.upscaler = ups_value[ui], render_scale_fit();  // (FSR 3 / 4, XeSS, DLSS: up to 100%)
-        // its mode (AMD's scale factors, or Dynamic: the dynamic resolution), one step in; greyed when the upscaler
-        // is off
-        bool modes_ok = upscale_modes_available();
+        // The highlight can sit on a greyed technology that was not stored. The mode row follows that highlight:
+        // Off and grey while we don't have it; its presets once an enabled one is chosen.
+        int preview = shown >= 0 && shown < NU ? ups_value[shown] : g_settings.upscaler;
+        bool tech_on = upscale_modes_available() && preview != UPSCALE_OFF && upscaler_available(preview);
+        bool modes_ok = tech_on;
         const int nm = UPQ_COUNT;
         std::string mode_names[UPQ_COUNT];
         const char *mn[UPQ_COUNT];
@@ -1185,15 +1188,24 @@ static void tab_display(void) {
             int q = k_upscale_mode_order[i];
             mode_names[i] = modes_ok ? tr(upscale_mode_name(q))
                                      : std::string(tr(upscale_mode_name(q))) + " " + tr("(coming soon)");
+            int rw, rh, bw, bh;  // (the size this mode renders, next to its name, against the window)
+            if (modes_ok && upscale_mode_pixels(q, &rw, &rh, &bw, &bh)) {
+                char extra[64];
+                if (rw == bw && rh == bh) snprintf(extra, sizeof extra, "  (%d x %d)", rw, rh);
+                else snprintf(extra, sizeof extra, "  (%d x %d / %d x %d)", rw, rh, bw, bh);
+                mode_names[i] += extra;
+            }
             mn[i] = mode_names[i].c_str();
             mavail[i] = modes_ok && upscale_mode_offered(q);
             if (q == g_settings.upscale_quality) mi = i;
             if (q == UPQ_QUALITY) mdef = i;
         }
-        float sx, sy;  // the 3D scene's size (BOTW docked: 1600 x 900 times its scale)
-        renderer_get_scene_scale(&sx, &sy);
-        char rendering[100];
-        snprintf(rendering, sizeof rendering, tr("Rendering at %.0f x %.0f."), 1600.0 * sx, 900.0 * sy);
+        int rw, rh, bw, bh;  // the mode now chosen, against Video > Window size (not the scene's last frame)
+        char rendering[160];
+        if (modes_ok && upscale_mode_pixels(g_settings.upscale_quality, &rw, &rh, &bw, &bh))
+            snprintf(rendering, sizeof rendering, tr("Renders at %d x %d of the %d x %d window."), rw, rh, bw, bh);
+        else
+            snprintf(rendering, sizeof rendering, "%s", "");
         // (the first mode by the name the row gives it: DLAA with DLSS)
         std::string md = std::string(upscale_mode_is_dlaa(UPQ_NATIVE)
                                          ? tr("How much smaller the game renders before the upscaler brings it to the "
@@ -1205,11 +1217,19 @@ static void tab_display(void) {
                                               "Smaller is faster and softer.")) +
                          "\n\n" + tr("Dynamic: renders the 3D scene smaller when frames are slow, sharper when they "
                                      "aren't; stays full size where that gains nothing.") +
-                         "\n\n" + (modes_ok ? rendering : tr("Coming in a later version."));
+                         (!modes_ok ? std::string("\n\n") + tr("Coming in a later version.")
+                                    : rendering[0] ? std::string("\n\n") + rendering : std::string());
         opt_indent(1);
-        if (g_settings.upscaler == UPSCALE_OFF) opt_disable_next();
-        static int mshown = -1;
-        if (opt_choice_avail("Upscaler mode", &mi, &mshown, mn, mavail, nm, mdef, md.c_str()))
+        static int mshown = -1, mode_for = -2;
+        if (mode_for != preview) mode_for = preview, mshown = -1;  // (the list changes: DLAA appears with DLSS)
+        if (!tech_on) {
+            const char *off_names[] = {"Off"};
+            bool off_avail = false;
+            int z = 0;
+            opt_disable_next();
+            opt_choice_avail("Upscaler mode", &z, &mshown, off_names, &off_avail, 1, 0,
+                             "Only with an upscaler: choose one above first.");
+        } else if (opt_choice_avail("Upscaler mode", &mi, &mshown, mn, mavail, nm, mdef, md.c_str()))
             g_settings.upscale_quality = k_upscale_mode_order[mi], render_scale_fit();  // (Native, DLAA: 100%)
         opt_indent(-1);
     }
@@ -1393,12 +1413,24 @@ static void tab_display(void) {
     if (hdr_open) {
         opt_indent(1);
         {   // HDR (settings.h HDR_*: runtime/nvn/vulkan/device.c hdr_wanted)
-            static const char *const names[HDR_COUNT] = {"Automatic", "On", "Off"};
-            opt_choice("HDR", &g_settings.hdr, names, HDR_COUNT, HDR_AUTO,
-                       "Automatic: HDR while your display is in HDR; the scene keeps detail brighter than white. On: "
-                       "always HDR. Off: always standard (SDR). HDR setting changes apply immediately; switching HDR "
-                       "itself takes effect after a restart.",
-                       false);
+            static const char *const base[HDR_COUNT] = {"Automatic", "On", "Off"};
+            static char labels[HDR_COUNT][48];
+            const char *names[HDR_COUNT];
+            char output[64];
+            snprintf(output, sizeof output, tr("Output: %s."), vk_hdr_output_name());
+            for (int i = 0; i < HDR_COUNT; i++) {
+                if (i == g_settings.hdr)
+                    snprintf(labels[i], sizeof labels[i], "%s  (%s)", tr(base[i]), vk_hdr_output_name());
+                else
+                    snprintf(labels[i], sizeof labels[i], "%s", tr(base[i]));
+                names[i] = labels[i];
+            }
+            std::string hdr_desc = std::string(tr("Automatic: HDR while your display is in HDR; the scene keeps detail "
+                                                  "brighter than white. On: always HDR. Off: always standard (SDR). HDR "
+                                                  "setting changes apply immediately; switching HDR itself takes effect "
+                                                  "after a restart.")) +
+                                   " " + output;
+            opt_choice("HDR", &g_settings.hdr, names, HDR_COUNT, HDR_AUTO, hdr_desc.c_str(), false);
             const bool hdr_off = g_settings.hdr == HDR_OFF;
             auto hdr_sub = [hdr_off]() { if (hdr_off) opt_disable_next(); };
             opt_indent(1);

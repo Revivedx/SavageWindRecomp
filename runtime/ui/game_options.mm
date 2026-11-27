@@ -61,6 +61,7 @@ void menu_open_page(int id);                // menu.mm (the F1 menu on a page: t
 bool menu_size_list_up(void);
 bool renderer_gpu_rtx(void);                // vulkan/device.c, metal.m
 const char *vk_hdr_icc_description(void);   // runtime/nvn/vulkan/device.c
+const char *vk_hdr_output_name(void);       // "HDR10" or "SDR"
 bool vk_feedback_once(void);                // runtime/nvn/vulkan/exec.c (Scene copies; Vulkan only)
 }
 
@@ -178,6 +179,22 @@ const int k_modes_order[] = {UPQ_NATIVE, UPQ_ULTRA, UPQ_QUALITY, UPQ_BALANCED, U
                              UPQ_DYNAMIC};
 int upscale_mode_base(void) {
     return rt_temporal_upscaler() ? 0 : 1;
+}
+// The upscaler row may be showing a greyed technology that was not stored. The mode row follows that highlight:
+// a technology we don't have keeps the scale row at Off, greyed; one we do have shows its presets.
+int upscaler_row_value(void) {
+    for (size_t i = 0; i < g_items.size(); i++) {
+        if (!g_items[i].title || strcmp(g_items[i].title, "Upscaler")) continue;
+        int x = g_items[i].get(g_items[i]);
+        if (i < g_shown.size() && g_shown[i] >= 0) x = g_shown[i];
+        if (x < 0 || x >= (int)(sizeof k_ups_value / sizeof k_ups_value[0])) return UPSCALE_OFF;
+        return k_ups_value[x];
+    }
+    return g_settings.upscaler;
+}
+bool upscaler_modes_on(void) {
+    int u = upscaler_row_value();
+    return u != UPSCALE_OFF && upscaler_available(u) && upscale_modes_available();
 }
 // a mode's name: Native is DLAA with DLSS (NVIDIA's name for its 1x)
 const char *upscale_mode_name(int q) {
@@ -589,9 +606,23 @@ void build_items(void) {
                        "always HDR. Off: always standard (SDR). HDR setting changes apply immediately; switching HDR "
                        "itself takes effect after a restart.",
                        [](const Item &) { return (int)HDR_COUNT; },
-                       [](const Item &, int x) { return tr(k_hdr[x]); },
+                       [](const Item &, int x) {
+                           static char buf[HDR_COUNT][48];
+                           if (x == g_settings.hdr) {
+                               snprintf(buf[x], sizeof buf[x], "%s  (%s)", tr(k_hdr[x]), vk_hdr_output_name());
+                               return (const char *)buf[x];
+                           }
+                           return tr(k_hdr[x]);
+                       },
                        [](const Item &) { return g_settings.hdr; },
                        [](const Item &, int x) { g_settings.hdr = x; }, HDR_AUTO));
+    v.back().desc_fn = [](const Item &it) {
+        static char buf[640];
+        char output[64];
+        snprintf(output, sizeof output, tr("Output: %s."), vk_hdr_output_name());
+        snprintf(buf, sizeof buf, "%s %s", tr(it.desc), output);
+        return (const char *)buf;
+    };
     size_t hdr_first = v.size();  // (the HDR settings below: greyed while HDR is Off, like Upscaler mode)
     std::vector<size_t> psy_rows;  // (the rows only the RenoDX PsychoV tone mapper uses)
     v.push_back(choice(P_HDR, "HDR tone mapper",
@@ -916,15 +947,25 @@ void build_items(void) {
     // before stays stored and comes back with an upscaler.
     Item mode = choice(P_VIDEO_ADV, "Upscaler mode", "",
                        [](const Item &) {
-                           return g_settings.upscaler == UPSCALE_OFF ? 1 : upscale_mode_count() - upscale_mode_base();
+                           return upscaler_modes_on() ? upscale_mode_count() - upscale_mode_base() : 1;
                        },
                        [](const Item &, int x) {
-                           if (g_settings.upscaler == UPSCALE_OFF) return tr("Off");
+                           static char buf[8][96];
+                           if (!upscaler_modes_on()) return tr("Off");
                            const char *name = upscale_mode_name(k_modes_order[x + upscale_mode_base()]);
-                           return upscale_modes_available() ? tr(name) : soon(name);
+                           if (!upscale_modes_available()) return soon(name);
+                           int rw, rh, bw, bh;
+                           if (x < 0 || x >= 8 || !upscale_mode_pixels(k_modes_order[x + upscale_mode_base()],
+                                                                      &rw, &rh, &bw, &bh))
+                               return tr(name);
+                           if (rw == bw && rh == bh)
+                               snprintf(buf[x], sizeof buf[x], "%s  (%d x %d)", tr(name), rw, rh);
+                           else
+                               snprintf(buf[x], sizeof buf[x], "%s  (%d x %d / %d x %d)", tr(name), rw, rh, bw, bh);
+                           return (const char *)buf[x];
                        },
                        [](const Item &) {
-                           if (g_settings.upscaler == UPSCALE_OFF) return 0;
+                           if (!upscaler_modes_on()) return 0;
                            int base = upscale_mode_base(), end = upscale_mode_count();
                            int q = (g_settings.upscale_quality == UPQ_NATIVE && base)
                                        ? (int)UPQ_QUALITY
@@ -934,20 +975,24 @@ void build_items(void) {
                            return 0;
                        },
                        [](const Item &, int x) {
-                           if (g_settings.upscaler != UPSCALE_OFF)
+                           if (upscaler_modes_on())
                                g_settings.upscale_quality = k_modes_order[x + upscale_mode_base()], render_scale_fit();
                        },
                        2);
     mode.value_off = [](const Item &, int x) {
-        return !upscale_modes_available() || g_settings.upscaler == UPSCALE_OFF ||
-               !upscale_mode_offered(k_modes_order[x + upscale_mode_base()]);
+        if (!upscaler_modes_on()) return true;
+        return !upscale_mode_offered(k_modes_order[x + upscale_mode_base()]);
     };
     mode.reset = [](const Item &) { g_settings.upscale_quality = UPQ_QUALITY; };  // (also while Off)
     mode.desc_fn = [](const Item &) {
         // (one line: the game's description pane is one English line wide)
-        return !upscale_modes_available()           ? tr("Renders smaller, then upscales. Coming in a later version.")
-               : g_settings.upscaler == UPSCALE_OFF ? tr("Only with an upscaler: choose one above first.")
-                                                    : tr("Ultra Quality is the sharpest, Ultra Performance the fastest.");
+        static char line[160];
+        int rw, rh, bw, bh;
+        if (!upscaler_modes_on()) return tr("Only with an upscaler: choose one above first.");
+        if (!upscale_mode_pixels(g_settings.upscale_quality, &rw, &rh, &bw, &bh))
+            return tr("Ultra Quality is the sharpest, Ultra Performance the fastest.");
+        snprintf(line, sizeof line, tr("Renders at %d x %d of the %d x %d window."), rw, rh, bw, bh);
+        return (const char *)line;
     };
     v.push_back(mode);
     // supersampling (nvn/output_scale.c): applies at once
@@ -2496,7 +2541,10 @@ extern "C" int rt_opt_store(uint64_t row) {
     if (it->page == P_VIDEO || it->page == P_VIDEO_ADV || it->page == P_HDR || it->page == P_COLOUR) {
         for (size_t i = 0; i < g_items.size() && i < g_shown.size(); i++) {
             const Item &o = g_items[i];
-            if (g_shown[i] >= 0 && (!o.value_off || !o.value_off(o, g_shown[i]))) g_shown[i] = -1;
+            // The mode row's values depend on the upscaler (Off is one grey value; DLSS adds DLAA). A highlight
+            // kept from the previous list would stay grey and the arrows would not move onto a real preset.
+            if (!strcmp(it->title, "Upscaler") && !strcmp(o.title, "Upscaler mode")) g_shown[i] = -1;
+            else if (g_shown[i] >= 0 && (!o.value_off || !o.value_off(o, g_shown[i]))) g_shown[i] = -1;
             if (o.kind == KIND_CHOICE) {
                 Entry &e = g_entries[GAME_ENTRIES + i];
                 e.last_value = e.first_value + game_count(o) - 1;

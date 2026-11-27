@@ -205,6 +205,7 @@ VkFormat vk_view_format(TexBackend *b, VkFormat want);  // want, or the image's 
 bool vk_hdr_targets_wanted(void);   // HDR not Off: the game's linear 10-bit final image is made RGBA16F
 bool vk_hdr_game_enabled(void);     // the game's HDR picture: the swapchain is HDR10 and frame generation is off
 bool vk_hdr_output(void);           // the swapchain is HDR10
+const char *vk_hdr_output_name(void);  // "HDR10" or "SDR": the picture now on the swapchain
 void vk_hdr_nits(float *peak, float *game, float *ui);
 // The live HDR tonemap parameters (hdr.c): 5 vec4s, the push constant block of the HDR tonemap program.
 // game/UI, peak/game, SDR pivot, hue | blowout, vanilla saturation, bloom, clamp | tone mapper, exposure,

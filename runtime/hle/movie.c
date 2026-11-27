@@ -441,6 +441,8 @@ typedef struct {
     int width, height, stride, sample_rate, channels;
     struct SwsContext *sws;
     uint8_t *rgba;
+    size_t rgba_cap;  // bytes rgba can hold; a later frame can be larger than the first
+    int rgba_w, rgba_h;
     AVFrame *pending[NPENDING];
     int64_t pending_time[NPENDING];
     int npending;
@@ -832,9 +834,21 @@ static void dec_get_output_buffer(Cpu *c) {
         // texture output mode: the buffer points at the game's NVNtexture; write RGBA into it
         NvnTexture *t = *(NvnTexture **)(uintptr_t)b->base;
         int w = d->width, h = d->height;
-        if (!d->sws)
+        if (w <= 0 || h <= 0) { c->x[0] = 1; return; }
+        size_t need = (size_t)w * (size_t)h * 4;
+        if (d->rgba_cap < need) {
+            uint8_t *p = realloc(d->rgba, need);
+            if (!p) { c->x[0] = 1; return; }
+            d->rgba = p;
+            d->rgba_cap = need;
+        }
+        if (!d->sws || d->rgba_w != w || d->rgba_h != h) {
+            if (d->sws) sws_freeContext(d->sws);
             d->sws = sws_getContext(w, h, AV_PIX_FMT_NV12, w, h, AV_PIX_FMT_RGBA, SWS_BILINEAR, NULL, NULL, NULL);
-        if (!d->rgba) d->rgba = malloc((size_t)w * h * 4);
+            d->rgba_w = w;
+            d->rgba_h = h;
+        }
+        if (!d->sws) { c->x[0] = 1; return; }
         const uint8_t *src[2] = {d->out_mem[i], d->out_mem[i] + d->stride * ((h + 15) & ~15)};
         int src_stride[2] = {d->stride, d->stride};
         uint8_t *dst[1] = {d->rgba};

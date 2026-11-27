@@ -584,10 +584,16 @@ static std::atomic<bool> g_stay_on_setup{false}, g_dlc_checking{false};
 // NVIDIA's libraries for Video > Upscaler and Video > Frame generation's NVIDIA DLSS, downloaded from NVIDIA's own
 // repository after a setup when its option is on (the setup page's DOWNLOAD NVIDIA DLSS, settings.dlss_download), or
 // on their own from the game files page. Not needed to play: a failed download leaves DLSS greyed out, nothing else.
+#if defined(__linux__) && defined(__x86_64__)
+static const char k_dlss_text[] = "For NVIDIA DLSS in Video > Upscaler, on NVIDIA RTX graphics cards: downloads "
+                                   "NVIDIA's DLSS library (59 MB) from NVIDIA's own repository on GitHub. It is "
+                                   "NVIDIA's, under NVIDIA's licence, and not part of Savage Wind.";
+#else
 static const char k_dlss_text[] = "For NVIDIA DLSS in Video > Upscaler and Video > Frame generation, on NVIDIA RTX "
                                    "graphics cards: downloads NVIDIA's DLSS libraries (66 MB) from NVIDIA's own "
                                    "repository on GitHub. They are NVIDIA's, under NVIDIA's licence, and not part of "
                                    "Savage Wind.";
+#endif
 static std::atomic<bool> g_dlss_fetching{false};
 static std::atomic<float> g_dlss_frac{0};
 static void dlss_progress(uint64_t done, uint64_t total) { g_dlss_frac = total ? (float)((double)done / (double)total) : 0; }
@@ -2985,8 +2991,8 @@ extern "C" void launcher_run(const char *root, int mode) {
                     if (!g_confirm_delete && dlss_fetch_offered()) {  // NVIDIA's DLSS libraries, now (or again)
                         bool have = dlss_fetch_present();
                         opt_section("NVIDIA DLSS");
-                        if (have) opt_disable_next();
-                        if (opt_action("NVIDIA DLSS", tr(have ? "Downloaded" : "Not downloaded"), k_dlss_text, true)) {
+                        // Don't grey this once the library is there: a grey row reads as "DLSS is unavailable".
+                        if (opt_action("NVIDIA DLSS", tr(have ? "Downloaded" : "Not downloaded"), k_dlss_text, true) && !have) {
                             pthread_mutex_lock(&g_lock);
                             g_busy = true;
                             pthread_mutex_unlock(&g_lock);

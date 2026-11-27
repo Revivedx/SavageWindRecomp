@@ -61,6 +61,13 @@ uint64_t renderer_present_count(void);
 static bool g_m5;     // maintenance5 enabled (the pipeline cache's header: pc_header)
 static bool g_cs_ext;  // VK_EXT_swapchain_colorspace: HDR10 swapchains can be made (the HDR section below)
 static bool g_portability;  // VK_KHR_portability_enumeration: the instance lists portability drivers (MoltenVK)
+static char g_video_driver[32];  // SDL's video driver for this window: "wayland", "x11", ...
+static char g_driver_name[128];  // Vulkan driver, for the HDR10 log
+static char g_driver_info[256];
+static float g_hdr_headroom;  // SDL_PROP_WINDOW_HDR_HEADROOM_FLOAT, 0 until the compositor says
+static bool g_hdr_display;    // the display's own HDR flag, before Video > HDR overrides it
+static float sc_hdr_headroom = -1.f;  // the headroom the current swapchain was made with
+static int sc_hdr_display = -1;
 
 // ================================================================== instance / device
 static VKAPI_ATTR VkBool32 VKAPI_CALL debug_cb(VkDebugUtilsMessageSeverityFlagBitsEXT sev, VkDebugUtilsMessageTypeFlagsEXT type,
@@ -782,6 +789,8 @@ static void create_device(void) {
     {   // (for bug reports: the driver's version, and whether ASTC textures reach the GPU as they are or decoded)
         VkFormatProperties ap;
         vkGetPhysicalDeviceFormatProperties(g_vk.phys, VK_FORMAT_ASTC_4x4_UNORM_BLOCK, &ap);
+        snprintf(g_driver_name, sizeof g_driver_name, "%s", drv.driverName);
+        snprintf(g_driver_info, sizeof g_driver_info, "%s", drv.driverInfo);
         LOG("[vk] driver: %s %s (id %d), ASTC %s\n", drv.driverName, drv.driverInfo, (int)drv.driverID,
             ap.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT ? "sampled by the GPU" : "decoded on the CPU");
     }
@@ -1693,7 +1702,8 @@ static VkPresentModeKHR present_mode(char *have, size_t cap) {
 }
 
 // ================================================================== HDR (Video > HDR)
-// While Windows HDR is on, the desktop is composed in HDR and an SDR swapchain is shown as SDR content: dim, with dull
+// While the display is in HDR (Windows HDR, or the Wayland compositor's HDR), the desktop is composed in HDR and an
+// SDR swapchain is shown as SDR content: dim, with dull
 // colours, on many displays (issue #95). So while it is on for the window's display (SDL's HDR state of the window) or
 // Video > HDR is On, the swapchain is HDR10 (BT.2020 primaries, PQ): everything is still drawn into 8-bit images as
 // before (g_vk.sc_images are those then), and vk_frame_end writes the frame into the swapchain image in one pass:
@@ -1743,15 +1753,33 @@ const char *vk_hdr_icc_description(void) {
     else
         snprintf(desc, sizeof desc, "No Windows HDR calibration profile found; peak defaults to 1000 nits.");
     return desc;
+#elif defined(__linux__)
+    static char desc[512];
+    if (g_hdr_display && g_hdr_headroom > 1.0f) {
+        int peak = (int)lroundf(g_hdr_headroom * 203.0f);
+        snprintf(desc, sizeof desc,
+                 "Display HDR headroom %.2f: %d nits (headroom times 203, the HDR10 reference white). A saved peak is kept.",
+                 g_hdr_headroom, peak);
+    } else if (g_video_driver[0] && strcmp(g_video_driver, "wayland") != 0) {
+        snprintf(desc, sizeof desc, "HDR10 needs a Wayland session (%s has none). 1000 nits is used until the peak is set.",
+                 g_video_driver);
+    } else {
+        snprintf(desc, sizeof desc,
+                 "No display HDR headroom yet. 1000 nits is used until the compositor reports it, or set the peak manually.");
+    }
+    return desc;
 #else
-    return "No Windows HDR calibration profile on this platform; set the peak manually.";
+    return "No display HDR information on this platform; set the peak manually.";
 #endif
 }
 
 // Video > HDR as it stands now: whether the swapchain should be HDR10, and SDR white's nits
 static bool hdr_wanted(float *white) {
     SDL_PropertiesID p = SDL_GetWindowProperties(window);
-    bool on = SDL_GetBooleanProperty(p, SDL_PROP_WINDOW_HDR_ENABLED_BOOLEAN, false);
+    bool display_hdr = SDL_GetBooleanProperty(p, SDL_PROP_WINDOW_HDR_ENABLED_BOOLEAN, false);
+    g_hdr_display = display_hdr;
+    g_hdr_headroom = SDL_GetFloatProperty(p, SDL_PROP_WINDOW_HDR_HEADROOM_FLOAT, 0);
+    bool on = display_hdr;
     float w = SDL_GetFloatProperty(p, SDL_PROP_WINDOW_SDR_WHITE_LEVEL_FLOAT, 0) * 80;  // (scRGB: 1.0 is 80 nits)
 #ifdef __APPLE__
     // macOS: SDL calls a window HDR whenever its display has EDR headroom, which SDR panels have too below full
@@ -1767,6 +1795,37 @@ static bool hdr_wanted(float *white) {
     // reference): that is "unknown", not an SDR white of 80 nits, which came out dim and washed out (KWin, #369). On
     // Windows 1.0 is the real lowest setting of the SDR content brightness slider.
     if (w <= 80) w = 0;
+    {
+        static int logged;
+        if (!logged++) {
+            SDL_DisplayID display = SDL_GetDisplayForWindow(window);
+            bool display_level = false;
+            if (display) {
+                SDL_PropertiesID dp = SDL_GetDisplayProperties(display);
+                display_level = SDL_GetBooleanProperty(dp, SDL_PROP_DISPLAY_HDR_ENABLED_BOOLEAN, false);
+            }
+            LOG("[hdr] session %s, window HDR %s, display HDR %s, headroom %.2f, colorspace extension %s\n",
+                g_video_driver[0] ? g_video_driver : "unknown", display_hdr ? "on" : "off", display_level ? "on" : "off",
+                g_hdr_headroom, g_cs_ext ? "yes" : "no");
+        }
+    }
+    // HDR10 is the Wayland color description. X11 has no HDR10 swapchain.
+    if (g_video_driver[0] && strcmp(g_video_driver, "wayland") != 0) {
+        if (on) {
+            static int logged;
+            if (!logged++) LOG("[hdr] %s session: HDR10 is not available (Wayland only), SDR\n", g_video_driver);
+        }
+        on = false;
+    } else if (g_settings.hdr_peak_nits <= 0 && display_hdr && g_hdr_headroom > 1.0f) {
+        // A saved peak is left alone. 0 is "not set yet", including a headroom that arrives after the first frame.
+        int peak = (int)lroundf(g_hdr_headroom * 203.0f);
+        if (peak < 80) peak = 80;
+        if (peak > 10000) peak = 10000;
+        g_settings.hdr_peak_nits = peak;
+        settings_save();
+        hdr_look_init_peak();
+        LOG("[hdr] peak brightness set to %d nits (display headroom %.2f x 203)\n", peak, g_hdr_headroom);
+    }
 #endif
 #ifdef _WIN32
     // Read the display's ICC peak once at startup. It is the first-run value of the peak setting (or 1000 nits if
@@ -1805,6 +1864,7 @@ static int fg_mode(void);
 // tonemap stays SDR's and the 8-bit image is presented in HDR10, its frames and the generated ones alike)
 bool vk_hdr_game_enabled(void) { return g_hdr && !fg_mode(); }
 bool vk_hdr_output(void) { return g_hdr; }  // (the swapchain is HDR10, frame generation or not)
+const char *vk_hdr_output_name(void) { return g_hdr ? "HDR10" : "SDR"; }
 bool vk_hdr_targets_wanted(void) {  // (hdr.c: the final linear 10-bit image as RGBA16F)
     static int off = -1;
     if (off < 0) off = getenv("SAVAGEWIND_HDR_RT8") ? atoi(getenv("SAVAGEWIND_HDR_RT8")) != 0 : 0;  // (testing: the old 10-bit targets)
@@ -1977,7 +2037,16 @@ static void create_swapchain(void) {
             fmts[i].colorSpace == VK_COLOR_SPACE_HDR10_ST2084_EXT && hdr_pipeline(fmts[i].format))
             sf = fmts[i], hdr_found = true;
     hdr_failed = hdr && !hdr_found;
-    if (hdr && !hdr_found) LOG("[vk] HDR wanted, but this display offers no HDR10 swapchain format: SDR\n");
+    if (hdr && !hdr_found) {
+#ifdef __linux__
+        if (!strcmp(g_video_driver, "wayland"))
+            LOG("[hdr] Wayland session, HDR wanted, but %s %s offers no HDR10 ST2084 format. Mesa 25.1+ and NVIDIA "
+                "595.58.03+ advertise it; an older NVIDIA driver needs ENABLE_HDR_WSI=1 and the WSI layer. SDR\n",
+                g_driver_name[0] ? g_driver_name : "the Vulkan driver", g_driver_info);
+        else
+#endif
+            LOG("[vk] HDR wanted, but this display offers no HDR10 swapchain format: SDR\n");
+    }
     if (hdr_found) draw.format = VK_FORMAT_B8G8R8A8_UNORM;
     // (+1, and one for each of frame generation's queued frames: present_wait_room; DLSS makes up to 3)
     uint32_t count = caps.minImageCount + 1 + (uint32_t)(vk_dlssg_max_mult() - 1);
@@ -2028,8 +2097,18 @@ static void create_swapchain(void) {
                                   .pImageInfo = &ii};
         rec_UpdateDescriptorSets(1, &w);
     }
-    if (g_hdr) LOG("[vk] HDR10 output (%s), SDR white at %.0f nits\n",
-                   g_settings.hdr == HDR_ON ? "Video > HDR is On" : "Windows HDR is on for this display", g_hdr_white);
+    sc_hdr_headroom = g_hdr_headroom;
+    sc_hdr_display = g_hdr_display ? 1 : 0;
+    if (g_hdr) {
+        const char *why = "display HDR is on";
+        if (g_settings.hdr == HDR_ON) why = "Video > HDR is On";
+#ifdef _WIN32
+        else why = "Windows HDR is on for this display";
+#elif defined(__linux__)
+        else if (!strcmp(g_video_driver, "wayland")) why = "Wayland compositor HDR is on for this display";
+#endif
+        LOG("[vk] HDR10 output (%s), SDR white at %.0f nits\n", why, g_hdr_white);
+    }
 }
 
 // While the swapchain is HDR10: the frame drawn into image i (8-bit, sRGB-encoded) written into the swapchain's image
@@ -2754,11 +2833,15 @@ static bool frame_begin(const float clear[4], bool hdr_game) {
     uint64_t tp = SDL_GetTicksNS();
     { SW_ZONE("present/wait_room"); present_wait_room(); }
     g_present_split[4] += SDL_GetTicksNS() - tp;
-    float white;  // (Windows HDR turned on or off, the window moved to another display, Video > HDR changed)
+    float white;  // (HDR turned on or off, the window moved to another display, Video > HDR changed)
     bool hdr = hdr_wanted(&white);
     if (g_hdr) g_hdr_white = white;
+    // hdr_failed is not final: a Wayland color description can arrive a moment later, and Plasma can turn HDR on
+    // with the game open. Either changes the headroom or SDL's HDR flag.
+    bool hdr_signal = fabsf(g_hdr_headroom - sc_hdr_headroom) > 0.01f || (g_hdr_display ? 1 : 0) != sc_hdr_display;
     if (!g_vk.swapchain || (uint32_t)w != g_vk.sc_extent.width || (uint32_t)h != g_vk.sc_extent.height ||
-        atomic_exchange(&pres_stale, 0) || g_vk.sc_mode != wanted_present_mode() || hdr != (g_hdr || hdr_failed))
+        atomic_exchange(&pres_stale, 0) || g_vk.sc_mode != wanted_present_mode() || hdr != (g_hdr || hdr_failed) ||
+        (hdr && hdr_signal))
         recreate_swapchain();
     if (!g_vk.swapchain) return false;
     static int trace = -1;
@@ -3795,6 +3878,11 @@ void ui_window_init(void) {
     window = SDL_CreateWindowWithProperties(props);
     SDL_DestroyProperties(props);
     if (!window) FATAL("SDL_CreateWindow: %s\n", SDL_GetError());
+    {
+        const char *vd = SDL_GetCurrentVideoDriver();
+        snprintf(g_video_driver, sizeof g_video_driver, "%s", vd && *vd ? vd : "unknown");
+        LOG("[window] video driver %s\n", g_video_driver);
+    }
     rt_window_icon(window);
     // the Fullscreen setting applies from the start screen on (not only once the game runs); test windows stay windows
     winsize_apply(window);

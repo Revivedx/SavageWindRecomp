@@ -141,6 +141,7 @@ void rt_paths_init(void) {
 }
 
 const char *rt_data_root(void) { return g_root; }
+const char *rt_start_dir(void) { return g_start; }
 
 bool rt_resource(const char *name, const char *dev_rel, char *out, size_t n) {
     char c[4][1100] = {{0}};
