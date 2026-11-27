@@ -1669,3 +1669,5 @@ T("Clear baseline", "清除基準")
 T("Removes the stored A/B baseline comparison.", "移除已儲存的 A/B 基準對比。")
 T("blue = baseline", "藍色 = 基準")
 T("<8.3ms: %.1f%%  |  8.3-16.7ms: %.1f%%  |  16.7-33.3ms: %.1f%%  |  >33.3ms: %.1f%%", "<8.3ms: %.1f%%  |  8.3-16.7ms: %.1f%%  |  16.7-33.3ms: %.1f%%  |  >33.3ms: %.1f%%")
+    {"Fixed high LOD", "Fixed high LOD"},
+    {"Keep high-detail models at distance instead of switching to simplified LODs.", "Keep high-detail models at distance instead of switching to simplified LODs."},

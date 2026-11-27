@@ -243,6 +243,7 @@ typedef struct {
                          // draws are skipped: vulkan/exec.c)
     bool grass;          // grass blades and crossed quads (off: draw_distance.c hides both layers)
     bool grass_quads;    // distant ground-cover layer (crossed quads; off: keeps near grass blades only)
+    bool fixed_lod;      // keep high-detail LODs at distance (draw_distance.c)
     int grass_distance;  // GRASS_DIST_*: independent grass draw distance (0: follow draw_distance)
     bool lens_flare;     // sun glare / lens flare (off: vulkan/exec.c skips sun occlusion queries)
     bool fast_fma;       // CPUs without FMA instructions (gamelib_compat): the game's fused multiply-adds rounded twice,
