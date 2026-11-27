@@ -785,7 +785,11 @@ void input_handle_event(const SDL_Event *e) {
              (g_bind_key2[BIND_FLY] && e->key.scancode == g_bind_key2[BIND_FLY])) &&
             control_enabled() && !menu_input_captured()) control_fly_toggle();  // (fly mode, test builds)
         if (e->key.scancode < SDL_SCANCODE_COUNT) keys_down[e->key.scancode] = e->type == SDL_EVENT_KEY_DOWN;
-        if (e->type == SDL_EVENT_KEY_DOWN) last_device = DEVICE_KEYBOARD;
+        // (not the OS's own shortcuts: Print Screen, or a key with the Windows / Command key held, e.g. Win+Shift+S for a
+        // screenshot, must not turn a controller's button prompts into keycaps)
+        if (e->type == SDL_EVENT_KEY_DOWN && e->key.scancode != SDL_SCANCODE_PRINTSCREEN &&
+            e->key.scancode != SDL_SCANCODE_LGUI && e->key.scancode != SDL_SCANCODE_RGUI &&
+            !(e->key.mod & SDL_KMOD_GUI)) last_device = DEVICE_KEYBOARD;
         recompute_keyboard();
         break;
     case SDL_EVENT_MOUSE_WHEEL:
