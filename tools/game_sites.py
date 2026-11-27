@@ -490,6 +490,7 @@ SITES = [
     # address is (its load in the pickup code)
     Site('item_tick', 'code', 'd101c3ff fd000be8 a9027bfd a90367fa a9045ff8 a90557f6 a9064ff4 910083fd f9400c14', 0),
     Site('pouch_item_get', 'code', 'd10243ff a9037bfd a9046ffc a90567fa a9065ff8 a90757f6 a9084ff4 9100c3fd f90003e3', 0),
+    Site('pouch_item_remove', 'code', 'd10203ff a9027bfd a9036ffc a90467fa a9055ff8 a90657f6 a9074ff4 910083fd 9100a013 aa0003f4 aa0103f6', 0),
     Site('pouch_mgr', 'got', '90000017/9f00001f aa0003f5 f94002f7/ffc003ff 910003e0 f94002f6 94000000/fc000000 2a0003e2 '
          'aa1603e0', 2),
     # A treasure chest put in the world with an item in it (runtime/items.c items_request_chest), as the amiibo drop does
@@ -695,6 +696,7 @@ OPTIONAL_GROUPS = [
     ('tp_gate',),  # (a far teleport of the control endpoint: without it a long jump freezes the world)
     ('title_version_text_a', 'title_version_text_b'),  # (the title's version line in full: without them it stops at 15 letters)
     ('item_tick', 'pouch_item_get', 'pouch_mgr'),
+    ('pouch_item_remove',),
     ('actor_create', 'actor_creator', 'actor_create_heap', 'inst_params_vt', 'inst_params_init', 'inst_params_add',
      'inst_params_add_string'),  # (reward chests: without them a reward waits for room in the pouch)
     ('horse_cam_lr',),
@@ -979,6 +981,7 @@ KNOWN = {
         'horse_play_rate': 0x70006b218c,
         'item_tick': 0x7000cc4c3c,
         'pouch_item_get': 0x7000d921bc,
+        'pouch_item_remove': 0x7000d93320,
         'pouch_mgr': 0x7001e18570,
         'actor_create': 0x7001535b10,
         'actor_creator': 0x7001e95430,
