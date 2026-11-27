@@ -801,6 +801,34 @@ Pendiente:
        por la razón del frame (`rt_arrow_gravity`, 1 a 30 FPS, sin la cámara lenta, como en la consola). Prueba:
        `SAVAGEWIND_LOG_ARROW=1` y `SAVAGEWIND_SCRIPT_CLOCK=1` disparando con ZR a 30, 60 y 120: la velocidad en el
        tiempo es la misma.
+     - Decaimiento del planeador (experimental, activo por defecto; `SAVAGEWIND_GLIDE_DECAY=0` lo desactiva): la
+       actualización del planeador que comprueba el stick aplica su parámetro `OverSpeedDec` a la velocidad en `+0x181c`
+       y `+0x1824` una vez por actualización del juego, sin paso de tiempo. Hay **cuatro** sites simétricos (1.9.0): dos
+       `fsub` que restan (`+0x181c` en 0x7000c866f0, `+0x1824` en 0x7000c867b4) y dos `fadd` espejo que suman
+       (`+0x181c` en 0x7000c86718, `+0x1824` en 0x7000c867dc). Sin escalar, un sangrado medido de 0,002 por
+       actualización hace perder el impulso de un lanzamiento de windbomb entre 30 y 200 fps (cuantos más fps, antes).
+       La razón es direccional: un objetivo de planeo positivo toma la rama `fsub` (resta) y uno no positivo toma la
+       `fadd` (suma hacia cero); con el stick hacia delante, el este (+X, positivo) pasaba por el `fsub` parcheado
+       mientras el oeste (negativo) pasaba por el `fadd` sin parchear, así que parchear solo `fsub` hacía que este y
+       oeste se comportaran distinto; el parche simétrico elimina esa asimetría. Por defecto una sola opción escala
+       **las cuatro** operaciones por `g_frame_ratio` (la razón del frame: 1 a 30 fps, menor por encima):
+       `rt_glide_overspeed_dec` para los `fsub` y `rt_glide_overspeed_add` para los `fadd`, con el mismo factor en
+       ambos. Con `SAVAGEWIND_GLIDE_DECAY=0` vuelve la operación del juego sin escalar (`v - dec` y `v + dec`) bit a bit
+       a cualquier FPS. A 30 fps (razón 1) los cuatro caminos dan el mismo resultado bit a bit que la consola, así que
+       ahí no cambia nada. **Validación disponible**: el entorno de las trazas fue Windows, NVIDIA GeForce RTX 5080
+       (controlador 621.14), 2560x1440, juego 1.9.0 y Savage Wind 0.6.0-alpha.6 (c9c9a0f). **Datos medidos en las
+       trazas**: a 30 fps (razón ~1,000) el decremento horizontal era 0,00200 por actualización (~0,060 por segundo
+       de juego; 36->30 m/s) y la retención de `a20bc` ~0,97/0,94/0,88 a 0,5/1/2 s de juego; antes del parche, a
+       ~200 fps (paso ~0,083, razón ~0,105) el mismo 0,00200 por actualización suponía ~0,55 por segundo de juego
+       (~9 veces más rápido; 52->10 m/s) y una retención de ~0,61 a 1 s y ~0,27 a 2 s. Ambas componentes `a181c` y
+       `a1824` decaían igual; `a20c8`=0,350, `a209c`=1,0 y `a1844`/`a1848` correctos en tiempo de juego. Esa
+       ejecución registró entre ~180 y ~360 fps (ajuste de 360). **Afirmaciones cualitativas del usuario (sin datos
+       numéricos adjuntos)**: a 120-240 fps el lanzamiento hacia el este hacía a Link mucho más rápido y lejano que
+       en consola mientras el oeste seguía perdiendo impulso (la asimetría este/oeste que motivó los cuatro sites), y
+       el usuario confirmó que el parche simétrico funciona en el juego. No hay constancia en las trazas de que el
+       interruptor `SAVAGEWIND_GLIDE_DECAY=0` se haya probado en el juego. Tras cambiar fuentes del generador o de los
+       parches hay que ejecutar `make gen`, recompilar y comprobar el ID del gamelib cargado antes de probar en el
+       juego (ver `AGENTS.md`).
      - Micropasos del solver de Havok (#161): antes de cada paso de física el juego le da al solver
        round(delta frame x 6) micropasos (1.9.0 0x700156f930): 6 a 30 FPS, 3 a 60, 2 a 120, siempre la misma
        duración de micropaso. Con menos micropasos por paso el solver cede más ante lo que toca a Link: con un cuco

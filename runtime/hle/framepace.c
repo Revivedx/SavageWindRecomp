@@ -39,6 +39,9 @@
 //   SAVAGEWIND_EVENT_FPS=<n>       frame rate in the events (default 0: the chosen one; 30: the console's)
 //   SAVAGEWIND_LOG_FRAMEPACE=<n>   every n clock updates: target, frame length, VFR ratio and interval
 //   SAVAGEWIND_NO_CONTROLLER_STEP=1  the controllers count presented frames (as the game does)
+//   SAVAGEWIND_GLIDE_DECAY=0       keep the paraglider's per-update velocity changes unscaled (guest behaviour) at
+//                                  all four stick-gated sites: fsub (+0x181c / +0x1824) and their fadd mirrors;
+//                                  default: scale all four by the frame ratio (experimental, confirmed in game)
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -417,6 +420,31 @@ float rt_arrow_gravity(uint64_t arrow, float g) {
             (unsigned long long)arrow, g_frame_ratio, g, VF(float, arrow, 0x110), VF(float, arrow, 0x114),
             VF(float, arrow, 0x118));
     return g * g_frame_ratio;
+}
+
+// The paraglider's stick-gated update subtracts its OverSpeedDec parameter from velocity +0x181c / +0x1824 once per
+// guest update, with no time step (1.9.0 0x7000c866f0 / 0x7000c867b4): above 30 fps that bleeds a windbomb launch's
+// momentum ~9x faster than at 30. The subtraction is scaled by the frame's length in console frames by default;
+// SAVAGEWIND_GLIDE_DECAY=0 restores the guest's unscaled subtraction. At 30 fps (ratio 1) both are the guest's own
+// subtraction, bit for bit. The symmetric fix has been confirmed working in game.
+float rt_glide_overspeed_dec(float v, float dec) {
+    static int on = -1;
+    if (on < 0) on = env_int("SAVAGEWIND_GLIDE_DECAY", 1) != 0;
+    if (!on) return v - dec;
+    return v - dec * g_frame_ratio;
+}
+
+// The fadd mirrors of the two sites above: when a component's target is non-positive and it has fallen to or below
+// that target, the guest ADDS OverSpeedDec instead of subtracting it (1.9.0 0x7000c86718 / 0x7000c867dc). Scaling
+// the addition by the frame's length makes both directions agree; without it the negative component still loses
+// momentum at the raw rate while the positive one is scaled. The SAME read-once option controls all four sites:
+// SAVAGEWIND_GLIDE_DECAY=0 restores the guest's unscaled addition. At 30 fps (ratio 1) both are bit for bit the
+// guest's own addition. No sign/abs logic; the symmetric fix has been confirmed working in game.
+float rt_glide_overspeed_add(float v, float dec) {
+    static int on = -1;
+    if (on < 0) on = env_int("SAVAGEWIND_GLIDE_DECAY", 1) != 0;
+    if (!on) return v + dec;
+    return v + dec * g_frame_ratio;
 }
 
 // The physics step's solver microsteps (tools/patches.py _solver_steps, #161, #425): the game asks for delta frame x 6,

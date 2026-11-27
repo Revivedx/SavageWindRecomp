@@ -533,6 +533,31 @@ def _arrow_gravity(gen, a):
             f'  /* {a:#x}: ldr s1, [x20, #0x108] (arrow gravity) */')
 
 
+# Experimental glide decay (runtime/hle/framepace.c rt_glide_overspeed_dec). The paraglider's stick-gated update
+# subtracts its OverSpeedDec parameter from velocity +0x181c (0x7000c866f0) or +0x1824 (0x7000c867b4) once per guest
+# update with no time step, so above 30 fps a windbomb launch loses its momentum too soon. The two sites hold the same
+# fsub word; the store word in their patterns tells them apart. The helper takes s0 (v, v[0]) and s1 (dec, v[1]) as its
+# FP arguments and writes the result back into s0; no other register or the stack changes. The fadd mirrors are patched
+# separately below, with the same register/store contract.
+def _glide_overspeed_dec(gen, a):
+    assert _word(gen, a) == 0x1e213800, hex(_word(gen, a))  # fsub s0, s0, s1
+    return ('{ extern float rt_glide_overspeed_dec(float, float); '
+            'union { uint32_t u; float f; } v = { .u = (uint32_t)c->v[0] }, d = { .u = (uint32_t)c->v[1] }; '
+            'v.f = rt_glide_overspeed_dec(v.f, d.f); c->v[0] = v.u; }'
+            f'  /* {a:#x}: fsub s0, s0, s1 (glide OverSpeedDec) */')
+
+
+# The fadd mirrors of the two glide sites (runtime/hle/framepace.c rt_glide_overspeed_add). With a non-positive target
+# the guest adds OverSpeedDec rather than subtracting it (1.9.0 0x7000c86718 / 0x7000c867dc). Same s0/s1 contract as
+# the fsub patches; only the asserted opcode changes. The shared store after the branch persists c->v[0], untouched.
+def _glide_overspeed_add(gen, a):
+    assert _word(gen, a) == 0x1e212800, hex(_word(gen, a))  # fadd s0, s0, s1
+    return ('{ extern float rt_glide_overspeed_add(float, float); '
+            'union { uint32_t u; float f; } v = { .u = (uint32_t)c->v[0] }, d = { .u = (uint32_t)c->v[1] }; '
+            'v.f = rt_glide_overspeed_add(v.f, d.f); c->v[0] = v.u; }'
+            f'  /* {a:#x}: fadd s0, s0, s1 (glide OverSpeedDec) */')
+
+
 # Experimental shield-surf takeoff grace (#305), runtime/hle/framepace.c. Preserve the original FP subtraction
 # through rt_fsub_s (runtime/cpu.h: fp_op_s on x86-64, a native FSUB on AArch64) when the grace is inactive,
 # including the game's FP exception/rounding behavior.
@@ -1543,6 +1568,10 @@ PATCHES = {
     'day_cycle_time_only': _day_cycle_step,
     'day_cycle_normal': _day_cycle_step,
     'arrow_fall_gravity': _arrow_gravity,
+    'glide_overspeed_dec_181c': _glide_overspeed_dec,
+    'glide_overspeed_dec_1824': _glide_overspeed_dec,
+    'glide_overspeed_add_181c': _glide_overspeed_add,
+    'glide_overspeed_add_1824': _glide_overspeed_add,
     'surf_contact': _surf_contact,
     'surf_boost_remove': _surf_boost_remove,
     'surf_jump_request': _surf_jump_request,

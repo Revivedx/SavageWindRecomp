@@ -181,6 +181,16 @@ SITES = [
          '1e200908 bd40ba60 52800028 39053e68', 1),
     # arrows' fall (tools/patches.py _arrow_gravity): the load of the gravity added to an arrow's velocity per update
     Site('arrow_fall_gravity', 'code', 'bd410a81 1e212849 bd410e81 1e21280a 94000000/fc000000 36000000/fff8001f f9404288 2d400500', 0),
+    # Experimental glide decay (tools/patches.py _glide_overspeed_dec): the paraglider's stick-gated update subtracts
+    # its OverSpeedDec parameter from velocity +0x181c / +0x1824 once per guest update, with no time step. The first
+    # three words are identical at both sites; the store word tells them apart. `at` 2 is the fsub at +8.
+    Site('glide_overspeed_dec_181c', 'code', 'f9403668 bd400101 1e213800 bd181e80', 2),
+    Site('glide_overspeed_dec_1824', 'code', 'f9403668 bd400101 1e213800 bd182680', 2),
+    # The fadd mirrors: with a non-positive target the guest ADDS OverSpeedDec instead of subtracting it. The fadd
+    # word is the same at both sites and the following branch back to the shared store cannot tell them apart, so
+    # the distinguishing fcmp word four words earlier is part of the pattern. `at` 4 is the fadd.
+    Site('glide_overspeed_add_181c', 'code', '1e2e2000 540000a5 f9403668 bd400101 1e212800', 4),
+    Site('glide_overspeed_add_1824', 'code', '1e2d2000 540000a5 f9403668 bd400101 1e212800', 4),
     # Experimental shield-surf takeoff grace (#305): contact update, boost removal and launch request.
     Site('surf_contact', 'code', '3941d2a8 36080008/fff8001f bd4066a0 1e202008 5400000d/ff00001f bd403261 1e202028 5400000d/ff00001f', 0),
     Site('surf_boost_remove', 'code', '1e203820 2f00e401 aa1403e1 1e216800 bd003260 0f016680 f94006a0 94000000/fc000000', 0),
@@ -813,6 +823,10 @@ KNOWN = {
         'day_cycle_time_only': 0x70014266d4,
         'day_cycle_normal': 0x7001426788,
         'arrow_fall_gravity': 0x70005ee734,
+        'glide_overspeed_dec_181c': 0x7000c866f0,
+        'glide_overspeed_dec_1824': 0x7000c867b4,
+        'glide_overspeed_add_181c': 0x7000c86718,
+        'glide_overspeed_add_1824': 0x7000c867dc,
         'surf_contact': 0x70011e9e74,
         'surf_boost_remove': 0x70011e9e94,
         'surf_jump_request': 0x70011ea3d4,
