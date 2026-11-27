@@ -24,6 +24,7 @@ static void test_steady_60fps(void) {
     assert(near_d(st.median_ms, 16.667, 0.01));
     assert(near_d(st.p99_ms, 16.667, 0.01));
     assert(st.hitches == 0);
+    assert(st.hist[0] == 0 && st.hist[1] == 0 && st.hist[2] == 600 && st.hist[3] == 0);
     assert(st.spark_n == BENCH_SPARK_LEN);
 }
 
@@ -51,6 +52,7 @@ static void test_spikes_and_hitches(void) {
     assert(near_d(st.low_01pct_fps, 10.0, 0.1));
     // Hitches: threshold is max(2 * 10 = 20, 33.333) = 33.333 ms => 10 + 2 = 12 hitches
     assert(st.hitches == 12);
+    assert(st.hist[0] == 0 && st.hist[1] == 988 && st.hist[2] == 0 && st.hist[3] == 12);
     // Metadata preserved
     assert(near_d(st.vram_peak_mb, 2450.0, 0.01));
     // Max downsampling must preserve the 100 ms spikes in the sparkline

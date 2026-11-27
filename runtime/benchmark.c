@@ -108,6 +108,10 @@ void bench_compute_stats(const uint32_t *frame_us, uint32_t count, double durati
     for (uint32_t i = 0; i < count; i++) {
         double ms = (double)frame_us[i] / 1000.0;
         if (ms > thresh) hitches++;
+        if (ms < 8.333) out->hist[0]++;
+        else if (ms < 16.667) out->hist[1]++;
+        else if (ms <= 33.333) out->hist[2]++;
+        else out->hist[3]++;
     }
     out->hitches = hitches;
     free(s);
@@ -145,7 +149,8 @@ size_t bench_format_markdown(const BenchSnapshot *snap, char *buf, size_t n) {
     if (snap->gpu_name[0]) o = appendf(buf, n, o, "- **GPU**: %s\n", snap->gpu_name);
     if (snap->cpu_name[0]) o = appendf(buf, n, o, "- **CPU**: %s\n", snap->cpu_name);
     if (snap->width > 0 && snap->height > 0) o = appendf(buf, n, o, "- **Resolution**: %d x %d\n", snap->width, snap->height);
-    if (snap->settings_summary[0]) o = appendf(buf, n, o, "- **Settings**: %s\n", snap->settings_summary);
+    if (snap->settings_summary[0]) o = appendf(buf, n, o, "- **Settings**: %s%s\n", snap->settings_summary,
+                                               snap->cfg.camera_pan ? " | Camera sweep: On" : "");
     o = appendf(buf, n, o, "\n| Route | Avg FPS | 1%% Low | 0.1%% Low | Avg ms | p99 ms | Max ms | Hitches | VRAM MB |\n");
     o = appendf(buf, n, o, "|---|---:|---:|---:|---:|---:|---:|---:|---:|\n");
     for (int i = 0; i < snap->nresults && i < BENCH_MAX_RESULTS; i++) {
@@ -165,6 +170,16 @@ size_t bench_format_markdown(const BenchSnapshot *snap, char *buf, size_t n) {
         if (r->vram_peak_mb > 0) snprintf(vram, sizeof vram, "%.0f", r->vram_peak_mb);
         o = appendf(buf, n, o, "| **Overall** | **%.1f** | **%.1f** | **%.1f** | **%.2f** | **%.2f** | **%.1f** | **%u** | **%s** |\n",
                     r->avg_fps, r->low_1pct_fps, r->low_01pct_fps, r->avg_ms, r->p99_ms, r->max_ms, r->hitches, vram);
+        if (r->frames > 0) {
+            double inv = 100.0 / (double)r->frames;
+            o = appendf(buf, n, o,
+                        "\n- **Frame-time distribution**: `<8.3ms`: %.1f%% | `8.3-16.7ms`: %.1f%% | `16.7-33.3ms`: %.1f%% | `>33.3ms`: %.1f%%\n",
+                        r->hist[0] * inv, r->hist[1] * inv, r->hist[2] * inv, r->hist[3] * inv);
+        }
+        if (r->gpu_load_avg > 0.0f || r->gpu_temp_peak > 0.0f || r->gpu_clock_avg > 0.0f) {
+            o = appendf(buf, n, o, "- **GPU telemetry**: load %.0f%% | peak temp %.0f C | avg clock %.0f MHz\n",
+                        r->gpu_load_avg, r->gpu_temp_peak, r->gpu_clock_avg);
+        }
     }
     return o;
 }
@@ -234,15 +249,16 @@ bool bench_save_csv(const BenchSnapshot *snap, char *out_path, size_t out_path_n
     FILE *f = fopen(path, "w");
     if (!f) return false;
 
-    fprintf(f, "route_id,route_name,valid,frames,duration_s,avg_fps,low_1pct_fps,low_01pct_fps,avg_ms,median_ms,p95_ms,p99_ms,min_ms,max_ms,hitches,vram_peak_mb,ram_peak_mb,gpu_load_avg,gpu_temp_peak,gpu_clock_avg,gpu,width,height,settings\n");
+    fprintf(f, "route_id,route_name,valid,frames,duration_s,avg_fps,low_1pct_fps,low_01pct_fps,avg_ms,median_ms,p95_ms,p99_ms,min_ms,max_ms,hitches,hist_lt8ms,hist_8_17ms,hist_17_33ms,hist_gt33ms,vram_peak_mb,ram_peak_mb,gpu_load_avg,gpu_temp_peak,gpu_clock_avg,gpu,width,height,settings\n");
     for (int i = 0; i < snap->nresults && i < BENCH_MAX_RESULTS; i++) {
         const BenchRouteStats *r = &snap->results[i];
         csv_escape(f, r->id); fputc(',', f);
         csv_escape(f, r->name); fputc(',', f);
-        fprintf(f, "%d,%u,%.3f,%.2f,%.2f,%.2f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%u,%.1f,%.1f,%.1f,%.1f,%.1f,",
+        fprintf(f, "%d,%u,%.3f,%.2f,%.2f,%.2f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%u,%u,%u,%u,%u,%.1f,%.1f,%.1f,%.1f,%.1f,",
                 r->valid ? 1 : 0, r->frames, r->duration_s,
                 r->avg_fps, r->low_1pct_fps, r->low_01pct_fps,
                 r->avg_ms, r->median_ms, r->p95_ms, r->p99_ms, r->min_ms, r->max_ms, r->hitches,
+                r->hist[0], r->hist[1], r->hist[2], r->hist[3],
                 r->vram_peak_mb, r->ram_peak_mb, r->gpu_load_avg, r->gpu_temp_peak, r->gpu_clock_avg);
         csv_escape(f, snap->gpu_name); fputc(',', f);
         fprintf(f, "%d,%d,", snap->width, snap->height);
@@ -250,10 +266,11 @@ bool bench_save_csv(const BenchSnapshot *snap, char *out_path, size_t out_path_n
     }
     if (snap->overall.valid) {
         const BenchRouteStats *r = &snap->overall;
-        fprintf(f, "overall,Overall,1,%u,%.3f,%.2f,%.2f,%.2f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%u,%.1f,%.1f,%.1f,%.1f,%.1f,",
+        fprintf(f, "overall,Overall,1,%u,%.3f,%.2f,%.2f,%.2f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%u,%u,%u,%u,%u,%.1f,%.1f,%.1f,%.1f,%.1f,",
                 r->frames, r->duration_s,
                 r->avg_fps, r->low_1pct_fps, r->low_01pct_fps,
                 r->avg_ms, r->median_ms, r->p95_ms, r->p99_ms, r->min_ms, r->max_ms, r->hitches,
+                r->hist[0], r->hist[1], r->hist[2], r->hist[3],
                 r->vram_peak_mb, r->ram_peak_mb, r->gpu_load_avg, r->gpu_temp_peak, r->gpu_clock_avg);
         csv_escape(f, snap->gpu_name); fputc(',', f);
         fprintf(f, "%d,%d,", snap->width, snap->height);
@@ -673,6 +690,10 @@ void bench_frame(uint64_t frame) {
             if (ps.gpu_temp_c > g_temp_peak) g_temp_peak = ps.gpu_temp_c;
             if (ps.gpu_pct >= 0.0f) { g_load_sum += ps.gpu_pct; g_load_n++; }
             if (ps.gpu_clock_mhz > 0.0f) { g_clk_sum += ps.gpu_clock_mhz; g_clk_n++; }
+        }
+        if (g_snap.cfg.camera_pan && ridx >= 0 && !control_look_active()) {
+            double pan_yaw = k_routes[ridx].yaw + 30.0 * sin(elapsed * 0.5);
+            control_look_start(true, pan_yaw, true, k_routes[ridx].pitch, 1);
         }
         if (elapsed >= (double)g_snap.cfg.duration_s || g_route_frames >= BENCH_MAX_FRAMES) {
             finish_measuring_route(now, elapsed);

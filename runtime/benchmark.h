@@ -39,6 +39,7 @@ typedef struct {
     int duration_s;    // sample window per route (seconds)
     int settle_s;      // warm-up settle window before sampling (seconds)
     bool uncap_fps;    // uncap fps_limit, vsync, frame_gen and perf_overlay during the run
+    bool camera_pan;   // gently sweep camera yaw during measurement on canonical routes
 } BenchConfig;
 
 typedef struct {
@@ -68,6 +69,7 @@ typedef struct {
     double min_ms;
     double max_ms;
     uint32_t hitches;
+    uint32_t hist[4];  // frame-time bins: <8.33ms (>=120fps), 8.33-16.67ms, 16.67-33.33ms, >33.33ms (<30fps)
     float spark_ms[BENCH_SPARK_LEN];
     int spark_n;
     float vram_peak_mb;
