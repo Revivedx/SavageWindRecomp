@@ -1845,8 +1845,8 @@ La 1.9.0 (2026-10-22, rama `game-1.9.0`; archivos del usuario en `extracted-1.9.
 
 Video > Upscaler: DLSS (`upscaler = dlss`; greyed where it can't run) renders the 3D scene smaller by the mode's factor
 and NVIDIA's DLSS Super Resolution builds the full-resolution image from it, with the world camera's depth, motion
-vectors, jitter and texture LOD bias (`runtime/nvn/vulkan/exec.c` `dlss_scene`). Windows, NVIDIA RTX graphics cards.
-Elsewhere, or when NGX can't make the feature, a settings file asking for it gets FSR 1.
+vectors, jitter and texture LOD bias (`runtime/nvn/vulkan/exec.c` `dlss_scene`). Windows and Linux x86-64, NVIDIA RTX
+graphics cards. Elsewhere, or when NGX can't make the feature, a settings file asking for it gets FSR 1.
 
 **No SDK.** Nothing of NVIDIA's SDK is compiled in, linked or shipped. `runtime/nvn/vulkan/dlss.c` finds the NVIDIA
 driver's NGX core (`_nvngx.dll`, through `HKLM\SOFTWARE\NVIDIA Corporation\Global\NGXCore`), takes its Vulkan entry
@@ -1858,6 +1858,14 @@ generation, below). The setup page's Download NVIDIA DLSS (on PCs with an NVIDIA
 `LICENSE.txt` as `NVIDIA-DLSS-LICENSE.txt`, from NVIDIA/DLSS on GitHub at release `v310.9.16` (`runtime/dlss_fetch.c`:
 WinHTTP; size and SHA-256 checked, written as `.part` and renamed only when both match). While it is missing on a PC
 with an NVIDIA driver, the menus' greyed DLSS points at Savage Wind Configuration.
+
+Linux x86-64 loads `libnvidia-ngx.so.1` with `dlopen` (the soname, `/run/opengl-driver/lib` on NixOS, `/usr/lib`,
+`/usr/lib64`) and calls `NVSDK_NGX_VULKAN_Init` with `NVSDK_NGX_PathListInfo` aimed at the folder that holds
+`libnvidia-ngx-dlss.so.310.9.16`: the executable's folder when it is writable, otherwise the data folder. `wchar_t`
+paths are 32-bit. The parameter vtable is Itanium declaration order, including the two D3D pointer slots; one
+set-then-get round trip checks it, and a failure tries the same order without those slots, once. The download is the
+system's `curl`, with the same size and SHA-256 check. aarch64 is unchanged (no download). Frame generation's Linux
+library is not downloaded.
 
 ## FSR 3 upscaling: held back for now
 

@@ -20,8 +20,8 @@
   [Switch Loader](https://github.com/Adubbz/Ghidra-Switch-Loader) - used for reverse engineering (not bundled).
 - Libraries: [SDL 3](https://libsdl.org) (zlib), [FFmpeg](https://ffmpeg.org) (LGPL),
   [Dear ImGui](https://github.com/ocornut/imgui) (MIT),
-  [NVIDIA DLSS](https://github.com/NVIDIA/DLSS) (NVIDIA's own license; neither shipped nor linked: on Windows PCs with an
-  NVIDIA driver the setup downloads NVIDIA's DLLs and `LICENSE.txt`),
+  [NVIDIA DLSS](https://github.com/NVIDIA/DLSS) (NVIDIA's own license; neither shipped nor linked: on Windows and Linux
+  x86-64 PCs with an NVIDIA driver the setup downloads NVIDIA's libraries and `LICENSE.txt`),
   [Intel XeSS](https://github.com/intel/xess) (Intel Simplified Software License; neither shipped nor linked: on Windows
   PCs with an Intel graphics card the setup downloads Intel's DLL and `LICENSE.txt`; the API headers in
   `third_party/xess` are MIT),

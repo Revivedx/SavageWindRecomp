@@ -48,7 +48,7 @@ is drawn, it uses the same scene path as the game.
 | INI key | Meaning | Default |
 |---|---|---|
 | `hdr` | `auto`, `on`, `off` | `auto` |
-| `hdr_peak_nits` | the display's peak: the scene's roll-off target **and** the final cap for every element; on Windows the first start fills it from the monitor's HDR calibration profile (1000 nits if none), then it is editable; other platforms default to 1000 and it is set manually | Windows: ICC peak / 1000; elsewhere 1000 |
+| `hdr_peak_nits` | the display's peak: the scene's roll-off target **and** the final cap for every element; on Windows the first start fills it from the monitor's HDR calibration profile (1000 nits if none); on Linux Wayland, from the display's HDR headroom times 203 nits when the compositor reports HDR; then it is editable. A saved value is kept. 0 means not set yet, and 1000 nits is used until then | Windows: ICC peak / 1000; Linux: headroom × 203 / 1000; elsewhere 1000 |
 | `hdr_game_nits` | the 3D scene's white (paper white), capped by the peak | `203` |
 | `hdr_ui_nits` | the HUD and menu white, capped by the peak | `203` |
 | `hdr_tonemapper` | `0` Vanilla (the game's own tonemap, clipped at white), `1` RenoDX (PsychoV + per-channel Neutwo; the BOTW mod's "RenoDRT" option) | `1` |
@@ -94,8 +94,11 @@ A fresh settings file has no peak value. On Windows, the first start reads the d
 `max_luminance` — the display's small-area peak. It writes that value into the settings and logs the ICC file and
 peak. The standard `lumi` tag is the maximum full-frame luminance, not the highlight peak. The group for the window's
 monitor is used, not another display's profile; if that group has no profile with an `MHC2` tag, the monitor's default
-profile is tried, and the result is 0 (no profile) if that has none either. On other platforms there is no Windows
-calibration profile: the peak defaults to 1000 and is set manually.
+profile is tried, and the result is 0 (no profile) if that has none either. On Linux Wayland, a first start with no
+saved peak and a compositor that reports HDR uses SDL's HDR headroom times 203 nits (the HDR10 reference white) and
+logs `[hdr] peak brightness set to <peak> nits (display headroom <headroom> x 203)`. A saved peak is not replaced. Until
+the compositor reports a headroom above 1, the effective peak stays 1000. X11 has no HDR10 output. On other platforms
+there is no calibration profile: the peak defaults to 1000 and is set manually.
 
 The value is then a normal editable setting; on Windows the setting's description shows the current ICC profile and
 peak, or says no profile was found. If no profile is found, the first start writes **1000 nits** and the description
@@ -151,7 +154,12 @@ follows the display's HDR state at the next start.
   `[hdr] HDR10 output, but the game's float picture was not found`. On Windows the first start logs the ICC profile and
   peak (`[hdr] Windows HDR calibration profile: "<profile>.icc", <peak> nits`, then
   `[hdr] peak brightness set to <peak> nits (from the ICC profile)`), or
-  `[hdr] no Windows HDR calibration profile found` / `[hdr] peak brightness set to 1000 nits (no ICC profile)`; the
+  `[hdr] no Windows HDR calibration profile found` / `[hdr] peak brightness set to 1000 nits (no ICC profile)`. On Linux
+  the session is `[window] video driver wayland` or `x11`; a Wayland HDR display logs
+  `[hdr] peak brightness set to <peak> nits (display headroom <headroom> x 203)` and
+  `[vk] HDR10 output (Wayland compositor HDR is on for this display)`. X11 logs that HDR10 is Wayland only. If Wayland
+  HDR is wanted and the surface has no HDR10 format, the log names the Vulkan driver and the Mesa 25.1+ / NVIDIA
+  595.58.03+ requirement (`ENABLE_HDR_WSI=1` on older NVIDIA drivers). The
   first present logs the paper white and the peak/final cap:
   `[hdr] present: paper white <UI white> nits, peak <peak> nits (final cap)`.
 - `SAVAGEWIND_WINDOW_SHOT=<frame>` saves the presented HDR float picture as an SDR PNG and logs its true range, e.g.

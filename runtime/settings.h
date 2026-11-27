@@ -6,7 +6,7 @@
 // smaller by their quality mode's factor and scale up to the window. DLSS needs NVIDIA's DLLs, which the setup downloads.
 enum { UPSCALE_OFF = 0, UPSCALE_METALFX = 1 /* macOS */, UPSCALE_FSR1 = 2 /* AMD FSR 1, Vulkan */,
        UPSCALE_FSR3 = 3 /* AMD FSR 3.1, Vulkan where built in (vulkan/fsr3.h) */,
-       UPSCALE_DLSS = 4 /* NVIDIA DLSS: Windows, NVIDIA RTX and NVIDIA's DLLs (vulkan/dlss.c) */,
+       UPSCALE_DLSS = 4 /* NVIDIA DLSS: Windows and Linux x86-64, NVIDIA RTX, NVIDIA's libraries (vulkan/dlss.c) */,
        UPSCALE_FSR4 = 5 /* AMD FSR 4, Vulkan on Windows with AMD's DLLs and an AMD Radeon (vulkan/fsr_api.h) */,
        UPSCALE_XESS = 6 /* Intel XeSS, Vulkan on Windows with libxess.dll (vulkan/xess.h) */,
        UPSCALE_COUNT };
@@ -74,7 +74,7 @@ enum { SPARSE_HEAP_AUTO = 0, SPARSE_HEAP_ON = 1, SPARSE_HEAP_OFF = 2, SPARSE_HEA
 enum { SCENE_COPIES_AUTO = 0, SCENE_COPIES_FAST = 1, SCENE_COPIES_EXACT = 2, SCENE_COPIES_COUNT };
 
 // Video > Frame generation: a frame made between each two the game draws, by AMD FSR 3 (vulkan/framegen.cpp) or
-// NVIDIA DLSS Frame Generation (vulkan/dlss.c: RTX 40 and later, Windows)
+// NVIDIA DLSS Frame Generation (vulkan/dlss.c: RTX 40 and later; Windows downloads its library)
 enum { FG_OFF = 0, FG_FSR3 = 1, FG_DLSS = 2, FG_COUNT };
 // Video > Frame generation multiplier: the frames on screen for each the game draws (DLSS: 2x, 3x, 4x where the GPU
 // makes that many; FSR 3: 2x)

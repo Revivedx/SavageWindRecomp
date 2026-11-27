@@ -158,6 +158,41 @@ Then from the repo root:
 Run `./build/savagewind` from the repo root: with `extracted/` in the starting folder it uses that folder for
 everything (dev mode) instead of `~/.local/share/savagewind`.
 
+### NVIDIA DLSS
+
+On x86-64, Video > Upscaler can use NVIDIA DLSS the same way as on Windows: nothing of NVIDIA's SDK is linked or
+shipped. The driver's `libnvidia-ngx.so.1` is loaded at run time (the soname, then `/run/opengl-driver/lib` on NixOS,
+`/usr/lib` and `/usr/lib64`). Savage Wind Configuration downloads `libnvidia-ngx-dlss.so.310.9.16` and NVIDIA's
+`LICENSE.txt` from NVIDIA/DLSS `v310.9.16`, checks the size and SHA-256, and writes them with the system's `curl`
+(without `LD_PRELOAD`). A source build's `build/` is writable, so they land next to `savagewind`. An AppImage or a Nix
+store path is not, so they land in the data folder, and NGX is given that folder. aarch64 has no download here. Frame
+generation's library is not part of that download.
+
+The log line is `[dlss] Super Resolution available` once the library is in place and the card is an RTX. It is read at
+startup, so a download applies on the next start.
+
+### HDR on Wayland
+
+The window is SDL3 on the session's video driver (`[window] video driver wayland` or `x11`). HDR10 is the same Vulkan
+swapchain as on Windows (`VK_COLOR_SPACE_HDR10_ST2084_EXT`, PQ, 203 nits as the reference white). X11 cannot do HDR10.
+On Wayland, a first run with no saved peak takes the display peak from SDL's HDR headroom times 203 nits when the
+compositor reports HDR and the headroom is above 1. A peak already saved is kept. If the color description arrives
+late, or HDR is turned on in the compositor while the game is open, the swapchain is made again. When Wayland HDR is
+wanted and the surface has no HDR10 format, the log names the Vulkan driver: Mesa 25.1+ and NVIDIA 595.58.03+ advertise
+it; an older NVIDIA driver needs `ENABLE_HDR_WSI=1` and NVIDIA's WSI layer, which Savage Wind does not download.
+
+### Nix
+
+`flake.nix` builds the runtime only (the start screen, no game files) for `x86_64-linux` and `aarch64-linux`:
+
+    nix build
+    ./result/bin/savagewind
+
+`nix develop` is a shell with clang, lld, SDL3, FFmpeg, shaderc, the Vulkan loader and headers, and Python with lz4,
+capstone and unicorn, for `make` and `make gen` against a game dump that stays outside the Nix store. The DLSS library
+is still downloaded into the data folder, not into the store. The binary's run path includes the driver directory so
+NixOS can find `libnvidia-ngx.so.1`.
+
 `ARCH` picks the target, separately from the OS: the generated code differs per arch (aarch64 runs the guest's
 FP/SIMD as inline asm, like Apple Silicon; x86-64 lowers it to C with `-march=x86-64-v3`, like Windows, or for CPUs
 without AVX2 / FMA `GENARCH_COMPAT`'s `-march=x86-64-v2`: the start screen builds the one the CPU runs, `make` the

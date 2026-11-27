@@ -1134,7 +1134,7 @@ static void tab_display(void) {
             uds += std::string("\n\n") + tr("AMD FSR 4: like FSR 3, but AMD's machine learning rebuilds the image. For AMD Radeon "
                                               "graphics cards on Windows. Sharpening sets its own sharpening.");
         uds += std::string("\n\n") + tr("NVIDIA DLSS: like FSR 3, but NVIDIA's machine learning rebuilds the image. For NVIDIA "
-                                          "RTX graphics cards on Windows, with NVIDIA's DLSS library, which Savage Wind "
+                                          "RTX graphics cards on Windows and Linux, with NVIDIA's DLSS library, which Savage Wind "
                                           "Configuration downloads.") +
                " " + tr("Its DLAA mode keeps the full resolution and only smooths edges.");  // (own key: the one above keeps its translations)
         if (upscaler_available(UPSCALE_XESS))  // (its own paragraph: the ones above keep their translations)
