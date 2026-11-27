@@ -1590,6 +1590,18 @@ void build_items(void) {
     v.push_back(toggle(P_ACCESS, "God mode", "Link takes no damage.",
                        [](const Item &) { return (int)g_settings.god_mode; },
                        [](const Item &, int x) { g_settings.god_mode = x; }, 0));
+    {
+        static const char *const speed_names[] = {"50%", "75%", "100%", "125%", "150%", "200%"};
+        static const int speeds[] = {50, 75, 100, 125, 150, 200};
+        v.push_back(choice(P_ACCESS, "Game speed", "How fast the game runs in play. 100% is the game's own.",
+                           [](const Item &) { return N(speed_names); }, [](const Item &, int x) { return tr(speed_names[x]); },
+                           [](const Item &) {
+                               int cur = g_settings.game_speed ? g_settings.game_speed : 100;
+                               for (int i = 0; i < N(speeds); i++) if (speeds[i] == cur) return i;
+                               return 2;
+                           },
+                           [](const Item &, int x) { g_settings.game_speed = speeds[x]; }, 2));
+    }
     v.push_back(toggle(P_ACCESS, "One-hit kill", "Enemies go down in one hit.",
                        [](const Item &) { return (int)g_settings.one_hit_kill; },
                        [](const Item &, int x) { g_settings.one_hit_kill = x; }, 0));

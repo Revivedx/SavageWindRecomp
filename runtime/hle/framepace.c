@@ -758,10 +758,13 @@ void rt_vfr_update(uint64_t vfr) {
     bool held = VF(uint8_t, vfr, VFR_OVERRIDE) && ratio > 1;  // (stage loading: the game asks for single steps)
     if (held) ratio = 1;
     extern bool freecam_active(void);
+    extern float assists_speed_scale(float ratio, bool active);
     if (freecam_active()) ratio = 0.001f;  // (the free camera: the world nearly stops)
+    bool speed_active = !paused && !held && !freecam_active() && !in_menu() && !in_event() && g_settings.game_speed != 100;
+    if (speed_active) ratio = assists_speed_scale(ratio, true);
     if (!paused) {
         given += ratio / 30.0;
-        if (held || fabs(real - given) > 0.25) real = given;  // (nothing owed for a deliberate slow down)
+        if (held || speed_active || fabs(real - given) > 0.25) real = given;  // (nothing owed for a deliberate slow down)
     }
     // The interval switches some of the game's code between its 60 fps and 30 fps ways: only on a lasting change of
     // the frame rate (above ~43 fps: 1; below ~35: 2; below ~23: 3), never back and forth from one frame to the next.

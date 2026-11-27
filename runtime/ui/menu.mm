@@ -1709,6 +1709,16 @@ extern "C" float test_warp_hour(bool *held);
 static void cheats_options(void) {
     opt_section("Link");
     {
+        static const char *const speed_names[] = {"50%", "75%", "100%", "125%", "150%", "200%"};
+        static const int speeds[] = {50, 75, 100, 125, 150, 200};
+        const int NS = (int)(sizeof speeds / sizeof *speeds);
+        int s = 2;
+        for (int i = 0; i < NS; i++) if (speeds[i] == g_settings.game_speed) { s = i; break; }
+        if (opt_choice("Game speed", &s, speed_names, NS, 2,
+                       "How fast the game runs in play. 100% is the game's own.", false))
+            g_settings.game_speed = speeds[s];
+    }
+    {
         static char heart_buf[16];
         if (opt_text("Set hearts", heart_buf, sizeof heart_buf, "",
                      "Sets your heart containers to an exact number (3 to 30).")) {
