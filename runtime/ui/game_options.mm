@@ -1590,6 +1590,9 @@ void build_items(void) {
     v.push_back(toggle(P_ACCESS, "God mode", "Link takes no damage.",
                        [](const Item &) { return (int)g_settings.god_mode; },
                        [](const Item &, int x) { g_settings.god_mode = x; }, 0));
+    v.push_back(toggle(P_ACCESS, "Link health on screen", "Shows Link's exact numeric health (quarter-hearts) on screen during play.",
+                       [](const Item &) { return (int)g_settings.show_health; },
+                       [](const Item &, int x) { g_settings.show_health = x; }, 0));
     v.push_back(toggle(P_ACCESS, "One-hit kill", "Enemies go down in one hit.",
                        [](const Item &) { return (int)g_settings.one_hit_kill; },
                        [](const Item &, int x) { g_settings.one_hit_kill = x; }, 0));
@@ -2232,7 +2235,7 @@ static const char *const k_f1_controls[] = {"Button icons", "HUD button layout",
                                             "Shrine keyboard gyro", "Shrine mouse drag"};
 static const char *const k_f1_access[] = {"Colour vision", "Correction strength"};
 // (the assists: every player's, so the Gameplay page and not Cheats, which is developer mode only)
-static const char *const k_f1_assists[] = {"God mode", "Damage taken", "Infinite stamina", "Stamina drain",
+static const char *const k_f1_assists[] = {"God mode", "Link health on screen", "Damage taken", "Infinite stamina", "Stamina drain",
                                            "One-hit kill", "Damage dealt", "Weapon wear", "Infinite arrows"};
 
 static void f1_item_row(const Item &it) {
