@@ -294,7 +294,7 @@ bool items_available(void) {
 }
 
 // ---- requests, carried out on the game thread
-typedef struct { char actor[64]; int item, value, times, asked; unsigned seq; bool stack; int chest; } Request;
+typedef struct { char actor[64]; int item, value, times, asked; unsigned seq; bool stack, remove; int chest; } Request;
 static Request g_req[32];
 static int g_nreq;
 static atomic_int g_pending;
@@ -345,7 +345,7 @@ static int pouch_entries(uint64_t pmdm) {
 bool items_request(int i, int count) { return items_request_seq(i, count) != 0; }
 
 // chest: 0 into the pouch; else in a chest in front of Link, the chest-th of those asked for at once (side by side)
-static unsigned request(const GameItem *it, int i, int count, int chest) {
+static unsigned request(const GameItem *it, int i, int count, int chest, bool remove) {
     if (!it || count < 1) return 0;
     pthread_mutex_lock(&g_req_lock);
     bool ok = g_nreq < (int)(sizeof g_req / sizeof *g_req);
@@ -358,6 +358,7 @@ static unsigned request(const GameItem *it, int i, int count, int chest) {
         r->asked = it->stack ? r->value : r->times;
         r->stack = it->stack;
         r->chest = chest;
+        r->remove = remove;
         atomic_store(&g_pending, g_nreq);
     }
     unsigned seq = ok ? g_seq : 0;
@@ -365,9 +366,9 @@ static unsigned request(const GameItem *it, int i, int count, int chest) {
     return seq;
 }
 
-unsigned items_request_seq(int i, int count) { return request(items_at(i), i, count, 0); }
+unsigned items_request_seq(int i, int count) { return request(items_at(i), i, count, 0, false); }
 
-unsigned items_request_actor(const char *actor, int count) { return request(items_by_actor(actor), 0, count, 0); }
+unsigned items_request_actor(const char *actor, int count) { return request(items_by_actor(actor), 0, count, 0, false); }
 
 bool items_chests_available(void) {
     return g_site.actor_create && g_site.actor_creator && g_site.actor_create_heap && g_site.inst_params_vt &&
@@ -375,7 +376,7 @@ bool items_chests_available(void) {
 }
 
 unsigned items_request_chest(const char *actor, int place) {
-    return items_chests_available() ? request(items_by_actor(actor), 0, 1, place + 1) : 0;
+    return items_chests_available() ? request(items_by_actor(actor), 0, 1, place + 1, false) : 0;
 }
 
 static _Thread_local bool g_in_give;
@@ -513,6 +514,26 @@ void rt_item_tick(Cpu *c, uint64_t get, uint64_t mgr, uint64_t sstr_vt) {
         memcpy((void *)(uintptr_t)(buf + 0x20), req[r].actor, sizeof req[r].actor);
         *(uint64_t *)(uintptr_t)buf = sstr_vt;
         *(uint64_t *)(uintptr_t)(buf + 8) = buf + 0x20;
+        if (req[r].remove) {
+            int before = pouch_entries(pmdm);
+            int after = -1;
+            const char *result = "unsupported pouch layout";
+            if (before >= 0) {
+                c->sp = buf;
+                c->x[0] = pmdm;
+                c->x[1] = buf;
+                guest_call(c, g_site.pouch_item_remove);
+                after = pouch_entries(pmdm);
+                result = "could not verify removal";
+                if (after == before - 1 && after >= 0) result = "removed";
+                if (after == before) result = "no unequipped copy found";
+            }
+            LOG("[items] take %s: %s\n", req[r].actor, result);
+            pthread_mutex_lock(&g_req_lock);
+            g_results[req[r].seq % 64] = (ItemResult){req[r].seq, req[r].item, 1, after >= 0 && after == before - 1};
+            pthread_mutex_unlock(&g_req_lock);
+            continue;
+        }
         bool stack = req[r].stack;
         int added = stack ? req[r].asked : 0;  // (a stack: all of it at once)
         for (int k = 0; k < req[r].times; k++) {
@@ -587,8 +608,29 @@ static void cmd_give(int argc, char **argv, ControlReply *r) {
     control_field_str(r, "applied", "next frame in play");
 }
 
+static void cmd_take(int argc, char **argv, ControlReply *r) {
+    if (argc != 2) { control_fail(r, "Usage: take <armor actor or exact name>"); return; }
+    if (!g_site.pouch_item_remove || !items_available()) {
+        control_fail(r, "Armor removal is unavailable for this game build");
+        return;
+    }
+    int match = -1;
+    for (int i = 0, n = items_count(); i < n; i++) {
+        const GameItem *item = items_at(i);
+        if (item->cat != ITEMCAT_ARMOR || item->stack) continue;
+        if (strcmp(item->actor, argv[1]) && strcmp(item->name, argv[1])) continue;
+        if (match >= 0) { control_fail(r, "Several armor pieces match; use the actor name"); return; }
+        match = i;
+    }
+    if (match < 0) { control_fail(r, "No armor matches that actor or exact name"); return; }
+    if (!request(items_at(match), match, 1, 0, true)) { control_fail(r, "Too many requests waiting"); return; }
+    control_field_str(r, "name", items_at(match)->name);
+    control_field_str(r, "queued", "attempt to remove one unequipped copy on the next frame in play");
+}
+
 void control_items_init(void) {
     static const ControlCmd cmds[] = {
+        {"take", "<armor actor or exact name>", "Remove one unequipped piece of armor, in play", cmd_take},
         {"give", "<actor, part of a name or its pinyin> [count]", "Put an item in the pouch, in play (several matches: lists them)", cmd_give},
     };
     control_register(cmds, (int)(sizeof cmds / sizeof *cmds));

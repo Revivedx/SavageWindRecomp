@@ -52,6 +52,7 @@
     X(ui_control_layer)       /* a UI screen's input layer (runtime/menu_wrap.c) */ \
     X(pouch_lock)             /* native recursive inventory mutex */ \
     X(pouch_unlock)           \
+    X(pouch_item_remove)      /* remove one unequipped item by actor name */ \
     X(pouch_page_count)       /* entries on an inventory page */ \
     X(pouch_page_item)        /* PouchItem * at a page and slot */ \
     X(pouch_item_type)        /* equipment category from an actor name */ \
