@@ -133,6 +133,18 @@ double upscale_mode_factor(int q) {
     return q >= 0 && q < UPQ_COUNT ? f[q] : 1.5;
 }
 
+bool upscale_mode_pixels(int q, int *render_w, int *render_h, int *base_w, int *base_h) {
+    if (q == UPQ_DYNAMIC) return false;
+    WinSize base = winsize_effective(g_settings.fullscreen);
+    double f = upscale_mode_factor(q);
+    if (base.w <= 0 || base.h <= 0 || f < 1.0) return false;
+    if (render_w) *render_w = (int)(base.w / f + 0.5);
+    if (render_h) *render_h = (int)(base.h / f + 0.5);
+    if (base_w) *base_w = base.w;
+    if (base_h) *base_h = base.h;
+    return true;
+}
+
 // Rendering below the window's size: the 3D scene's render targets at their own scale (vulkan/textures.c). Metal has
 // that only with SAVAGEWIND_SCALE_TARGETS=1 (untested with BOTW); SAVAGEWIND_NO_SCALE=1 turns it off (game sizes).
 bool upscale_modes_available(void) {

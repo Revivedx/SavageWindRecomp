@@ -60,6 +60,7 @@ void menu_open_page(int id);                // menu.mm (the F1 menu on a page: t
 bool menu_size_list_up(void);
 bool renderer_gpu_rtx(void);                // vulkan/device.c, metal.m
 const char *vk_hdr_icc_description(void);   // runtime/nvn/vulkan/device.c
+const char *vk_hdr_output_name(void);       // "HDR10" or "SDR"
 bool vk_feedback_once(void);                // runtime/nvn/vulkan/exec.c (Scene copies; Vulkan only)
 }
 
@@ -563,9 +564,23 @@ void build_items(void) {
                        "always HDR. Off: always standard (SDR). HDR setting changes apply immediately; switching HDR "
                        "itself takes effect after a restart.",
                        [](const Item &) { return (int)HDR_COUNT; },
-                       [](const Item &, int x) { return tr(k_hdr[x]); },
+                       [](const Item &, int x) {
+                           static char buf[HDR_COUNT][48];
+                           if (x == g_settings.hdr) {
+                               snprintf(buf[x], sizeof buf[x], "%s  (%s)", tr(k_hdr[x]), vk_hdr_output_name());
+                               return (const char *)buf[x];
+                           }
+                           return tr(k_hdr[x]);
+                       },
                        [](const Item &) { return g_settings.hdr; },
                        [](const Item &, int x) { g_settings.hdr = x; }, HDR_AUTO));
+    v.back().desc_fn = [](const Item &it) {
+        static char buf[640];
+        char output[64];
+        snprintf(output, sizeof output, tr("Output: %s."), vk_hdr_output_name());
+        snprintf(buf, sizeof buf, "%s %s", tr(it.desc), output);
+        return (const char *)buf;
+    };
     size_t hdr_first = v.size();  // (the HDR settings below: greyed while HDR is Off, like Upscaler mode)
     std::vector<size_t> psy_rows;  // (the rows only the RenoDX PsychoV tone mapper uses)
     v.push_back(choice(P_HDR, "HDR tone mapper",
@@ -893,9 +908,19 @@ void build_items(void) {
                            return g_settings.upscaler == UPSCALE_OFF ? 1 : upscale_mode_count() - upscale_mode_base();
                        },
                        [](const Item &, int x) {
+                           static char buf[8][96];
                            if (g_settings.upscaler == UPSCALE_OFF) return tr("Off");
                            const char *name = upscale_mode_name(k_modes_order[x + upscale_mode_base()]);
-                           return upscale_modes_available() ? tr(name) : soon(name);
+                           if (!upscale_modes_available()) return soon(name);
+                           int rw, rh, bw, bh;
+                           if (x < 0 || x >= 8 || !upscale_mode_pixels(k_modes_order[x + upscale_mode_base()],
+                                                                      &rw, &rh, &bw, &bh))
+                               return tr(name);
+                           if (rw == bw && rh == bh)
+                               snprintf(buf[x], sizeof buf[x], "%s  (%d x %d)", tr(name), rw, rh);
+                           else
+                               snprintf(buf[x], sizeof buf[x], "%s  (%d x %d / %d x %d)", tr(name), rw, rh, bw, bh);
+                           return (const char *)buf[x];
                        },
                        [](const Item &) {
                            if (g_settings.upscaler == UPSCALE_OFF) return 0;
@@ -919,9 +944,14 @@ void build_items(void) {
     mode.reset = [](const Item &) { g_settings.upscale_quality = UPQ_QUALITY; };  // (also while Off)
     mode.desc_fn = [](const Item &) {
         // (one line: the game's description pane is one English line wide)
-        return !upscale_modes_available()           ? tr("Renders smaller, then upscales. Coming in a later version.")
-               : g_settings.upscaler == UPSCALE_OFF ? tr("Only with an upscaler: choose one above first.")
-                                                    : tr("Ultra Quality is the sharpest, Ultra Performance the fastest.");
+        static char line[160];
+        int rw, rh, bw, bh;
+        if (!upscale_modes_available()) return tr("Renders smaller, then upscales. Coming in a later version.");
+        if (g_settings.upscaler == UPSCALE_OFF) return tr("Only with an upscaler: choose one above first.");
+        if (!upscale_mode_pixels(g_settings.upscale_quality, &rw, &rh, &bw, &bh))
+            return tr("Ultra Quality is the sharpest, Ultra Performance the fastest.");
+        snprintf(line, sizeof line, tr("Renders at %d x %d of the %d x %d window."), rw, rh, bw, bh);
+        return (const char *)line;
     };
     v.push_back(mode);
     // supersampling (nvn/output_scale.c): applies at once

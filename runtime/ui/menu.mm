@@ -611,6 +611,7 @@ static void load_fonts(void) {
 // Before a frame: another menu language may need other glyphs - the fonts and their texture are made again
 extern "C" void vk_imgui_fonts_changed(void);  // (runtime/nvn/vulkan/imgui_glue.cpp)
 extern "C" const char *vk_hdr_icc_description(void);  // (runtime/nvn/vulkan/device.c)
+extern "C" const char *vk_hdr_output_name(void);
 static void fonts_follow_language(void) {
     bool hint_fonts = g_settings.quick_sort || g_settings.quick_drop || g_settings.quick_replace || g_settings.collectibles_map;
     bool need_hint_fonts = hint_fonts && g_romfs_dir && !g_hint_font_attempted;
@@ -1167,15 +1168,24 @@ static void tab_display(void) {
             int q = k_upscale_mode_order[i];
             mode_names[i] = modes_ok ? tr(upscale_mode_name(q))
                                      : std::string(tr(upscale_mode_name(q))) + " " + tr("(coming soon)");
+            int rw, rh, bw, bh;  // (the size this mode renders, next to its name, against the window)
+            if (modes_ok && upscale_mode_pixels(q, &rw, &rh, &bw, &bh)) {
+                char extra[64];
+                if (rw == bw && rh == bh) snprintf(extra, sizeof extra, "  (%d x %d)", rw, rh);
+                else snprintf(extra, sizeof extra, "  (%d x %d / %d x %d)", rw, rh, bw, bh);
+                mode_names[i] += extra;
+            }
             mn[i] = mode_names[i].c_str();
             mavail[i] = modes_ok && upscale_mode_offered(q);
             if (q == g_settings.upscale_quality) mi = i;
             if (q == UPQ_QUALITY) mdef = i;
         }
-        float sx, sy;  // the 3D scene's size (BOTW docked: 1600 x 900 times its scale)
-        renderer_get_scene_scale(&sx, &sy);
-        char rendering[100];
-        snprintf(rendering, sizeof rendering, tr("Rendering at %.0f x %.0f."), 1600.0 * sx, 900.0 * sy);
+        int rw, rh, bw, bh;  // the mode now chosen, against Video > Window size (not the scene's last frame)
+        char rendering[160];
+        if (modes_ok && upscale_mode_pixels(g_settings.upscale_quality, &rw, &rh, &bw, &bh))
+            snprintf(rendering, sizeof rendering, tr("Renders at %d x %d of the %d x %d window."), rw, rh, bw, bh);
+        else
+            snprintf(rendering, sizeof rendering, "%s", "");
         // (the first mode by the name the row gives it: DLAA with DLSS)
         std::string md = std::string(upscale_mode_is_dlaa(UPQ_NATIVE)
                                          ? tr("How much smaller the game renders before the upscaler brings it to the "
@@ -1187,7 +1197,8 @@ static void tab_display(void) {
                                               "Smaller is faster and softer.")) +
                          "\n\n" + tr("Dynamic: renders the 3D scene smaller when frames are slow, sharper when they "
                                      "aren't; stays full size where that gains nothing.") +
-                         "\n\n" + (modes_ok ? rendering : tr("Coming in a later version."));
+                         (!modes_ok ? std::string("\n\n") + tr("Coming in a later version.")
+                                    : rendering[0] ? std::string("\n\n") + rendering : std::string());
         opt_indent(1);
         if (g_settings.upscaler == UPSCALE_OFF) opt_disable_next();
         static int mshown = -1;
@@ -1351,12 +1362,24 @@ static void tab_display(void) {
     if (hdr_open) {
         opt_indent(1);
         {   // HDR (settings.h HDR_*: runtime/nvn/vulkan/device.c hdr_wanted)
-            static const char *const names[HDR_COUNT] = {"Automatic", "On", "Off"};
-            opt_choice("HDR", &g_settings.hdr, names, HDR_COUNT, HDR_AUTO,
-                       "Automatic: HDR while your display is in HDR; the scene keeps detail brighter than white. On: "
-                       "always HDR. Off: always standard (SDR). HDR setting changes apply immediately; switching HDR "
-                       "itself takes effect after a restart.",
-                       false);
+            static const char *const base[HDR_COUNT] = {"Automatic", "On", "Off"};
+            static char labels[HDR_COUNT][48];
+            const char *names[HDR_COUNT];
+            char output[64];
+            snprintf(output, sizeof output, tr("Output: %s."), vk_hdr_output_name());
+            for (int i = 0; i < HDR_COUNT; i++) {
+                if (i == g_settings.hdr)
+                    snprintf(labels[i], sizeof labels[i], "%s  (%s)", tr(base[i]), vk_hdr_output_name());
+                else
+                    snprintf(labels[i], sizeof labels[i], "%s", tr(base[i]));
+                names[i] = labels[i];
+            }
+            std::string hdr_desc = std::string(tr("Automatic: HDR while your display is in HDR; the scene keeps detail "
+                                                  "brighter than white. On: always HDR. Off: always standard (SDR). HDR "
+                                                  "setting changes apply immediately; switching HDR itself takes effect "
+                                                  "after a restart.")) +
+                                   " " + output;
+            opt_choice("HDR", &g_settings.hdr, names, HDR_COUNT, HDR_AUTO, hdr_desc.c_str(), false);
             const bool hdr_off = g_settings.hdr == HDR_OFF;
             auto hdr_sub = [hdr_off]() { if (hdr_off) opt_disable_next(); };
             opt_indent(1);

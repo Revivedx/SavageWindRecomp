@@ -1829,6 +1829,7 @@ static int fg_mode(void);
 // tonemap stays SDR's and the 8-bit image is presented in HDR10, its frames and the generated ones alike)
 bool vk_hdr_game_enabled(void) { return g_hdr && !fg_mode(); }
 bool vk_hdr_output(void) { return g_hdr; }  // (the swapchain is HDR10, frame generation or not)
+const char *vk_hdr_output_name(void) { return g_hdr ? "HDR10" : "SDR"; }
 bool vk_hdr_targets_wanted(void) {  // (hdr.c: the final linear 10-bit image as RGBA16F)
     static int off = -1;
     if (off < 0) off = getenv("SAVAGEWIND_HDR_RT8") ? atoi(getenv("SAVAGEWIND_HDR_RT8")) != 0 : 0;  // (testing: the old 10-bit targets)

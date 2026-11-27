@@ -63,6 +63,13 @@
               cp build/savagewind "$out/bin/savagewind"
               runHook postInstall
             '';
+            # -fuse-ld=lld skips Nix's linker wrapper, so the binary is left with no RUNPATH.
+            postFixup = ''
+              patchelf --set-rpath "${lib.makeLibraryPath (with pkgs; [
+                sdl3 ffmpeg shaderc vulkan-loader zlib stdenv.cc.cc.lib
+              ])}" "$out/bin/savagewind"
+              addDriverRunpath "$out/bin/savagewind"
+            '';
             meta = {
               description = "Savage Wind runtime, without game files";
               mainProgram = "savagewind";
