@@ -1409,6 +1409,19 @@ def _place_icon(gen, a):
             f'  /* {a:#x}: ldr w8, [x19, #0x3c] (map markers: Cheats > Map) */')
 
 
+# The map's completion rate (tools/game_sites.py map_clear_rate; runtime/assists.c rt_map_clear_rate): the map screen
+# asks the game whether the save has the GameClear flag (1.9.0 0x7000d36aa0) and hides its rate block when the answer is
+# no. With the option on the answer is 1, so the rate shows before the game is cleared.
+def _map_clear_rate(gen, a):
+    w = _word(gen, a)
+    assert w >> 26 == 0x25, hex(w)  # bl isGameClear
+    target = a + sext(w & 0x3ffffff, 26) * 4
+    fn = f'f_{target:x}'
+    return ('{ extern int rt_map_clear_rate(void); if (rt_map_clear_rate()) c->x[0] = 1; '
+            f'else {{ extern void {fn}(Cpu *); c->x[30] = {a + 4:#x}ull; {fn}(c); }} }}'
+            f'  /* {a:#x}: bl {target:#x} (map: is the game cleared) */')
+
+
 # Gameplay > Keep crouch after camera (runtime/camera_stealth.c): when Link enters the Camera rune (`カメラ`), the
 # normal camera action clears his crouch bit and leaves him standing (`待機`) on exit. Record his crouch bit before
 # entering, route normal Camera exits back to crouch idle (`しゃがみ待機`) when enabled, and clear pending state on
@@ -1626,6 +1639,7 @@ PATCHES = {
     'place_count_read': _place_count_read,
     'place_travel': _place_travel,
     'place_icon': _place_icon,
+    'map_clear_rate': _map_clear_rate,
     'cjk_font_size': _cjk_font_size,
     'cjk_font_bin': _cjk_font_bin,
     'cjk_font_quad': _cjk_font_quad,

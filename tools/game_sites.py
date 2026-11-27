@@ -549,6 +549,11 @@ SITES = [
     # Cheats > Map hooks the read (patches.py _place_icon) and clears the bit for places that were never visited,
     # so they keep the normal look while staying travel destinations.
     Site('place_icon', 'code', 'b9403e68 7217011f f9406121 a9414ff4 1e200c20 a8c27bfd d61f0020 a9414ff4', 0),
+    # The map's completion rate (tools/patches.py _map_clear_rate; runtime/assists.c rt_map_clear_rate): the map
+    # screen asks the game whether the save has the GameClear flag and hides its rate block when the answer is no
+    # (1.9.0 0x7000dab280: bl isGameClear, then tbz).
+    Site('map_clear_rate', 'code', '2a1f03e0 94000000/fc000000 36000000/ff00001f 90007df8/9f00001f f944cf18 '
+         'f9400300 94000000/fc000000', 1),
     # The game's memory (tools/patches.py _game_heap_size; runtime/kernel.c kernel_memory_setup): the size nninitStartup
     # asks SetMemoryHeapSize for (mov w0, #0xc3000000, then the 32 MB block malloc keeps), and the root heap's size
     # main hands sead's heap manager (mov w8, #0xc1000000: the heap less those 32 MB)
@@ -917,6 +922,7 @@ KNOWN = {
         'place_count_read': 0x7000d7bea4,
         'place_travel': 0x7000d7b904,
         'place_icon': 0x7000dac488,
+        'map_clear_rate': 0x7000dab280,
         'main_data': 0x7001b7a000,
         'main_end': 0x7001e98000,
     },

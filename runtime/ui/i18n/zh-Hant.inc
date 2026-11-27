@@ -1555,3 +1555,5 @@ T("Press the sprint button once while moving and Link keeps sprinting until he s
 T("30 fps until F5 again", "30 fps，直到再次按 F5")
 T("Frame rate as set again", "影格率恢復為設定值")
 T("30 fps for a physics puzzle, until pressed again:  F5", "物理謎題時 30 fps，再按一次恢復:  F5")
+T("Show the map completion rate", "顯示地圖完成度")
+T("The map's completion percentage shows before the game is cleared.", "通關前也會顯示地圖完成度。")

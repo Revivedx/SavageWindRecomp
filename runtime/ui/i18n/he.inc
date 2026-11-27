@@ -1554,3 +1554,5 @@ T("Press the sprint button once while moving and Link keeps sprinting until he s
 T("30 fps until F5 again", "30 fps עד לחיצה נוספת על F5")
 T("Frame rate as set again", "קצב הפריימים שוב כפי שהוגדר")
 T("30 fps for a physics puzzle, until pressed again:  F5", "30 fps לחידת פיזיקה, עד לחיצה נוספת:  F5")
+T("Show the map completion rate", "הצג את אחוז השלמת המפה")
+T("The map's completion percentage shows before the game is cleared.", "אחוז השלמת המפה מוצג לפני סיום המשחק.")

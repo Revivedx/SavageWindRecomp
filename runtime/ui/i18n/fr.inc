@@ -1555,3 +1555,5 @@ T("Press the sprint button once while moving and Link keeps sprinting until he s
 T("30 fps until F5 again", "30 fps jusqu'au prochain F5")
 T("Frame rate as set again", "Fréquence d'images comme réglée")
 T("30 fps for a physics puzzle, until pressed again:  F5", "30 fps pour une énigme physique, jusqu'au prochain appui :  F5")
+T("Show the map completion rate", "Afficher le taux de la carte")
+T("The map's completion percentage shows before the game is cleared.", "Le pourcentage d'achèvement de la carte s'affiche avant la fin du jeu.")

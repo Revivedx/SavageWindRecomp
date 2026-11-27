@@ -253,6 +253,7 @@ typedef struct {
     bool sure_footed;        // a running horse doesn't stop dead and rear when it hits something (runtime/sure_footed.c)
     bool collectibles_map;   // the Korok seeds and shrines not found yet on the game's map (runtime/collectibles_map.c)
     bool show_all_places;    // every shrine, tower, lab and stable on the map (runtime/place_display.c)
+    bool map_clear_rate;     // the map's completion percentage before the game is cleared (runtime/assists.c)
     int weather;             // WEATHER_COUNT: the game's, rain or thunderstorms kept out, or one weather held (weather.c)
     bool god_mode;           // Link takes no damage
     bool one_hit_kill;       // whatever else takes damage loses all its life at once

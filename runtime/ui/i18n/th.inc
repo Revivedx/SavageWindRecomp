@@ -1555,3 +1555,5 @@ T("Press the sprint button once while moving and Link keeps sprinting until he s
 T("30 fps until F5 again", "30 fps จนกว่าจะกด F5 อีกครั้ง")
 T("Frame rate as set again", "อัตราเฟรมกลับเป็นตามที่ตั้งไว้")
 T("30 fps for a physics puzzle, until pressed again:  F5", "30 fps สำหรับปริศนาฟิสิกส์ จนกว่าจะกดอีกครั้ง:  F5")
+T("Show the map completion rate", "แสดงเปอร์เซ็นต์แผนที่")
+T("The map's completion percentage shows before the game is cleared.", "เปอร์เซ็นต์ความสำเร็จของแผนที่จะแสดงก่อนจบเกม")

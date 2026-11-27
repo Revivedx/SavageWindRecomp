@@ -1555,3 +1555,5 @@ T("Press the sprint button once while moving and Link keeps sprinting until he s
 T("30 fps until F5 again", "F5를 다시 누를 때까지 30fps")
 T("Frame rate as set again", "프레임 속도를 설정대로 되돌렸습니다")
 T("30 fps for a physics puzzle, until pressed again:  F5", "물리 퍼즐용 30fps, 다시 누를 때까지:  F5")
+T("Show the map completion rate", "지도 달성률 표시")
+T("The map's completion percentage shows before the game is cleared.", "게임 클리어 전에도 지도의 달성률이 표시됩니다.")

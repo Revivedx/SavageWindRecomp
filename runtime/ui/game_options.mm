@@ -1181,6 +1181,11 @@ void build_items(void) {
                        [](const Item &) { return (int)g_settings.quick_replace; },
                        [](const Item &, int x) { g_settings.quick_replace = x; }, 0));
 
+    v.push_back(toggle(P_GAMEPLAY, "Show the map completion rate",
+                       "The map's completion percentage shows before the game is cleared.",
+                       [](const Item &) { return (int)g_settings.map_clear_rate; },
+                       [](const Item &, int x) { g_settings.map_clear_rate = x; }, 0));
+
     // Audio
     v.push_back(choice(P_AUDIO, "Volume", "The game's volume. 100% is its own level.",
                        [](const Item &) { return 21; },
@@ -2149,7 +2154,7 @@ void quit_poll(void) {
 static const char *const k_f1_gameplay[] = {"Start at Continue", "Dialogue text speed", "Keep crouch after camera",
                                             "Day/night cycle length", "Quick inventory sorting",
                                             "Quick inventory dropping", "Quick inventory replacement",
-                                            "Discord Rich Presence"};
+                                            "Show the map completion rate", "Discord Rich Presence"};
 static const char *const k_f1_controls[] = {"Button icons", "HUD button layout", "Prompts follow action bindings",
                                             "Menus wrap around", "Motion source", "Motion sensitivity",
                                             "Vertical motion sensitivity", "Invert motion", "Lean to turn",

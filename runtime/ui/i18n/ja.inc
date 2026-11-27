@@ -1555,3 +1555,5 @@ T("Press the sprint button once while moving and Link keeps sprinting until he s
 T("30 fps until F5 again", "もう一度F5を押すまで30fps")
 T("Frame rate as set again", "フレームレートを設定どおりに戻しました")
 T("30 fps for a physics puzzle, until pressed again:  F5", "物理パズル用に30fps（もう一度押すまで）:  F5")
+T("Show the map completion rate", "マップの達成率を表示")
+T("The map's completion percentage shows before the game is cleared.", "ゲームクリア前でもマップの達成率が表示されます。")
