@@ -1565,6 +1565,8 @@ static void tab_display(void) {
         opt_indent(-1);
     }
     opt_toggle("Lens flare", &g_settings.lens_flare, true, "Sun glare and lens flare. Off: no sun flare.");
+    opt_toggle("Tone mapper", &g_settings.tone_mapper, true,
+               "Filmic tone mapping and colour grade. Off: raw linear output without highlight compression.");
     if (gamelib_compat())  // (runtime/gamelib.h: a CPU without FMA instructions; simd.h simd_fma_unfused)
         opt_toggle("Fast math", &g_settings.fast_fma, true, "Your CPU has no FMA instructions, so the game's math runs "
                    "in software. On: about 10% faster; some results round a tiny bit differently from the console, "

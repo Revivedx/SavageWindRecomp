@@ -102,6 +102,16 @@ void vk_hdr_params(VkHdrParams *p) {
     p->v[15] = 0.10f * powf(fp * 0.02f, 10.0f);
     p->v[16] = (float)gm;
     p->v[17] = p->v[18] = p->v[19] = 0.0f;
+    if (!g_settings.tone_mapper) {
+        if (!vk_hdr_game_enabled()) {
+            p->v[0] = 1.0f;  // (SDR: no HDR white scaling)
+            p->v[6] = 1.0f;  // (SDR: keep the game's own bloom strength)
+            p->v[17] = 0.0f;
+        } else {
+            p->v[17] = 1.0f; // (HDR: keep highlights above 1.0)
+        }
+        p->v[8] = -1.0f;     // (bypass filmic curve and grade)
+    }
 }
 
 // ---- the float picture the game's present copy reads
@@ -443,7 +453,11 @@ char *vk_hdr_tonemap_source(const char *orig, int scene_texture, int glow_textur
                   "  else\n"
                   "    sw_c = max(sw_c, vec3(0.0));\n"
                   "  vec3 sw_out;\n"
-                  "  if (sw_tm < 0.5) {\n"
+                  "  if (sw_tm < -0.5) {\n"
+                  "    // Tone mapper off: raw linear scene + bloom without the filmic curve or colour grade\n"
+                  "    vec3 sw_raw = max(sw_x, vec3(0.0));\n"
+                  "    sw_out = sw_hdr.p[4].y > 0.5 ? sw_raw : clamp(sw_raw, 0.0, 1.0);\n"
+                  "  } else if (sw_tm < 0.5) {\n"
                   "    // Vanilla: the game's own tonemap and grade, clipped as its A2B10G10R10 target was\n"
                   "    float sw_vl = (sw_sdr_c.r + sw_sdr_c.g + sw_sdr_c.b) * sw_wl;\n"
                   "    float sw_vg = sw_bias + sw_scale * (1.0 - (sw_vl - 1.0) * (sw_vl - 1.0));\n"

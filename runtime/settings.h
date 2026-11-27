@@ -245,6 +245,7 @@ typedef struct {
     bool grass_quads;    // distant ground-cover layer (crossed quads; off: keeps near grass blades only)
     int grass_distance;  // GRASS_DIST_*: independent grass draw distance (0: follow draw_distance)
     bool lens_flare;     // sun glare / lens flare (off: vulkan/exec.c skips sun occlusion queries)
+    bool tone_mapper;    // filmic tone mapping and colour grade (off: vulkan/hdr.c passes linear scene + bloom through)
     bool fast_fma;       // CPUs without FMA instructions (gamelib_compat): the game's fused multiply-adds rounded twice,
                          // faster (simd.h simd_fma_unfused); off: exact, as the console
     // Video > Colour (runtime/color_grade.h): 0 everywhere and no LUT = the game's own colours (nothing runs)
