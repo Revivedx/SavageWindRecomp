@@ -22,6 +22,7 @@ void rt_fatal_trace(void) { abort(); }
 void guest_call(Cpu *c, uint64_t address) { (void)c; (void)address; assert(!"unexpected guest callback"); }
 void nvn_sync_in_list(uint64_t guest) { (void)guest; }
 NvnTexture *nvn_texture_host(uint64_t guest) { (void)guest; return NULL; }
+void rt_quick_replace_ui_draw(Cpu *c, void (*native)(Cpu *)) { native(c); }
 
 static bool pause_menu;
 bool framepace_menu_ui(void) { return pause_menu; }
@@ -209,6 +210,21 @@ int main(void) {
     assert((scope.kind & HUD_KIND_MASK) == UI_LAYOUT_HUD && (scope.kind & HUD_GROUP));
     assert(hud_group_ax(scope.kind) == -1 && hud_group_ay(scope.kind) == 1);
     hud_scope_leave(&scope); assert(scope.kind == UI_LAYOUT_HUD);
+    // MainScreen3D_00 carries HUD_WORLD_3D when wide_view is active
+    {
+        uint64_t screen3d = base + 0x900, name3d = base + 0xa80;
+        memcpy((void *)(uintptr_t)name3d, "MainScreen3D_00", 16);
+        ST64(slots + 8 * 0x2, screen3d);
+        ST64(screen3d + 0xd0, name3d);
+        memset((void *)(uintptr_t)(screen3d + 0xfe), 0, 8);
+        *(uint8_t *)(uintptr_t)(screen3d + 0xfe) = 2;
+        *(uint8_t *)(uintptr_t)(screen3d + 0x100) = 1;
+        g_settings.wide_view = true;
+        Cpu c3d = c; c3d.x[0] = screen3d;
+        at = cb->mem + cb->used; rt_ui_layout_draw(&c3d, native_draw);
+        assert(scope_at(at) == (UI_LAYOUT_HUD | HUD_WORLD_3D));
+        g_settings.wide_view = false;
+    }
     for (int i = 0; i < 40; i++) hud_scope_enter(&scope, UI_LAYOUT_CONTEXT);
     for (int i = 0; i < 40; i++) hud_scope_leave(&scope);
     assert(scope.kind == UI_LAYOUT_HUD);

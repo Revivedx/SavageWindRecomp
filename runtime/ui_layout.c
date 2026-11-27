@@ -144,11 +144,17 @@ uint32_t rt_cjk_font_scale(void) {
     return (g_settings.sharper_text >= 2) ? 2 : 1;
 }
 
+static bool screen_is_named(uint64_t screen, const char *want) {
+    if (!ui_range(screen, 0xd8)) return false;
+    uint64_t name = *(uint64_t *)(uintptr_t)(screen + 0xd0);
+    return ui_range(name, 32) && !strcmp((const char *)(uintptr_t)name, want);
+}
+
 uint64_t ui_layout_begin(Cpu *c) {
 #ifdef SW_METAL
     return 0;
 #else
-    bool scope_needed = g_settings.hud_edges || g_settings.hud_size != 100 || g_settings.dynamic_hud;
+    bool scope_needed = g_settings.hud_edges || g_settings.hud_size != 100 || g_settings.dynamic_hud || g_settings.wide_view;
     if ((!scope_needed && !any_hud_hidden()) || !g_site.screen_mgr || strcmp(g_game_version, "1.9.0")) return 0;
     uint64_t manager = *(uint64_t *)(uintptr_t)g_site.screen_mgr;
     if (!ui_range(manager, 0x38)) return 0;
@@ -182,7 +188,10 @@ uint64_t ui_layout_begin(Cpu *c) {
     // Layout/pane draw receives nn::gfx's wrapper at +8; its NVN object is the pointer at wrapper+0xb0.
     commands = *(uint64_t *)(uintptr_t)(commands + 0xb8);
     if (!ui_range(commands, 8)) return 0;
-    if (!nvn_ui_scope(commands, kind)) return 0;
+    unsigned scope = kind;
+    if (kind == UI_LAYOUT_HUD && g_settings.wide_view && screen_is_named(screen, "MainScreen3D_00"))
+        scope |= HUD_WORLD_3D;
+    if (!nvn_ui_scope(commands, scope)) return 0;
     layout_kind = kind; layout_screen = screen; layout_is_minimap = is_minimap;
     return commands;
 #endif

@@ -5331,6 +5331,7 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
     }
     float hud_s = hud_scale_now();
     if (shape == 1 && hud_s == 1) return false;
+    bool world_3d = (hud_scope.kind & HUD_WORLD_3D) != 0;
     int edge_mode = hud_edges_now(shape);
     bool hud_edge_active = edge_mode != 0;
     bool pause_edges = output_pause_extra_y() > 0;
@@ -5348,7 +5349,7 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
         fabsf(-g[5] / g[0] - 16.0f / 9.0f) < 0.002f) {
         float text_matrix[32];
         memcpy(text_matrix, g, sizeof text_matrix);
-        for (int k = 0; k < 4; k++) text_matrix[k] /= shape;
+        for (int k = 0; k < (world_3d ? 3 : 4); k++) text_matrix[k] /= shape;
         drw.hud_cut = menu_cut;
         float lx, ly;
         hud_combined_layout_xy(text_matrix, shape, &lx, &ly);
@@ -5356,7 +5357,7 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
         if (hud_s != 1 && !hud_context_native(shape, tx, ty, edge_x, edge_y) &&
             !(hud_quick && hud_quick_keeps(tx, ty, edge_x, edge_y)))
             hud_scale_matrix(text_matrix, hud_s, hud_anchor_now(tx, edge_x, 0), hud_anchor_now(ty, edge_y, 1));
-        if (hud_edge_active && shape > 1 && !hud_context_native(shape, tx, ty, edge_x, edge_y) &&
+        if (!world_3d && hud_edge_active && shape > 1 && !hud_context_native(shape, tx, ty, edge_x, edge_y) &&
             hud_edge_moves(edge_mode, ty, edge_y) && !(hud_quick && hud_quick_bar(tx, ty, edge_x, edge_y)) &&
             !hud_shop_pane(lx, ly)) {
             float dx = hud_edge_dx(hud_anchor_now(tx, edge_x, 0), edge_x, shape);
@@ -5373,8 +5374,10 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
         static float buf[0x10000 / 4];
         uint64_t n = size > sizeof buf ? sizeof buf : size;
         memcpy(buf, g, n);
-        buf[0] *= combined_scale[0], buf[3] *= combined_scale[0];
-        buf[5] *= combined_scale[1], buf[7] *= combined_scale[1];
+        buf[0] *= combined_scale[0];
+        if (!world_3d || shape <= 1) buf[3] *= combined_scale[0];
+        buf[5] *= combined_scale[1];
+        if (!world_3d || shape >= 1) buf[7] *= combined_scale[1];
         float lx, ly;
         hud_combined_layout_xy(buf, shape, &lx, &ly);
         float tx = buf[3] / buf[15], ty = buf[7] / buf[15];
@@ -5385,7 +5388,7 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
         hud_edge_matrix(buf, hud_layout_dy(shape));
         if (map_chrome && fabsf(ty) > shape * (200.0f / 360))
             hud_edge_matrix(buf, copysignf(1 - shape, ty));
-        if (hud_edge_active && !hud_context_native(shape, tx, ty, edge_x, edge_y) && hud_edge_moves(edge_mode, ty, edge_y) &&
+        if (!world_3d && hud_edge_active && !hud_context_native(shape, tx, ty, edge_x, edge_y) && hud_edge_moves(edge_mode, ty, edge_y) &&
             !(hud_quick && hud_quick_bar(tx, ty, edge_x, edge_y)) && !hud_shop_pane(lx, ly)) {
             float ay = hud_anchor_now(ty, edge_y, 1);
             float dx = hud_edge_dx(hud_anchor_now(tx, edge_x, 0), edge_x, shape);
@@ -5519,7 +5522,7 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
         if (hud_scale) {  // (a quick menu's bar: HUD size keeps its middle at the game's size, HUD at edges the bar)
             hud_ax = hud_anchor_now(cx, edge_x, 0);
             hud_ay = hud_anchor_now(cy, edge_y, 1);
-            if (hud_edge_active && hud_edge_moves(edge_mode, cy, edge_y) &&
+            if (!world_3d && hud_edge_active && hud_edge_moves(edge_mode, cy, edge_y) &&
                 !(hud_quick && hud_quick_bar(cx, cy, edge_x, edge_y)) && !hud_shop_pane(mv[3], mv[7])) {
                 edge_dx = hud_edge_dx(hud_ax, edge_x, shape);
                 edge_dy = hud_edge_dy(hud_ay, edge_y, shape);
@@ -5530,11 +5533,16 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
     if (tall_map && size >= 28 * 4 && ((map_chrome && fabsf(g[23]) > 200) ||
         (g_cur_fs_hash == UINT64_C(0xd4fa32dabc35066c) && !g[19] && fabsf(g[23]) == 360)))
         edge_dy = copysignf(1 - shape, g[23]);  // frame chrome and AppMap's black edge strips
-    if (m00 == g[0] && m11 == g[5] && !hud_scale && edge_dx == 0 && edge_dy == 0 && pause_dy == 0 && pause_stretch == 1) return false;
+    bool world_pos = world_3d && size >= 28 * 4 && shape != 1 && fabsf((tall ? m11 / shape : m11) - 2.74748f) < 0.001f;
+    if (m00 == g[0] && m11 == g[5] && !hud_scale && edge_dx == 0 && edge_dy == 0 && pause_dy == 0 && pause_stretch == 1 && !world_pos) return false;
     static float buf[0x10000 / 4];
     uint64_t n = size > sizeof buf ? sizeof buf : size;
     memcpy(buf, g, n);
     buf[0] = m00, buf[5] = m11;
+    if (world_pos) {
+        if (shape > 1) buf[16 + 3] *= shape;
+        else buf[16 + 7] /= shape;
+    }
     if (hud_scale) hud_scale_view(buf + 16, hud_s, m00, m11, hud_ax, hud_ay);
     if (edge_dx != 0) hud_edge_view_x(buf + 16, m00, edge_dx);
     if (edge_dy != 0) hud_edge_view(buf + 16, m11, edge_dy);

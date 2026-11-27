@@ -175,7 +175,7 @@ static inline double hud_edge_scissor_dy(double y_center, double gh, double shap
 // icon and each count went to the anchor of the zone it was in, so at another HUD size the column broke apart and
 // icons left their counts (#913). The scope marker carries the part's layout kind (UI_LAYOUT_*, ui_layout.h) in the low
 // bits and its anchor, -1, 0 or 1 on each axis, above them.
-enum { HUD_KIND_MASK = 0xf, HUD_GROUP = 0x10 };
+enum { HUD_KIND_MASK = 0xf, HUD_GROUP = 0x10, HUD_WORLD_3D = 0x200 };
 static inline unsigned hud_group_kind(unsigned kind, int ax, int ay) {
     return HUD_GROUP | (kind & HUD_KIND_MASK) | (unsigned)(ax + 1) << 5 | (unsigned)(ay + 1) << 7;
 }
