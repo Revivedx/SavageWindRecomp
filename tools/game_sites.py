@@ -188,11 +188,14 @@ SITES = [
     # a stale actor in the target manager (tools/patches.py _stale_actor_helper, _stale_actor_target; #391, #393): the
     # helper that asks an actor for its link, and the camera target's inline copy of it
     Site('stale_actor_helper', 'code', 'b4000000/ff00001f f942b808 f9404500 14000000/fc000000 d65f03c0', 0),
+    Site('stale_actor_helper2', 'code', 'b4000000/ff00001f f942b808 528071a1 72a900c1 f9404500 14000000/fc000000 d65f03c0', 0),
     Site('stale_actor_kind', 'code', 'b4000000/ff00001f f942b808 aa0003f3 528ebfc1 72a499a1 f9404500 94000000/fc000000', 0),
     Site('stale_actor_target', 'code', 'f942ba68 f9404500 94000000/fc000000 12000008 390006e8 37000000/fff8001f 394002e8 35000008/ff00001f', 0),
-    # and the two loads of an actor's link in the check of one of its flags by name (1.9.0 0x700120c760; #766)
+    # and the loads of an actor's link in the check of one of its flags by name (1.9.0 0x700120c760; #766, #1011)
     Site('stale_actor_flag', 'code', 'f942ba68 52864261 72b85581 f9404500 94000000/fc000000 36000000/fff8001f 52800020 a9424ff4', 0),
     Site('stale_actor_flag2', 'code', 'f942ba68 528120a1 72a6b2c1 f9404500 94000000/fc000000 2a000288 37000008/fff8001f f942ba68', 0),
+    Site('stale_actor_flag3', 'code', 'f942ba68 528071a1 72a900c1 f9404500 94000000/fc000000 14000000/fc000000 52800034 14000000/fc000000', 0),
+    Site('stale_actor_flag4', 'code', 'f942ba68 528cfa41 72ad8a41 f9404500 94000000/fc000000 36000000/fff8001f 14000000/fc000000', 0),
     # the physics step's solver microsteps (tools/patches.py _solver_steps): the delta frame times 6
     Site('phys_solver_steps', 'code', '1e231002 1e3c1004 f9401a68 1e2c1009 1e220822 f9400108 1e202048 f9400514', 4),
     # Havok's deactivation at the console's pace (tools/patches.py _phys_tick, _phys_motion_tick): the world step's
@@ -610,7 +613,7 @@ OPTIONAL_GROUPS = [
     ('lookat_update',),  # (the free camera: without it Home does nothing)
     ('gyro_scene_actor',),
     ('surf_contact', 'surf_boost_remove', 'surf_jump_request'),
-    ('stale_actor_helper', 'stale_actor_kind', 'stale_actor_target', 'stale_actor_flag', 'stale_actor_flag2'),
+    ('stale_actor_helper', 'stale_actor_helper2', 'stale_actor_kind', 'stale_actor_target', 'stale_actor_flag', 'stale_actor_flag2', 'stale_actor_flag3', 'stale_actor_flag4'),
     ('quick_menu_capture_alpha',),
     ('cjk_font_size', 'cjk_font_bin', 'cjk_font_quad'),
     ('kf_angle',),
@@ -817,10 +820,13 @@ KNOWN = {
         'surf_boost_remove': 0x70011e9e94,
         'surf_jump_request': 0x70011ea3d4,
         'stale_actor_helper': 0x700120bc40,
+        'stale_actor_helper2': 0x700120c740,
         'stale_actor_kind': 0x700120ccdc,
         'stale_actor_target': 0x7000dea400,
         'stale_actor_flag': 0x700120c780,
         'stale_actor_flag2': 0x700120c7f0,
+        'stale_actor_flag3': 0x700120c80c,
+        'stale_actor_flag4': 0x700120c830,
         'phys_solver_steps': 0x700156f930,
         'demo_move_arrive': 0x7000c711dc,
         'rail_point_radius': 0x7000c89d4c,
