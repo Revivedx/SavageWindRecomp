@@ -701,6 +701,12 @@ void settings_load(void) {
         else if (!strcmp(key, "damage_taken")) g_settings.damage_taken = atoi(val);  // (percent)
         else if (!strcmp(key, "damage_dealt")) g_settings.damage_dealt = atoi(val);
         else if (!strcmp(key, "toggle_zl")) g_settings.toggle_zl = atoi(val) != 0;
+        else if (!strcmp(key, "guard_crouch") || !strcmp(key, "guard_scope")) {
+            int mode = atoi(val);
+            if (mode < 0 || mode >= GUARD_ACTION_COUNT) mode = GUARD_ACTION_ON;
+            if (!strcmp(key, "guard_crouch")) g_settings.guard_crouch = mode;
+            else g_settings.guard_scope = mode;
+        }
         else if (!strcmp(key, "toggle_zr")) g_settings.toggle_zr = atoi(val) != 0;
         else if (!strcmp(key, "toggle_sprint")) g_settings.toggle_sprint = atoi(val) != 0;
         else if (!strcmp(key, "menu_text_size")) g_settings.menu_text_size = atoi(val);
@@ -1026,6 +1032,8 @@ bool settings_save_to(const char *path) {
     fprintf(f, "damage_taken = %d\n", g_settings.damage_taken);
     fprintf(f, "damage_dealt = %d\n", g_settings.damage_dealt);
     fprintf(f, "toggle_zl = %d\n", g_settings.toggle_zl ? 1 : 0);
+    fprintf(f, "guard_crouch = %d\n", g_settings.guard_crouch);
+    fprintf(f, "guard_scope = %d\n", g_settings.guard_scope);
     fprintf(f, "toggle_zr = %d\n", g_settings.toggle_zr ? 1 : 0);
     fprintf(f, "toggle_sprint = %d\n", g_settings.toggle_sprint ? 1 : 0);
     fprintf(f, "menu_text_size = %d\n", g_settings.menu_text_size);

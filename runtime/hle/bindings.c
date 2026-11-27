@@ -899,10 +899,43 @@ static bool conversation_up(void) {
 static _Atomic uint64_t a_prev;
 static _Atomic bool a_served;  // a pressed query was answered since the last poll
 
-void act_poll(bool live) {
+typedef struct {
+    uint64_t since;
+    bool down, waiting, cancelled;
+} FocusPress;
+
+static FocusPress focus_presses[4];  // raw stick clicks, then rebound Crouch and Scope
+RT_ON_RESET(focus_presses_reset) { memset(focus_presses, 0, sizeof focus_presses); }
+
+static uint64_t focus_press(FocusPress *press, uint64_t buttons, unsigned bit,
+                            int mode, bool guarding, uint64_t now) {
+    uint64_t mask = 1ull << bit;
+    bool down = (buttons & mask) != 0;
+    if (!down || mode == GUARD_ACTION_ON) *press = (FocusPress){.down = down};
+    else if (!press->down) *press = (FocusPress){.since = now, .down = true, .waiting = guarding};
+
+    if (!press->waiting) return buttons;
+    // Unlocking during a suppressed click must not turn it into a new press.
+    if (!guarding) press->cancelled = true;
+    if (mode == GUARD_ACTION_HOLD && !press->cancelled && now - press->since >= 300) {
+        press->waiting = false;
+        return buttons;
+    }
+    return buttons & ~mask;
+}
+
+uint64_t act_poll(bool live, uint64_t buttons, int crouch_mode, int scope_mode) {
     static bool was_live;
     uint64_t custom = a_custom;
     uint64_t cur = live ? (a_keys | a_pads) & custom : 0, prev = a_prev;
+    uint64_t now = SDL_GetTicks();
+    if (!live) crouch_mode = scope_mode = GUARD_ACTION_ON;
+    bool guarding = (buttons >> BIND_ZL & 1) != 0;
+    buttons = focus_press(&focus_presses[0], buttons, BIND_LSTICK, crouch_mode, guarding, now);
+    buttons = focus_press(&focus_presses[1], buttons, BIND_RSTICK, scope_mode, guarding, now);
+    uint64_t unfiltered = cur;
+    cur = focus_press(&focus_presses[2], cur, 17, crouch_mode, guarding, now);  // Crouch
+    cur = focus_press(&focus_presses[3], cur, 15, scope_mode, guarding, now);  // Scope
     if (live && !was_live) prev = cur;  // held through a menu closing: not a new press
     uint64_t edge = cur & ~prev;
     // A poll nobody read (no pressed query since the last one) keeps its edge for the next, so a press is never lost
@@ -910,7 +943,7 @@ void act_poll(bool live) {
     // message is up ("You got ..." after a new item) the game asks about no player action, and the press that closed
     // it, kept until the player was asked again, jumped as soon as the message was gone
     static uint64_t edge_ms;
-    uint64_t now = SDL_GetTicks(), kept = a_served ? 0 : a_trig;
+    uint64_t kept = a_served ? 0 : a_trig & ~(unfiltered & ~cur);
     if (kept && now - edge_ms > EDGE_KEEP_MS) kept = 0;
     if (edge) edge_ms = now;
     a_trig = (kept | edge) & custom;
@@ -921,6 +954,7 @@ void act_poll(bool live) {
     was_live = live;
     if (live && any_shares_interact() && (interact_prompt_up() || conversation_up())) a_prompt_ms = now;
     if (act_log_on()) act_log_poll();
+    return buttons;
 }
 
 // The last time the game asked the Master Cycle Zero's accelerate action (38): it does every frame while Link rides it

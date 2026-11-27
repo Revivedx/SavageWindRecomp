@@ -2229,6 +2229,11 @@ static void tab_about(void) {
     }
     opt_toggle("Toggle shield / focus (ZL)", &g_settings.toggle_zl, false,
                "Press ZL once in play to hold your shield or lock on; press ZL again to release.");
+    static const char *const guard_modes[] = {"On", "Off", "Hold"};
+    opt_choice("Crouch while guarding", &g_settings.guard_crouch, guard_modes, GUARD_ACTION_COUNT, GUARD_ACTION_ON,
+               "On activates immediately. Off blocks the action. Hold requires 0.3 seconds.");
+    opt_choice("Scope while guarding", &g_settings.guard_scope, guard_modes, GUARD_ACTION_COUNT, GUARD_ACTION_ON,
+               "On activates immediately. Off blocks the action. Hold requires 0.3 seconds.");
     opt_toggle("Toggle bow aim (ZR)", &g_settings.toggle_zr, false,
                "Press ZR once in play to draw and hold your bow; press ZR again to shoot.");
     opt_toggle("Toggle sprint", &g_settings.toggle_sprint, false,

@@ -63,7 +63,9 @@ uint64_t act_scan_keys(uint64_t b, int (*held)(int)) { (void)b; (void)held; retu
 uint64_t act_scan_pad(uint64_t b, uint32_t host) { (void)b; (void)host; return 0; }
 uint64_t act_gameplay_buttons(uint64_t raw, int (*held)(int), uint32_t host) { (void)held; (void)host; return raw; }
 void act_publish(uint64_t keys, uint64_t pads) { (void)keys; (void)pads; }
-void act_poll(bool live) { (void)live; }
+uint64_t act_poll(bool live, uint64_t buttons, int crouch_mode, int scope_mode) {
+    (void)live; (void)crouch_mode; (void)scope_mode; return buttons;
+}
 bool act_cycle_live(void) { return false; }
 void motion_script(float p, float r, float ps, float ys) { (void)p; (void)r; (void)ps; (void)ys; unexpected_helper(); }
 // (the control endpoint, the virtual gyro and the DSU poll: off here)

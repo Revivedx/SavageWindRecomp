@@ -31,6 +31,8 @@
 #include "../game_flags.h"
 #include "../quick_drop_action.h"
 
+extern bool freecam_active(void);
+
 enum {
     BTN_A = 0, BTN_B, BTN_X, BTN_Y, BTN_LSTICK, BTN_RSTICK, BTN_L, BTN_R, BTN_ZL, BTN_ZR, BTN_PLUS, BTN_MINUS,
     BTN_LEFT, BTN_UP, BTN_RIGHT, BTN_DOWN
@@ -224,7 +226,6 @@ static void recompute_pad(void) {
     }
     {   // The free camera (hle/freecam.c): both stick clicks together turn it on and off (with the Controls option off they
         // only turn it off); while it is on the controller moves it and the game sees the controller at rest
-        extern bool freecam_active(void);
         extern void freecam_toggle(void), freecam_pad(float lx, float ly, float rx, float ry, float up, float down, bool fast,
                                                       bool slow);
         extern void photo_pad(uint32_t buttons);
@@ -754,7 +755,6 @@ void input_handle_event(const SDL_Event *e) {
     switch (e->type) {
     case SDL_EVENT_KEY_DOWN: case SDL_EVENT_KEY_UP:
         {   // Home: the free camera (hle/freecam.c; F7 is fly mode's default); while it is on, keys move it, not Link
-            extern bool freecam_active(void);
             extern void freecam_toggle(void), freecam_key(int scancode, bool down);
             if (e->type == SDL_EVENT_KEY_DOWN && e->key.scancode == SDL_SCANCODE_HOME && !e->key.repeat) {
                 freecam_toggle();
@@ -805,7 +805,6 @@ void input_handle_event(const SDL_Event *e) {
         break;
     case SDL_EVENT_MOUSE_MOTION:
         {
-            extern bool freecam_active(void);
             extern void freecam_mouse(float dx, float dy);
             if (freecam_active()) { freecam_mouse(e->motion.xrel, e->motion.yrel); break; }
         }
@@ -1240,7 +1239,6 @@ static void fill_state(Cpu *c) {
     // Customized actions use host bindings during play. Factory-default actions and all queries in menus, with
     // the window unfocused or the overlay up, use the Switch layer, so no binding can lock the player out.
     bool ui_menu = ui_menu_active();
-    act_poll(!menu && !ui_menu);
     uint64_t bow = pc_bow_sample();
     bool in_menu = menu || ui_menu;
     uint64_t raw = menu ? 0 : (in_menu ? (key_buttons | pad_buttons) : act_gameplay_buttons(key_buttons | pad_buttons, game_key, host_buttons));
@@ -1248,7 +1246,8 @@ static void fill_state(Cpu *c) {
     if (!menu) b |= auto_continue_buttons(b);  // (not while the overlay has the controls)
     b=pc_cursor_buttons(b);
     // (Accessibility toggles: a menu, a cutscene or a talk lets go, so the shield or the bow isn't still up after it)
-    b = toggle_buttons(b, !in_menu && !pc_cursor_active() && !framepace_in_event() && !framepace_dialogue_ui());
+    bool in_play = !in_menu && !pc_cursor_active() && !framepace_in_event() && !framepace_dialogue_ui();
+    b = toggle_buttons(b, in_play);
     extern bool game_options_hold_a(void);  // runtime/ui/game_options.mm: the Achievements page is up
     if (game_options_hold_a()) b &= ~(1ull << BTN_A);
     {   // injected Plus: held for ~10 presented frames (the game polls several times per frame)
@@ -1287,10 +1286,14 @@ static void fill_state(Cpu *c) {
     }
     control_input_apply(&b, &lx, &ly, &rx, &ry);
     // (after the control endpoint's buttons and sticks: a scripted press latches as a player's does)
-    b = toggle_sprint(b, lx, ly, !in_menu && !pc_cursor_active() && !framepace_in_event() && !framepace_dialogue_ui());
+    b = toggle_sprint(b, lx, ly, in_play);
     b = unconsumed_buttons(b);
     { extern uint64_t quick_replace_buttons(uint64_t); b = quick_replace_buttons(b); }
     b = quick_drop_action_filter_buttons(b);
+    bool guard_assist = (g_settings.guard_crouch != GUARD_ACTION_ON || g_settings.guard_scope != GUARD_ACTION_ON) &&
+                        in_play && !dualstick_on() && !pc_gyro_keyboard_active() && !freecam_active();
+    b = act_poll(!in_menu, b, guard_assist ? g_settings.guard_crouch : GUARD_ACTION_ON,
+                 guard_assist ? g_settings.guard_scope : GUARD_ACTION_ON);
     // stick directions also appear as buttons (bits 16-23)
     if (lx < -16000) b |= 1ull << 16;
     if (ly > 16000) b |= 1ull << 17;
