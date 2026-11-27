@@ -1590,6 +1590,9 @@ void build_items(void) {
     v.push_back(toggle(P_ACCESS, "God mode", "Link takes no damage.",
                        [](const Item &) { return (int)g_settings.god_mode; },
                        [](const Item &, int x) { g_settings.god_mode = x; }, 0));
+    v.push_back(toggle(P_ACCESS, "No fall damage", "Link takes no damage from falling.",
+                       [](const Item &) { return (int)g_settings.no_fall_damage; },
+                       [](const Item &, int x) { g_settings.no_fall_damage = x; }, 0));
     v.push_back(toggle(P_ACCESS, "One-hit kill", "Enemies go down in one hit.",
                        [](const Item &) { return (int)g_settings.one_hit_kill; },
                        [](const Item &, int x) { g_settings.one_hit_kill = x; }, 0));
