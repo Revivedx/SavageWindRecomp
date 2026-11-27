@@ -19,6 +19,16 @@
       packages = each (pkgs:
         let
           inherit (pkgs) lib;
+          # The same Zig 0.17.0 the AppImage ships (tools/fetch_zig.sh). The binary is static, so it runs on NixOS.
+          zigSrc = pkgs.fetchurl {
+            url = "https://ziglang.org/download/0.17.0/zig-${pkgs.stdenv.hostPlatform.system}-0.17.0.tar.xz";
+            hash = {
+              x86_64-linux = "sha256-HL6d+fJ+a3jRTMvKQ7ZwOkBO957xxGPekB1/CI1OICY=";
+              aarch64-linux = "sha256-no0RZh1K471XcCo4MngeI60VHd5XmOFqXM1QP2UjT/g=";
+            }.${pkgs.stdenv.hostPlatform.system};
+          };
+          # tools/gen.py, with the same libraries the dev shell uses. Shipped as bin/swgen/swgen.
+          swgenPy = pkgs.python3.withPackages (ps: [ ps.lz4 ps.capstone ps.unicorn ]);
         in
         {
           default = pkgs.stdenv.mkDerivation {
@@ -82,6 +92,34 @@
               cp third_party/fonts/FontAwesome/LICENSE.txt "$out/bin/FontAwesome-LICENSE.txt"
               cp runtime/nvn/vulkan/vk_pipelines.seed "$out/bin/"
               cp third_party/luts/*.cube third_party/luts/README.md "$out/bin/colour-luts/"
+              # What Set up game files builds the game with (runtime/gamebuild.c), next to the executable,
+              # the same places the AppImage uses.
+              mkdir -p "$out/bin/gamelib-src" "$out/bin/swgen"
+              cp runtime/cpu.h runtime/simd.h runtime/simd_fp.h runtime/simd_softfma.h runtime/gamelib.h \
+                tools/gamelib_entry.c runtime/hle/hle_symbols.txt "$out/bin/gamelib-src/"
+              cp tools/analyze.py tools/flags.py tools/game_sites.py tools/gen.py tools/layout.py \
+                tools/lifter.py tools/nso.py tools/patches.py tools/regs.py tools/simd_c.py \
+                "$out/bin/swgen/"
+              cat > "$out/bin/swgen/swgen" << EOF
+              #!${swgenPy}/bin/python3
+              import os, sys
+              here = os.path.dirname(os.path.realpath(__file__))
+              sys.path.insert(0, here)
+              os.execv(sys.executable, [sys.executable, os.path.join(here, "gen.py"), *sys.argv[1:]])
+              EOF
+              sed -i 's/^              //' "$out/bin/swgen/swgen"
+              chmod +x "$out/bin/swgen/swgen"
+              tar -xJf ${zigSrc} -C "$out/bin"
+              mv "$out/bin"/zig-* "$out/bin/zig"
+              L="$out/bin/zig/lib"
+              for d in "$L"/libc/include/*; do
+                echo "$(basename "$d")" | grep -qE 'linux|glibc' || rm -rf "$d"
+              done
+              for d in "$L"/libc/*; do
+                n=$(basename "$d")
+                [ "$n" = include ] || echo "$n" | grep -qE '^(glibc)$' || rm -rf "$d"
+              done
+              rm -rf "$L/libcxx" "$L/libcxxabi" "$L/libtsan" "$L/docs" "$out/bin/zig/doc"
               cat > "$out/share/applications/savagewind.desktop" << EOF
               [Desktop Entry]
               Type=Application
@@ -111,7 +149,8 @@
                 sdl3 ffmpeg shaderc vulkan-loader zlib stdenv.cc.cc.lib
               ])}" "$out/bin/savagewind"
               wrapProgram "$out/bin/savagewind" \
-                --prefix LD_LIBRARY_PATH : /run/opengl-driver/lib
+                --prefix LD_LIBRARY_PATH : /run/opengl-driver/lib \
+                --prefix PATH : ${lib.makeBinPath [ pkgs.curl ]}
             '';
             meta = {
               description = "Savage Wind runtime, without game files";

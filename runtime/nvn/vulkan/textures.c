@@ -915,6 +915,17 @@ static uint64_t g_kept_bytes;
 
 static void tww_release(TexWW *w);
 
+// Host pixels waiting for the render thread (renderer_upload_rgba). Every free of that pointer takes this lock and
+// clears it first: the render thread and a thread dropping the image can otherwise free the same block.
+static pthread_mutex_t pending_lock = PTHREAD_MUTEX_INITIALIZER;
+static void pending_drop(TexBackend *b) {
+    pthread_mutex_lock(&pending_lock);
+    void *px = b->pending_rgba;
+    b->pending_rgba = NULL;
+    pthread_mutex_unlock(&pending_lock);
+    free(px);
+}
+
 static void free_backend(TexBackend *b) {
     if (b->kept) g_kept_bytes -= b->kept_bytes;
     tww_release(&b->ww);
@@ -922,7 +933,7 @@ static void free_backend(TexBackend *b) {
     idle_remove(b);
     images_remove(b);
     destroy_image(b);
-    free(b->pending_rgba);
+    pending_drop(b);
     free(b);
 }
 
@@ -1375,8 +1386,6 @@ static int tww_check(TexWW *w, const uint8_t *mem, uint64_t addr, uint64_t total
     return tww_edge(mem, addr, total, lo, hi) != w->edge;
 }
 // TWW-END
-
-static pthread_mutex_t pending_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static void upload_scaled(VkCommandBuffer cb, TexBackend *b, VkSpan s, VkBufferImageCopy rg, uint32_t gw, uint32_t gh);
 
@@ -2093,8 +2102,11 @@ void backend_pool_written(uint64_t addr, uint64_t size) { (void)addr; (void)size
 void renderer_upload_rgba(NvnTexture *t, const void *rgba, uint32_t w, uint32_t h, uint32_t stride) {
     TexBackend *b = t->backend;
     if (!b) return;  // the game binds the texture before decoding into it; first frames may arrive earlier
-    void *copy = malloc((size_t)stride * h);
-    memcpy(copy, rgba, (size_t)stride * h);
+    size_t bytes = (size_t)stride * h;
+    if (!bytes) return;
+    void *copy = malloc(bytes);
+    if (!copy) return;
+    memcpy(copy, rgba, bytes);
     pthread_mutex_lock(&pending_lock);
     free(b->pending_rgba);
     b->pending_rgba = copy;
@@ -2148,7 +2160,7 @@ static void evict_idle_images(void) {
         images_remove(b);
         if (b->image) vk_hdr_image_gone(b->image);  // (a present record may still name it)
         if (b->image) vmaDestroyImage(g_vk.vma, b->image, b->mem);
-        free(b->pending_rgba);
+        pending_drop(b);
         free(b);
     }
 }

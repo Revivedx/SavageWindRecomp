@@ -194,7 +194,8 @@ it; an older NVIDIA driver needs `ENABLE_HDR_WSI=1` and NVIDIA's WSI layer, whic
 
 NixOS builds with `flake.nix`, not with the apt packages above. The flake produces the runtime only (the start screen,
 no game files) for `x86_64-linux` and `aarch64-linux`, with a desktop entry, the window icon and the pictures and
-fonts the menus look for next to the executable:
+fonts the menus look for next to the executable. Zig and the game-code generator are next to the executable too, so
+Set up game files can build the game, and curl is on the program's path so Configuration can download NVIDIA DLSS:
 
     nix build
     ./result/bin/savagewind
