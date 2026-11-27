@@ -932,10 +932,23 @@ static void free_backend(TexBackend *b) {
 // Past PARK_FRAMES such an image is kept, with a hash of the guest memory under it, up to KEEP_BUDGET bytes (the oldest
 // go first); a texture made there again takes it back if that memory is unchanged (else the CPU reused it: a new image).
 // SAVAGEWIND_NO_KEEP_IMAGES=1: freed after PARK_FRAMES, as before.
+// Both limits count an image at its size on the console. A target scaled to the window (RS_SCENE, RS_OUT) or to
+// Video > Shadow resolution (RS_SHADOW) takes sx x sy times its console bytes, so with plain bytes the window's
+// resolution decided what was kept. BOTW lets go of its scene targets while a quick menu is up (weapons, shields,
+// runes) and makes them again in the same memory when it closes. At 1080p the scene's depth (1920x1080 D32, 8 MB)
+// was kept and taken back. At 4K (3840x2160, 33 MB) it was freed at each opening and made again at each closing,
+// and ReShade's depth add-on, when the depth-stencil it uses is destroyed, sleeps 500 ms in that thread: a half-second
+// stall at every quick menu, only at 4K. Scaled images over KEEP_MAX_IMAGE bytes are kept only while the video
+// memory has room (under VRAM_TRIM_TARGET of the budget).
 #define KEEP_MAX_IMAGE (16ull << 20)
 #define KEEP_BUDGET (192ull << 20)
 static uint64_t hash_full(const uint8_t *p, uint64_t n);
 static uint64_t storage_size(const NvnTexture *t);
+
+static uint64_t keep_console_bytes(const TexBackend *b, uint64_t bytes) {
+    double area = b->scalable ? (double)b->sx * b->sy : 1;
+    return area > 1 ? (uint64_t)(bytes / area) : bytes;
+}
 
 static bool keep_ok(TexBackend *b, uint64_t *bytes) {
     static int off = -1;
@@ -944,8 +957,14 @@ static bool keep_ok(TexBackend *b, uint64_t *bytes) {
         return false;
     VmaAllocationInfo ai;
     vmaGetAllocationInfo(g_vk.vma, b->mem, &ai);
-    *bytes = ai.size;
-    return ai.size <= KEEP_MAX_IMAGE;
+    *bytes = keep_console_bytes(b, ai.size);
+    if (*bytes > KEEP_MAX_IMAGE) return false;
+    if (ai.size > KEEP_MAX_IMAGE) {  // (scaled past the plain limit: only with room in video memory)
+        uint64_t allocated, budget;
+        vram_device_local_allocated(&allocated, &budget);
+        if (!budget || allocated > (uint64_t)(budget * VRAM_TRIM_TARGET)) return false;
+    }
+    return true;
 }
 
 // At most SAVAGEWIND_TEX_FREE_MAX images freed a frame (64), the oldest first: an area the game lets go of
