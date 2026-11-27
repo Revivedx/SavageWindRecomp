@@ -39,6 +39,7 @@ static const AchReward k_rewards[] = {
     {"beast_rudania", {"Armor_183_Head"}},                                     // Vah Rudania Divine Helm
     {"beast_naboris", {"Armor_184_Head"}},                                     // Vah Naboris Divine Helm
     {"beast_medoh", {"Armor_182_Head"}},                                       // Vah Medoh Divine Helm
+    {"hylian_shield", {"Weapon_Shield_057"}},                                  // Hero's Shield
     {"master_sword", {"Weapon_Sword_057"}},                                    // Goddess Sword
     {"old_memories", {"Armor_215_Head", "Armor_215_Upper", "Armor_215_Lower"}},  // Cap, Tunic, Trousers of the Sky
     {"hearts_20", {"Weapon_Sword_059"}},                                       // Sea-Breeze Boomerang
