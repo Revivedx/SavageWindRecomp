@@ -545,7 +545,7 @@ test-blood-moon: $(B)/test_blood_moon
 
 # Per-action bindings (docs/ACTIONS.md): the answers to the game's hold / pressed queries, menus, shared keys, capture and
 # savagewind.ini, then the patch the hook is written with (no game files)
-$(B)/test_actions: tools/test_actions.c runtime/hle/bindings.c runtime/input_bind.h
+$(B)/test_actions: tools/test_actions.c runtime/hle/bindings.c runtime/input_bind.h runtime/settings.h
 	@mkdir -p $(B)
 	$(CC) -O1 -DSDL_STATIC_LIB $(OSFLAGS) $(DEPINC) -Iruntime -o $@ tools/test_actions.c runtime/hle/bindings.c -lSDL3
 

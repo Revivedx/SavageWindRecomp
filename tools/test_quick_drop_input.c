@@ -10,7 +10,9 @@
 #include "../runtime/quick_drop_action.c"
 
 Settings g_settings;
-void act_poll(bool live) { (void)live; }
+uint64_t act_poll(bool live, uint64_t buttons, int crouch_mode, int scope_mode) {
+    (void)live; (void)crouch_mode; (void)scope_mode; return buttons;
+}
 uint64_t g_watch_lo, g_watch_hi;
 static uint64_t test_frame = 100, pointer_injection, control_injection, replacement_retry;
 static bool game_menu = true;

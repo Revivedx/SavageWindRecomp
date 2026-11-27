@@ -1647,6 +1647,18 @@ void build_items(void) {
                        "Press ZL once in play to hold your shield or lock on; press ZL again to release.",
                        [](const Item &) { return (int)g_settings.toggle_zl; },
                        [](const Item &, int x) { g_settings.toggle_zl = x; }, 0));
+    static const char *const guard_modes[] = {"On", "Off", "Hold"};
+    const char *guard_mode_help = "On activates immediately. Off blocks the action. Hold requires 0.3 seconds.";
+    v.push_back(choice(P_ACCESS, "Crouch while guarding", guard_mode_help,
+                       [](const Item &) { return (int)GUARD_ACTION_COUNT; },
+                       [](const Item &, int x) { return tr(guard_modes[x]); },
+                       [](const Item &) { return g_settings.guard_crouch; },
+                       [](const Item &, int x) { g_settings.guard_crouch = x; }, GUARD_ACTION_ON));
+    v.push_back(choice(P_ACCESS, "Scope while guarding", guard_mode_help,
+                       [](const Item &) { return (int)GUARD_ACTION_COUNT; },
+                       [](const Item &, int x) { return tr(guard_modes[x]); },
+                       [](const Item &) { return g_settings.guard_scope; },
+                       [](const Item &, int x) { g_settings.guard_scope = x; }, GUARD_ACTION_ON));
     v.push_back(toggle(P_ACCESS, "Toggle bow aim (ZR)",
                        "Press ZR once in play to draw and hold your bow; press ZR again to shoot.",
                        [](const Item &) { return (int)g_settings.toggle_zr; },

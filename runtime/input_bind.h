@@ -140,7 +140,8 @@ uint64_t act_gameplay_buttons(uint64_t raw, int (*held)(int scancode), uint32_t 
 void act_publish(uint64_t keys, uint64_t pads);                             // (bit per action)
 // The controller poll (game thread, once per GetNpadStates): freezes the held / pressed sets the game's queries see.
 // live = false in the game's menus, with the window unfocused or the overlay up: the Switch layer answers then.
-void act_poll(bool live);
+// Filters raw and rebound Crouch / Scope together using the effective Guard button.
+uint64_t act_poll(bool live, uint64_t buttons, int crouch_mode, int scope_mode);
 // The hook: the answer to hold (kind 0) / trigger (kind 1) of action `id` on game pad object `pad`, or -1 = the game
 // answers (factory defaults, a menu or an id out of range). `masks` is the game's mask table.
 int rt_act_query(int kind, uint64_t pad, uint64_t id, uint64_t lr, uint64_t masks);

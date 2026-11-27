@@ -284,6 +284,7 @@ typedef struct {
     int damage_taken;        // percent of the damage Link takes (DAMAGE_CHOICES)
     int damage_dealt;        // percent of the damage everything else takes (DAMAGE_CHOICES)
     bool toggle_zl;          // press ZL once in play to hold shield / focus; press again to release (hle/input.c)
+    int guard_crouch, guard_scope;  // GUARD_ACTION_* modes for Crouch and Scope
     bool toggle_zr;          // press ZR once in play to draw / hold bow; press again to release (hle/input.c)
     bool toggle_sprint;      // a sprint press while moving keeps sprinting until Link stops (hle/input.c, #1102)
     int menu_text_size;      // overlay text scale, percent (80..150, ui/menu.mm)
@@ -356,6 +357,8 @@ enum {
     BUTTON_LAYOUT_GAMECUBE,
     BUTTON_LAYOUT_COUNT
 };
+
+enum { GUARD_ACTION_ON, GUARD_ACTION_OFF, GUARD_ACTION_HOLD, GUARD_ACTION_COUNT };
 
 extern Settings g_settings;
 
