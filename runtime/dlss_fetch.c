@@ -294,6 +294,7 @@ const char *dlss_fetch_core(void) { return NULL; }
 
 bool dlss_fetch_missing(void) {
     static int missing = -1;
-    if (missing < 0) missing = dlss_fetch_offered() && !dlss_fetch_present();
+    if (missing == 0) return false;
+    missing = dlss_fetch_offered() && !dlss_fetch_present();  // (a download in this run clears it)
     return missing;
 }

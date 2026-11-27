@@ -2439,7 +2439,10 @@ extern "C" int rt_opt_store(uint64_t row) {
     if (it->page == P_VIDEO || it->page == P_VIDEO_ADV || it->page == P_HDR || it->page == P_COLOUR) {
         for (size_t i = 0; i < g_items.size() && i < g_shown.size(); i++) {
             const Item &o = g_items[i];
-            if (g_shown[i] >= 0 && (!o.value_off || !o.value_off(o, g_shown[i]))) g_shown[i] = -1;
+            // The mode row's values depend on the upscaler (Off is one grey value; DLSS adds DLAA). A highlight
+            // kept from the previous list would stay grey and the arrows would not move onto a real preset.
+            if (!strcmp(it->title, "Upscaler") && !strcmp(o.title, "Upscaler mode")) g_shown[i] = -1;
+            else if (g_shown[i] >= 0 && (!o.value_off || !o.value_off(o, g_shown[i]))) g_shown[i] = -1;
             if (o.kind == KIND_CHOICE) {
                 Entry &e = g_entries[GAME_ENTRIES + i];
                 e.last_value = e.first_value + game_count(o) - 1;

@@ -1201,7 +1201,8 @@ static void tab_display(void) {
                                     : rendering[0] ? std::string("\n\n") + rendering : std::string());
         opt_indent(1);
         if (g_settings.upscaler == UPSCALE_OFF) opt_disable_next();
-        static int mshown = -1;
+        static int mshown = -1, mode_for = -2;
+        if (mode_for != g_settings.upscaler) mode_for = g_settings.upscaler, mshown = -1;  // (the list changes: DLAA appears with DLSS)
         if (opt_choice_avail("Upscaler mode", &mi, &mshown, mn, mavail, nm, mdef, md.c_str()))
             g_settings.upscale_quality = k_upscale_mode_order[mi], render_scale_fit();  // (Native, DLAA: 100%)
         opt_indent(-1);

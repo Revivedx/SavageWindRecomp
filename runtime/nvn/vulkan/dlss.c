@@ -211,10 +211,10 @@ static bool core_symbols(void *h) {
 // Frame Generation). NGX is loaded only when one is there.
 static int dlls_here(void) {
     static int have = -1;
-    if (have >= 0) return have;
-    have = 0;
+    if (have > 0) return have;  // (a miss is not remembered: Configuration can download the DLLs while running)
+    int now = 0;
     DWORD len = GetModuleFileNameW(NULL, g_snippet_dir, 1024);
-    if (!len || len >= 1024) return have;
+    if (!len || len >= 1024) return 0;
     while (len && g_snippet_dir[len - 1] != L'\\' && g_snippet_dir[len - 1] != L'/') len--;
     g_snippet_dir[len ? len - 1 : 0] = 0;
     static const wchar_t *const names[2] = {L"nvngx_dlss.dll", L"nvngx_dlssg.dll"};
@@ -222,9 +222,10 @@ static int dlls_here(void) {
         wchar_t p[MAX_PATH + 32];
         _snwprintf(p, MAX_PATH + 32, L"%ls\\%ls", g_snippet_dir, names[i]);
         p[MAX_PATH + 31] = 0;
-        if (GetFileAttributesW(p) != INVALID_FILE_ATTRIBUTES) have |= 1 << i;
+        if (GetFileAttributesW(p) != INVALID_FILE_ATTRIBUTES) now |= 1 << i;
     }
-    return have;
+    if (now) have = now;
+    return now;
 }
 
 static bool try_load_core(const char *path) {
@@ -269,12 +270,14 @@ static bool find_driverstore_core(const char *skip_path, char *out, size_t nout)
 }
 
 static bool core_load(void) {
-    if (N.tried) return N.loaded;
-    N.tried = 1;
+    if (N.loaded) return true;
     if (!dlls_here()) {
-        LOG("[dlss] NVIDIA's DLSS libraries are not next to savagewind.exe (the setup downloads them): DLSS off\n");
+        static int told;
+        if (!told++) LOG("[dlss] NVIDIA's DLSS libraries are not next to savagewind.exe (the setup downloads them): DLSS off\n");
         return false;
     }
+    if (N.tried) return false;
+    N.tried = 1;
     char dir[MAX_PATH] = {0}, path[MAX_PATH + 32] = {0};
     DWORD n = sizeof dir;
     bool have_reg = RegGetValueA(HKEY_LOCAL_MACHINE, "SOFTWARE\\NVIDIA Corporation\\Global\\NGXCore", "FullPath",
@@ -339,20 +342,21 @@ static bool utf8_to_wchar(const char *s, wchar_t *out, size_t cap) {
 // same folder (the setup downloads Super Resolution; frame generation stays off without its own library).
 static int dlls_here(void) {
     static int have = -1;
-    if (have >= 0) return have;
-    have = 0;
+    if (have > 0) return have;  // (a miss is not remembered: Configuration can download the library while running)
+    int now = 0;
     char dir[1024];
     if (!dlss_fetch_dir(dir, sizeof dir) || !utf8_to_wchar(dir, g_snippet_dir, sizeof g_snippet_dir / sizeof *g_snippet_dir))
-        return have;
-    LOG("[dlss] feature libraries in %s\n", dir);
+        return 0;
     static const char *const names[2] = {"libnvidia-ngx-dlss.so." DLSS_FETCH_VERSION,
                                          "libnvidia-ngx-dlssg.so." DLSS_FETCH_VERSION};
     for (int i = 0; i < 2; i++) {
         char path[1200];
         snprintf(path, sizeof path, "%s/%s", dir, names[i]);
-        if (access(path, R_OK) == 0) have |= 1 << i;
+        if (access(path, R_OK) == 0) now |= 1 << i;
     }
-    return have;
+    if (now && have <= 0) LOG("[dlss] feature libraries in %s\n", dir);
+    if (now) have = now;
+    return now;
 }
 
 static bool try_load_core(const char *path) {
@@ -375,12 +379,15 @@ static bool try_load_core(const char *path) {
 }
 
 static bool core_load(void) {
-    if (N.tried) return N.loaded;
-    N.tried = 1;
+    if (N.loaded) return true;
     if (!dlls_here()) {
-        LOG("[dlss] NVIDIA's DLSS library is not in the library folder (Savage Wind Configuration downloads it): DLSS off\n");
+        static int told;
+        if (!told++)
+            LOG("[dlss] NVIDIA's DLSS library is not in the library folder (Savage Wind Configuration downloads it): DLSS off\n");
         return false;
     }
+    if (N.tried) return false;
+    N.tried = 1;
     const char *path = dlss_fetch_core();
     if (!path || !try_load_core(path)) {
         LOG("[dlss] no usable NGX core (libnvidia-ngx.so.1): DLSS off\n");
@@ -579,9 +586,12 @@ static bool ngx_start(void) {
 }
 
 bool vk_dlss_init(void) {
-    if (g_initialized) return g_ngx_up;
+    if (g_ngx_up) return true;
+    if (!g_vk.phys || !g_vk.dev) return false;  // (the menu can ask before the device exists)
+    if (!dlls_here()) return false;             // (not latched: the file may arrive after the first frame)
+    if (g_initialized) return false;
     g_initialized = true;
-    if (!g_vk.phys || !g_vk.dev || !core_load()) return false;
+    if (!core_load()) return false;
     if (!ngx_start()) return false;
     g_ngx_up = true;
     if (!ok(N.caps(&g_capability_params), "capabilities") || !g_capability_params) return true;
@@ -646,7 +656,10 @@ static void release_feature(void) {
     g_mv_scale_set = false;
 }
 
-bool vk_dlss_available(void) { return g_available; }
+bool vk_dlss_available(void) {
+    if (!g_available) vk_dlss_init();  // (the library may have been downloaded since the device was made)
+    return g_available;
+}
 
 // The model NGX runs (its render presets). Left to NGX, DLSS 310 picks its transformer models, and for Performance a
 // heavier one still: at 4K on an RTX 3060, 5.1 ms a frame in Quality and 11 ms in Performance, against 8.1 ms for the
