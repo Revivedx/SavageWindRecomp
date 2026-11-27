@@ -1859,8 +1859,8 @@ generation, below). The setup page's Download NVIDIA DLSS (on PCs with an NVIDIA
 WinHTTP; size and SHA-256 checked, written as `.part` and renamed only when both match). While it is missing on a PC
 with an NVIDIA driver, the menus' greyed DLSS points at Savage Wind Configuration.
 
-Linux x86-64 loads `libnvidia-ngx.so.1` with `dlopen` (the soname, `/run/opengl-driver/lib` on NixOS, `/usr/lib`,
-`/usr/lib64`) and calls `NVSDK_NGX_VULKAN_Init` with `NVSDK_NGX_PathListInfo` aimed at the folder that holds
+Linux x86-64 loads `libnvidia-ngx.so.1` with `dlopen`: the soname, then `/usr/lib` and `/usr/lib64`. NixOS is the
+extra path `/run/opengl-driver/lib`, tried before those two. It calls `NVSDK_NGX_VULKAN_Init` with `NVSDK_NGX_PathListInfo` aimed at the folder that holds
 `libnvidia-ngx-dlss.so.310.9.16`: the executable's folder when it is writable, otherwise the data folder. `wchar_t`
 paths are 32-bit. The parameter vtable is Itanium declaration order, including the two D3D pointer slots; one
 set-then-get round trip checks it, and a failure tries the same order without those slots, once. The download is the
