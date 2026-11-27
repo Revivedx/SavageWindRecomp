@@ -13,6 +13,7 @@ extern "C" {
 #include <SDL3/SDL.h>
 #include "../benchmark.h"
 #include "../control.h"
+#include "../framepace.h"
 }
 
 namespace {
@@ -89,7 +90,9 @@ void bench_ui_tab(bool *want_close) {
     opt_begin("##benchmark", scale);
 
     float pos[3];
-    bool in_world = control_tp_link_pos(pos);
+    bool in_world = control_tp_link_pos(pos) && !framepace_title_ui() && !framepace_loading_ui();
+    bool in_pause = in_world && framepace_menu_ui();
+    bool can_start = in_world && !in_pause;
     if (!in_world && !snap.has_results) {
         ImGui::TextDisabled("%s", tr("Load a save and enter the world to run the benchmark."));
         opt_end();
@@ -127,10 +130,14 @@ void bench_ui_tab(bool *want_close) {
                tr("Temporarily turns off Frame rate limit, VSync and Frame generation during measurement, then restores your settings afterwards."));
 
     bool active = snap.phase >= BENCH_TELEPORTING && snap.phase <= BENCH_RESTORING;
-    if (!in_world) opt_disable_next();
-    if (opt_action(tr("Start benchmark"), active ? tr("Running...") : (in_world ? tr("Start") : tr("In world only")),
+    if (in_pause && !active) {
+        ImGui::TextColored(ImVec4(0.95f, 0.72f, 0.30f, 1.0f), "%s", tr("Close the pause menu to run the benchmark."));
+    }
+    if (!can_start) opt_disable_next();
+    if (opt_action(tr("Start benchmark"),
+                   active ? tr("Running...") : (can_start ? tr("Start") : (in_pause ? tr("In play only") : tr("In world only"))),
                    tr("Runs the selected benchmark suite and returns Link cleanly to his starting position with full results."), true)) {
-        if (!active && in_world) {
+        if (!active && can_start) {
             BenchConfig cfg = {mode, single_route, dur_vals[dur_idx], settle_vals[settle_idx], uncap};
             if (bench_start(&cfg)) {
                 notice[0] = 0;

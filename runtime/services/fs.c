@@ -17,6 +17,7 @@
 #include <zlib.h>
 
 #include "../achievements.h"
+#include "../benchmark.h"
 #include "../game_sites.h"
 #include "../hle.h"
 #include "../ipc.h"
@@ -2274,6 +2275,11 @@ static bool flush_later(const char *path) {
     return queued;
 }
 
+static bool is_save_path(const char *p) {
+    size_t n = g_save_dir ? strlen(g_save_dir) : 0;
+    return n && !strncmp(p, g_save_dir, n) && (p[n] == '/' || p[n] == '\\' || !p[n]);
+}
+
 // The game closed the file's session: its host descriptor (a Windows handle each) and the copy of the save go.
 static void file_close(Service *s) {
     HostFile *f = s->state;
@@ -2308,6 +2314,8 @@ static void file(Service *s, IpcReq *req, IpcResp *resp) {
         if (f->patched) {  // (test warp)
             n = off >= 0 && (uint64_t)off < f->patched_size ? (ssize_t)((uint64_t)size < f->patched_size - (uint64_t)off ? (uint64_t)size : f->patched_size - (uint64_t)off) : 0;
             memcpy((void *)(uintptr_t)b->addr, f->patched + off, (size_t)n);
+        } else if (f->fd < 0) {
+            n = 0;
         } else {
             uint64_t ft0 = plat_now_ns();
             n = pread(f->fd, (void *)(uintptr_t)b->addr, (size_t)size, off);
@@ -2322,6 +2330,7 @@ static void file(Service *s, IpcReq *req, IpcResp *resp) {
         break;
     }
     case 1: {  // Write(option, offset, size) <- A
+        if (f->fd < 0 || (bench_active() && is_save_path(f->path))) break;
         int64_t off = IN(int64_t, 8), size = IN(int64_t, 16);
         IpcBuf *a = in_buf(req, 0);
         if (strstr(f->path, "savedata"))
@@ -2336,10 +2345,12 @@ static void file(Service *s, IpcReq *req, IpcResp *resp) {
         break;
     }
     case 2:  // Flush
-        if (f->written && !flush_later(f->path)) fsync(f->fd);  // (its result unread, as before)
+        if (f->fd >= 0 && f->written && !(bench_active() && is_save_path(f->path)) && !flush_later(f->path))
+            fsync(f->fd);  // (its result unread, as before)
         f->written = false;
         break;
     case 3: {
+        if (f->fd < 0 || (bench_active() && is_save_path(f->path))) break;
         int tries = 0, r;
         while ((r = ftruncate(f->fd, IN(int64_t, 0))) && fs_retry(&tries, "resize", f->path)) {}
         if (r) resp->result = errno_result();
@@ -2348,6 +2359,7 @@ static void file(Service *s, IpcReq *req, IpcResp *resp) {
     }
     case 4: {
         struct stat sb;
+        if (f->fd < 0) { OUT(int64_t, 0) = 0; resp_size(resp, 8); break; }
         fstat(f->fd, &sb);
         OUT(int64_t, 0) = sb.st_size;
         resp_size(resp, 8);
@@ -2432,6 +2444,18 @@ static void filesystem(Service *s, IpcReq *req, IpcResp *resp) {
         if (req->cmd == 5 || req->cmd == 6) host_path(fs, in_path(req, 1), p2, sizeof p2);
         LOG("[fs] save: %s %s%s%s\n", req->cmd == 13 ? "clean dir" : what[req->cmd], p,
             req->cmd == 5 || req->cmd == 6 ? " -> " : "", req->cmd == 5 || req->cmd == 6 ? p2 : "");
+    }
+    if (bench_active() && is_save_path(p) &&
+        (req->cmd <= 6 || req->cmd == 13 || (req->cmd == 8 && (IN(uint32_t, 0) & 2)))) {
+        if (req->cmd == 8) {
+            HostFile *f = calloc(1, sizeof *f);
+            f->fd = -1;
+            strlcpy(f->path, p, sizeof f->path);
+            Service *fsvc = service_new("IFile", file, f);
+            fsvc->on_close = file_close;
+            ipc_return_object(resp, fsvc);
+        }
+        return;
     }
     int tries = 0, r;
     switch (req->cmd) {
