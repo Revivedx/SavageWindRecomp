@@ -294,6 +294,7 @@ typedef struct {
     char save_dir[512];  // custom save folder path ("": default "save" in data root)
     bool auto_continue;  // Gameplay > Start at Continue: past the start screen into the latest save (hle/input.c)
     int text_speed;      // TEXT_SPEED_*: dialogue text appearance speed (Normal, Fast, Instant)
+    int text_size;       // Accessibility > Dialogue text size, percent (TEXT_SIZE_CHOICES, vulkan/exec.c)
     bool menu_tip_seen;  // the start screen's one-time "how to open the menu" note was shown (first PLAY ever)
     bool camera_keep_stealth;  // Gameplay > Keep crouch after camera (runtime/camera_stealth.c)
 } Settings;
@@ -331,6 +332,8 @@ const char *settings_file(void);  // savagewind.ini, or SAVAGEWIND_SETTINGS
 #define WEATHER_COUNT 12  // (weather: 0 the game's, 1 no rain, 2 no thunderstorms, 3 + the game's weather type, held)
 extern const char *const g_weather_keys[WEATHER_COUNT];  // (the ini and `weather` names: game, no_rain, ..., sun_shower)
 #define DAMAGE_CHOICES {25, 50, 75, 100, 150, 200, 300, 400}  // (Accessibility's damage multipliers, percent)
+#define TEXT_SIZE_CHOICES {85, 100, 115, 130, 150}            // (Accessibility > Dialogue text size, percent)
+#define TEXT_SIZE_DEFAULT_INDEX 1
 #define COLOUR_VISION_COUNT 4  // (Accessibility > Colour vision: off, protanopia, deuteranopia, tritanopia)
 extern const char *const g_colour_vision_keys[COLOUR_VISION_COUNT];  // (the ini's names: off, protanopia, ...)
 #define COLOUR_VISION_STRENGTH_DEFAULT 100  // (percent)

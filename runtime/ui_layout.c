@@ -103,7 +103,8 @@ bool rt_ui_layout_pane_draw(Cpu *c, void (*native)(Cpu *)) {
     return false;
 #else
     uint64_t pane = c->x[0];
-    bool scope_needed = g_settings.hud_edges || g_settings.hud_size != 100 || g_settings.dynamic_hud;
+    bool scope_needed = g_settings.hud_edges || g_settings.hud_size != 100 || g_settings.dynamic_hud ||
+                        (g_settings.text_size >= 85 && g_settings.text_size <= 150 && g_settings.text_size != 100);
     if (pane_draw_depth || !native || (!scope_needed && !any_hud_hidden()) ||
         strcmp(g_game_version, "1.9.0") || !g_site.screen_mgr || !ui_range(pane, 0xf8)) return false;
     const char *name = (const char *)(uintptr_t)(pane + 0xb8);
@@ -148,7 +149,8 @@ uint64_t ui_layout_begin(Cpu *c) {
 #ifdef SW_METAL
     return 0;
 #else
-    bool scope_needed = g_settings.hud_edges || g_settings.hud_size != 100 || g_settings.dynamic_hud;
+    bool scope_needed = g_settings.hud_edges || g_settings.hud_size != 100 || g_settings.dynamic_hud ||
+                        (g_settings.text_size >= 85 && g_settings.text_size <= 150 && g_settings.text_size != 100);
     if ((!scope_needed && !any_hud_hidden()) || !g_site.screen_mgr || strcmp(g_game_version, "1.9.0")) return 0;
     uint64_t manager = *(uint64_t *)(uintptr_t)g_site.screen_mgr;
     if (!ui_range(manager, 0x38)) return 0;

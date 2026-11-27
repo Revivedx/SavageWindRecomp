@@ -1530,14 +1530,22 @@ static bool hud_owned(void) {
 static bool hud_native_layout(void) {
     return hud_kind() == UI_LAYOUT_DIALOGUE || hud_kind() == UI_LAYOUT_MENU || hud_kind() == UI_LAYOUT_TALK;
 }
+static float talk_scale_now(void) {
+    if (hud_kind() != UI_LAYOUT_TALK) return 1;
+    int ts = g_settings.text_size;
+    return ts >= 85 && ts <= 150 && ts != 100 ? (float)ts / 100.0f : 1;
+}
 // The anchor of a HUD pane centred at c on an axis (0 x, 1 y): a HUD part kept whole gives its own (hud_group_kind)
 static float hud_anchor_now(float c, float edge, int axis) {
+    if (talk_scale_now() != 1) return axis ? -edge : 0;
     if (!(hud_scope.kind & HUD_GROUP)) return hud_anchor(c, edge);
     return (float)(axis ? hud_group_ay(hud_scope.kind) : hud_group_ax(hud_scope.kind)) * edge;
 }
 #define HUD_DYNAMIC_HOLD_NS 5000000000ull
 static float hud_scale_now(void) {
     hud_frame_update();
+    float ts = talk_scale_now();
+    if (ts != 1) return ts;
     if (hud_native_layout()) return 1;
     if (!(hud_owned() || !(hud_event || hud_event_dialogue || hud_menu || hud_title || hud_loading))) return 1;
     if (g_settings.dynamic_hud) {
@@ -2627,8 +2635,14 @@ static VkRect2D scissor_rect(void) {
         if (!hud_context_native(shape, mx, -my, 1 / fmaxf(shape, 1), fminf(shape, 1)) &&
             sw < gw * 0.9 && sh < gh * 0.9 && !(hud_quick && fabsf(mx) < 0.72f && fabsf(my) < 0.6f)) {
             double px = x, py = y, pw = sw, ph = sh;
-            hud_scale_span(&px, &pw, gw / 2, gw / 2 / fmax(shape, 1), hud_s);
-            hud_scale_span(&py, &ph, gh / 2, gh / 2 * fmin(shape, 1), hud_s);
+            if (talk_scale_now() != 1) {
+                double ax = gw / 2, ay = gh / 2 + gh / 2 * fmin(shape, 1);
+                px = ax + (px - ax) * hud_s; pw *= hud_s;
+                py = ay + (py - ay) * hud_s; ph *= hud_s;
+            } else {
+                hud_scale_span(&px, &pw, gw / 2, gw / 2 / fmax(shape, 1), hud_s);
+                hud_scale_span(&py, &ph, gh / 2, gh / 2 * fmin(shape, 1), hud_s);
+            }
             x = (int)floor(px), y = (int)floor(py);
             sw = (int)ceil(px + pw) - x, sh = (int)ceil(py + ph) - y;
         }

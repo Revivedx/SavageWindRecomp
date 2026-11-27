@@ -57,7 +57,7 @@ static const Setting settings[] = {
     I(hdr_saturation, 0, 100, NULL), I(hdr_highlight_saturation, 0, 100, NULL), I(hdr_flare, 0, 100, NULL),
     I(hdr_gamma, 0, 2, "none|2.2|bt1886"),
     I(hdr_ui_nits, 0, 1000, NULL),
-    I(fov, 50, 200, NULL), I(hud_size, 0, 150, NULL), B(dynamic_hud),
+    I(fov, 50, 200, NULL), I(hud_size, 0, 150, NULL), I(text_size, 85, 150, NULL), B(dynamic_hud),
     B(hud_hide_hearts), B(hud_hide_stamina), B(hud_hide_abilities), B(hud_hide_minimap),
     B(hud_hide_sensors), B(hud_hide_enemy_bars), B(hud_hide_prompts),
     I(menu_speed, 70, 300, NULL), B(bloom), B(depth_of_field),
