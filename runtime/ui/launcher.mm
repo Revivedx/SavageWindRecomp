@@ -2984,8 +2984,8 @@ extern "C" void launcher_run(const char *root, int mode) {
                     if (!g_confirm_delete && dlss_fetch_offered()) {  // NVIDIA's DLSS libraries, now (or again)
                         bool have = dlss_fetch_present();
                         opt_section("NVIDIA DLSS");
-                        if (have) opt_disable_next();
-                        if (opt_action("NVIDIA DLSS", tr(have ? "Downloaded" : "Not downloaded"), k_dlss_text, true)) {
+                        // Don't grey this once the library is there: a grey row reads as "DLSS is unavailable".
+                        if (opt_action("NVIDIA DLSS", tr(have ? "Downloaded" : "Not downloaded"), k_dlss_text, true) && !have) {
                             pthread_mutex_lock(&g_lock);
                             g_busy = true;
                             pthread_mutex_unlock(&g_lock);

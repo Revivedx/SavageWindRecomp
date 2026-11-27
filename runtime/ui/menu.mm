@@ -1156,9 +1156,11 @@ static void tab_display(void) {
         for (int i = 0; i < NU; i++) if (ups_value[i] == UPSCALE_DEFAULT) udef = i;
         if (opt_choice_avail("Upscaler", &ui, &shown, ups, avail, NU, udef, ud))
             g_settings.upscaler = ups_value[ui], render_scale_fit();  // (FSR 3 / 4, XeSS, DLSS: up to 100%)
-        // its mode (AMD's scale factors, or Dynamic: the dynamic resolution), one step in; greyed when the upscaler
-        // is off
-        bool modes_ok = upscale_modes_available();
+        // The highlight can sit on a greyed technology that was not stored. The mode row follows that highlight:
+        // Off and grey while we don't have it; its presets once an enabled one is chosen.
+        int preview = shown >= 0 && shown < NU ? ups_value[shown] : g_settings.upscaler;
+        bool tech_on = upscale_modes_available() && preview != UPSCALE_OFF && upscaler_available(preview);
+        bool modes_ok = tech_on;
         const int nm = UPQ_COUNT;
         std::string mode_names[UPQ_COUNT];
         const char *mn[UPQ_COUNT];
@@ -1200,10 +1202,16 @@ static void tab_display(void) {
                          (!modes_ok ? std::string("\n\n") + tr("Coming in a later version.")
                                     : rendering[0] ? std::string("\n\n") + rendering : std::string());
         opt_indent(1);
-        if (g_settings.upscaler == UPSCALE_OFF) opt_disable_next();
         static int mshown = -1, mode_for = -2;
-        if (mode_for != g_settings.upscaler) mode_for = g_settings.upscaler, mshown = -1;  // (the list changes: DLAA appears with DLSS)
-        if (opt_choice_avail("Upscaler mode", &mi, &mshown, mn, mavail, nm, mdef, md.c_str()))
+        if (mode_for != preview) mode_for = preview, mshown = -1;  // (the list changes: DLAA appears with DLSS)
+        if (!tech_on) {
+            const char *off_names[] = {"Off"};
+            bool off_avail = false;
+            int z = 0;
+            opt_disable_next();
+            opt_choice_avail("Upscaler mode", &z, &mshown, off_names, &off_avail, 1, 0,
+                             "Only with an upscaler: choose one above first.");
+        } else if (opt_choice_avail("Upscaler mode", &mi, &mshown, mn, mavail, nm, mdef, md.c_str()))
             g_settings.upscale_quality = k_upscale_mode_order[mi], render_scale_fit();  // (Native, DLAA: 100%)
         opt_indent(-1);
     }

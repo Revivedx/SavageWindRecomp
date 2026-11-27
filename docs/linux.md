@@ -202,9 +202,9 @@ fonts the menus look for next to the executable:
 `nix develop` is a shell with clang, lld, SDL3, FFmpeg, shaderc, the Vulkan loader and headers, and Python with lz4,
 capstone and unicorn, for `make` and `make gen` against a game dump that stays outside the Nix store.
 
-The NVIDIA driver is not under `/usr/lib`. `libnvidia-ngx.so.1` is loaded from `/run/opengl-driver/lib`, and a binary
-from `nix build` has that directory on its run path. The store path is not writable, so the downloaded DLSS library
-goes to the data folder.
+The NVIDIA driver is not under `/usr/lib`. `libnvidia-ngx.so.1` is opened from `/run/opengl-driver/lib` by its full
+path. The downloaded DLSS library then loads `libnvidia-ml.so.1` from that same directory, so the installed program
+adds it to `LD_LIBRARY_PATH`. The store path is not writable, so the downloaded library goes to the data folder.
 
 ## AppImages
 Needs podman, and for aarch64 QEMU user emulation with binfmt (`sudo apt install podman qemu-user qemu-user-binfmt`).

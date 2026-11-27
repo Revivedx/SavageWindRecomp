@@ -179,6 +179,22 @@ const int k_modes_order[] = {UPQ_NATIVE, UPQ_ULTRA, UPQ_QUALITY, UPQ_BALANCED, U
 int upscale_mode_base(void) {
     return rt_temporal_upscaler() ? 0 : 1;
 }
+// The upscaler row may be showing a greyed technology that was not stored. The mode row follows that highlight:
+// a technology we don't have keeps the scale row at Off, greyed; one we do have shows its presets.
+int upscaler_row_value(void) {
+    for (size_t i = 0; i < g_items.size(); i++) {
+        if (!g_items[i].title || strcmp(g_items[i].title, "Upscaler")) continue;
+        int x = g_items[i].get(g_items[i]);
+        if (i < g_shown.size() && g_shown[i] >= 0) x = g_shown[i];
+        if (x < 0 || x >= (int)(sizeof k_ups_value / sizeof k_ups_value[0])) return UPSCALE_OFF;
+        return k_ups_value[x];
+    }
+    return g_settings.upscaler;
+}
+bool upscaler_modes_on(void) {
+    int u = upscaler_row_value();
+    return u != UPSCALE_OFF && upscaler_available(u) && upscale_modes_available();
+}
 // a mode's name: Native is DLAA with DLSS (NVIDIA's name for its 1x)
 const char *upscale_mode_name(int q) {
     return upscale_mode_is_dlaa(q) ? "DLAA" : k_modes[q];
@@ -905,11 +921,11 @@ void build_items(void) {
     // before stays stored and comes back with an upscaler.
     Item mode = choice(P_VIDEO_ADV, "Upscaler mode", "",
                        [](const Item &) {
-                           return g_settings.upscaler == UPSCALE_OFF ? 1 : upscale_mode_count() - upscale_mode_base();
+                           return upscaler_modes_on() ? upscale_mode_count() - upscale_mode_base() : 1;
                        },
                        [](const Item &, int x) {
                            static char buf[8][96];
-                           if (g_settings.upscaler == UPSCALE_OFF) return tr("Off");
+                           if (!upscaler_modes_on()) return tr("Off");
                            const char *name = upscale_mode_name(k_modes_order[x + upscale_mode_base()]);
                            if (!upscale_modes_available()) return soon(name);
                            int rw, rh, bw, bh;
@@ -923,7 +939,7 @@ void build_items(void) {
                            return (const char *)buf[x];
                        },
                        [](const Item &) {
-                           if (g_settings.upscaler == UPSCALE_OFF) return 0;
+                           if (!upscaler_modes_on()) return 0;
                            int base = upscale_mode_base(), end = upscale_mode_count();
                            int q = (g_settings.upscale_quality == UPQ_NATIVE && base)
                                        ? (int)UPQ_QUALITY
@@ -933,21 +949,20 @@ void build_items(void) {
                            return 0;
                        },
                        [](const Item &, int x) {
-                           if (g_settings.upscaler != UPSCALE_OFF)
+                           if (upscaler_modes_on())
                                g_settings.upscale_quality = k_modes_order[x + upscale_mode_base()], render_scale_fit();
                        },
                        2);
     mode.value_off = [](const Item &, int x) {
-        return !upscale_modes_available() || g_settings.upscaler == UPSCALE_OFF ||
-               !upscale_mode_offered(k_modes_order[x + upscale_mode_base()]);
+        if (!upscaler_modes_on()) return true;
+        return !upscale_mode_offered(k_modes_order[x + upscale_mode_base()]);
     };
     mode.reset = [](const Item &) { g_settings.upscale_quality = UPQ_QUALITY; };  // (also while Off)
     mode.desc_fn = [](const Item &) {
         // (one line: the game's description pane is one English line wide)
         static char line[160];
         int rw, rh, bw, bh;
-        if (!upscale_modes_available()) return tr("Renders smaller, then upscales. Coming in a later version.");
-        if (g_settings.upscaler == UPSCALE_OFF) return tr("Only with an upscaler: choose one above first.");
+        if (!upscaler_modes_on()) return tr("Only with an upscaler: choose one above first.");
         if (!upscale_mode_pixels(g_settings.upscale_quality, &rw, &rh, &bw, &bh))
             return tr("Ultra Quality is the sharpest, Ultra Performance the fastest.");
         snprintf(line, sizeof line, tr("Renders at %d x %d of the %d x %d window."), rw, rh, bw, bh);

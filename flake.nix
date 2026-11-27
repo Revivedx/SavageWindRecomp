@@ -49,7 +49,7 @@
                 && !(lib.hasSuffix ".xci" base)
                 && lib.cleanSourceFilter path type;
             };
-            nativeBuildInputs = with pkgs; [ clang lld pkg-config addDriverRunpath imagemagick ];
+            nativeBuildInputs = with pkgs; [ clang lld pkg-config imagemagick makeWrapper ];
             buildInputs = with pkgs; [ sdl3 ffmpeg shaderc vulkan-loader vulkan-headers zlib ];
             dontConfigure = true;
             buildPhase = ''
@@ -87,7 +87,7 @@
               Type=Application
               Name=Savage Wind
               Comment=Static recompilation runtime (bring your own game files)
-              Exec=$out/bin/savagewind
+              Exec=savagewind
               Icon=savagewind
               Categories=Game;
               Terminal=false
@@ -95,17 +95,23 @@
 
               [Desktop Action Configuration]
               Name=Savage Wind Configuration
-              Exec=$out/bin/savagewind --config
+              Exec=savagewind --config
               EOF
               sed -i 's/^              //' "$out/share/applications/savagewind.desktop"
+              # Plasma resolves the profile symlink into the store, outside its applications
+              # directories. A desktop file there is launched only if it is executable.
+              chmod +x "$out/share/applications/savagewind.desktop"
               runHook postInstall
             '';
             # -fuse-ld=lld skips Nix's linker wrapper, so the binary is left with no RUNPATH.
+            # The DLSS feature library is mapped from a memfd and then dlopens libnvidia-ml.so.1 by soname.
+            # That lookup uses LD_LIBRARY_PATH, not this binary's RUNPATH, so the driver directory has to be there.
             postFixup = ''
               patchelf --set-rpath "${lib.makeLibraryPath (with pkgs; [
                 sdl3 ffmpeg shaderc vulkan-loader zlib stdenv.cc.cc.lib
               ])}" "$out/bin/savagewind"
-              addDriverRunpath "$out/bin/savagewind"
+              wrapProgram "$out/bin/savagewind" \
+                --prefix LD_LIBRARY_PATH : /run/opengl-driver/lib
             '';
             meta = {
               description = "Savage Wind runtime, without game files";
@@ -132,6 +138,13 @@
               [ ps.lz4 ps.capstone ]
               ++ pkgs.lib.optionals (ps ? unicorn) [ ps.unicorn ]))
           ];
+          # ./build/savagewind is a raw link: the Makefile stays free of Nix paths. This shell is what
+          # finds SDL and libstdc++ when that binary is launched from here, the same libraries the package gets.
+          shellHook = ''
+            export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath (with pkgs; [
+              sdl3 ffmpeg shaderc vulkan-loader zlib stdenv.cc.cc.lib
+            ])}:/run/opengl-driver/lib''${LD_LIBRARY_PATH:+:}$LD_LIBRARY_PATH"
+          '';
         };
       });
     };
