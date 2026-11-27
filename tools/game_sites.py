@@ -574,6 +574,24 @@ SITES = [
          '39009bf7', 0),
     # ... and StarterPackMgr's heap inside ForResourceL: 225 MB (mov w8, #0xe100000; 20 MB in the mode the csel picks)
     Site('game_starter_pack', 'code', '52a1c208 52a02809 9a881120 94000000/fc000000 aa0003e1 f9012e60 52802000 52800102', 0),
+    # ... and the smaller heaps the HD texture pack's own emulator patch (for 1.6.0) also enlarges: UiHeap (28 MB, or
+    # 27 MB in the mode the branch before it picks), Havok's HavokMainHeap (45 MB), PhysicsSystem (0x24000: mov w0,
+    # #0x4000 / movk w0, #2, lsl #16), PhysicsTempDefault / PhysicsTempLow (384 / 192 KB), GameDataWork (4 MB, in
+    # FixedHeap), GameDataHeap (15 MB) and SaveAreaHeap (5 MB)
+    Site('game_ui_heap', 'code', '52a03800 90000008/9f00001f 90000009/9f00001f 91000129/ffc003ff f9400108/ffc003ff '
+         '910003e1 aa1303e2 52800103', 0),
+    Site('game_ui_heap_b', 'code', '52a03600 14000000/fc000000 90000008/9f00001f f9400100/ffc003ff d65f03c0 d65f03c0 '
+         'd65f03c0 a9be7bfd', 0),
+    Site('game_havok_heap', 'code', '52a05a03 910003e4 aa0103f3 91004115 a90027f5 94000000/fc000000 a9478281 aa1f03e2', 0),
+    Site('game_physics_system', 'code', '72a00040 910003e1 aa1303e2 f90ab909 52800103 52800024 52800025 a9002bf5', 0),
+    Site('game_physics_temp', 'code', '52a000c0 aa1303e2 52800103 a90023f5 52800024 52800025 94000000/fc000000 f900de80',
+         0),
+    Site('game_physics_temp_low', 'code', '52a00060 94000000/fc000000 f900e280 528f3301 aa1303e0 f9400268 52800202 '
+         'f9401908', 0),
+    Site('game_gamedata_work', 'code', '52a00800 52800103 52800024 52800025 91004108 a90027e8 94000000/fc000000 f9002260',
+         0),
+    Site('game_gamedata_heap', 'code', '52a01e00 aa1503e2 aa1f03e3 52800104 52800025 52800026 52800037 910042d8', 0),
+    Site('game_save_area', 'code', '52a00a00 12800005 f9020ff5 911063e1 aa1f03e3 f90213e8 52800104 2a1f03e6', 0),
     Site('main_data', 'data', '', 0),
     Site('main_end', 'end', '', 0),
 ]
@@ -653,6 +671,10 @@ OPTIONAL_GROUPS = [
     ('game_fixed_heap_size', 'game_texarc_heap_size'),  # (both or neither: TexArcWork is made inside FixedHeap)
     ('game_texture_pool', 'game_texture_pool_b'),
     ('game_resource_s', 'game_resource_l', 'game_starter_pack'),  # (StarterPackMgr grows inside ForResourceL)
+    ('game_ui_heap', 'game_ui_heap_b'),
+    ('game_havok_heap', 'game_physics_system', 'game_physics_temp', 'game_physics_temp_low'),
+    ('game_gamedata_work',),
+    ('game_gamedata_heap', 'game_save_area'),
 ]
 OPTIONAL = {n for g in OPTIONAL_GROUPS for n in g}
 
@@ -882,6 +904,15 @@ KNOWN = {
         'game_resource_s': 0x700155fda4,
         'game_resource_l': 0x700155fde0,
         'game_starter_pack': 0x7001209a8c,
+        'game_ui_heap': 0x7000e612ec,
+        'game_ui_heap_b': 0x7000e61348,
+        'game_havok_heap': 0x700156dfc8,
+        'game_physics_system': 0x700156e000,
+        'game_physics_temp': 0x700156e034,
+        'game_physics_temp_low': 0x700156e080,
+        'game_gamedata_work': 0x700131b278,
+        'game_gamedata_heap': 0x700112b198,
+        'game_save_area': 0x700112b360,
         'act_hold': 0x7000d16f0c,
         'act_trig': 0x7000d16f74,
         'act_masks': 0x70016d89b4,

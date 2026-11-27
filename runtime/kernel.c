@@ -329,13 +329,15 @@ void kernel_memory_setup(int mb) {
 uint64_t rt_game_heap_size(void) { return game_heap; }
 
 // The resource system's FixedHeap and the TexArcWork heap inside it grow by the same amount: a quarter of what
-// game_memory_mb adds, at most 256 MB (both come out of the root heap, so the rest is left to the resource heap).
-// Not needed for an HD texture pack to load, but with one the texture archives' first try (TextureArchiveWork) fails
-// less often and falls back less (Shrine of Resurrection load with the HD pack and its terrain: 24 failed tries
-// instead of 41; the game's own files: 10). The game's own sizes without the setting.
+// game_memory_mb adds, at most 688 MB, the pack's own emulator patch's (TexArcWork 192 -> 880 MB; both come out of
+// the root heap, so the rest is left to the resource heap). With an HD texture pack the texture archives' first try
+// (TextureArchiveWork) fails less often and falls back less (Shrine of Resurrection load with the HD pack and its
+// terrain: 24 failed tries instead of 41; the game's own files: 10). At most 256 MB, the game crashed on corrupted
+// memory while loading models 12 to 60 minutes into every session with the pack (5 in a row); at the pack's size it
+// ran 2.9 hours. The game's own sizes without the setting.
 uint64_t rt_game_heap_grow(uint64_t size) {
     uint64_t add = (game_heap - GAME_HEAP_CONSOLE) / 4;
-    if (add > 0x10000000ull) add = 0x10000000ull;
+    if (add > 0x2B000000ull) add = 0x2B000000ull;
     return size + (add & ~0xFFFFFull);
 }
 
@@ -361,11 +363,33 @@ uint64_t rt_game_resource_heap(uint32_t size, int which) {
 // The GPU memory pool the models' textures load into (500 MB, made at boot): with an HD texture pack models whose
 // textures don't fit are left out. It takes two thirds of what game_memory_mb adds, at most 2 GB (the pack's own
 // emulator patch: about 2.5 GB at 6 GB). The game's own size without the setting.
+// The pool stays at the pack's own patch's size at most, 2032 MB (0x7f000000; SAVAGEWIND_TEXTURE_POOL_UNCAPPED=1:
+// about 2.5 GB at 6 GB, as before).
 uint64_t rt_game_texture_pool(uint64_t size) {
     uint64_t add = (game_heap - GAME_HEAP_CONSOLE) / 3 * 2;
     if (add > 0x80000000ull) add = 0x80000000ull;
-    return size + (add & ~0xFFFFFull);
+    uint64_t total = size + (add & ~0xFFFFFull);
+    if (total > 0x7f000000ull && !getenv("SAVAGEWIND_TEXTURE_POOL_UNCAPPED")) total = 0x7f000000ull;
+    if (total != size) {
+        static bool logged;
+        if (!logged) LOG("[kernel] game memory: texture pool %llu MB -> %llu MB\n", (unsigned long long)(size >> 20),
+                         (unsigned long long)(total >> 20));
+        logged = true;
+    }
+    return total;
 }
+// The smaller heaps the HD texture pack's own emulator patch also enlarges (UiHeap, HavokMainHeap, PhysicsSystem,
+// PhysicsTempDefault / Low, GameDataWork, GameDataHeap, SaveAreaHeap: tools/patches.py _game_heap_pick): the pack's
+// sizes with game_memory_mb, the game's own without it.
+uint64_t rt_game_heap_pick(uint64_t size, uint64_t more) { return game_heap > GAME_HEAP_CONSOLE ? more : size; }
+
+// FixedHeap itself (rt_game_heap_grow's growth goes to TexArcWork, which it makes inside itself) also makes room for
+// GameDataWork's bigger size there (4 -> 12 MB): without it the next heap made in FixedHeap fails at start. It has the
+// rest of the pack's room too (its patch: FixedHeap 374 -> 1104 MB, 42 MB more than TexArcWork's growth).
+uint64_t rt_game_fixed_heap(uint64_t size) {
+    return rt_game_heap_grow(size) + rt_game_heap_pick(0, 0x2A00000);
+}
+
 // Writable guest data regions (heap, mapped/physical memory, module .data): for debug/runtime memory scans.
 int kernel_data_regions(uint64_t *addr, uint64_t *size, int max) {
     int n = 0;
