@@ -5,6 +5,7 @@
 // The hearts cheat uses the heap search from Slop of the Wild, with MaxHartValue to identify the s32 vtable.
 // A primary s32 flag is 0x28 bytes: +0 the vtable, +0x18 the value, and +0x1c the CRC32 of its name.
 #include <errno.h>
+#include <math.h>
 #include <pthread.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -40,6 +41,7 @@ static int32_t last_seen = -1;         // the count the thread last read (-1: no
 static int32_t want_hearts = -1;       // `hearts <3-30>`: heart containers to write (-1: none); under lock
 static int32_t want_hearts_tick = -1;  // live hearts update for game thread (Cpu *c in rt_item_tick)
 static int32_t last_hearts = -1;       // heart containers last read (-1: not found yet)
+static int32_t live_cur_q = -1, live_max_q = -1;  // live quarter-hearts for show_health overlay
 static uint64_t vt_s32, hart_max_obj, hart_cur_obj;
 
 bool game_data_s32_values(uint32_t hash, uint64_t values[2]);  // services/test_warp.c
@@ -245,18 +247,37 @@ bool hearts_set(int32_t count) {
 // Live hearts update on game thread (every frame in play from rt_item_tick):
 // sets Link's live current life and PlayerInfo->max_hearts immediately so the in-game HUD reflects the cheat
 void rt_hearts_tick(Cpu *c) {
+    uint64_t pinfo = g_site.player_info ? *(volatile uint64_t *)(uintptr_t)g_site.player_info : 0;
+    if (c && c->x[1] >= GUEST_LO && c->x[1] + 4 <= GUEST_HI && pinfo >= GUEST_LO && pinfo + 0xa4 <= GUEST_HI) {
+        int32_t cur = *(volatile int32_t *)(uintptr_t)c->x[1];
+        int32_t max_h = (int32_t)lroundf(*(volatile float *)(uintptr_t)(pinfo + 0xa0));
+        if (cur >= 0 && max_h >= HEARTS_MIN * 4 && max_h <= HEARTS_MAX * 4) {
+            __atomic_store_n(&live_cur_q, cur, __ATOMIC_RELAXED);
+            __atomic_store_n(&live_max_q, max_h, __ATOMIC_RELAXED);
+        }
+    }
     int32_t h = __atomic_load_n(&want_hearts_tick, __ATOMIC_RELAXED);
     if (h < HEARTS_MIN || h > HEARTS_MAX) return;
 
-    uint64_t pinfo = g_site.player_info ? *(volatile uint64_t *)(uintptr_t)g_site.player_info : 0;
     if (pinfo) {
         *(volatile float *)(uintptr_t)(pinfo + 0xa0) = (float)(h * 4);
     }
     if (c && c->x[1]) {
         *(volatile int32_t *)(uintptr_t)c->x[1] = h * 4;
+        __atomic_store_n(&live_cur_q, h * 4, __ATOMIC_RELAXED);
+        __atomic_store_n(&live_max_q, h * 4, __ATOMIC_RELAXED);
         __atomic_store_n(&want_hearts_tick, -1, __ATOMIC_RELAXED);
         LOG("[cheats] hearts: applied %d containers (%d units) to live actor\n", (int)h, (int)(h * 4));
     }
+}
+
+bool link_health_read(int *cur_q, int *max_q) {
+    int c = __atomic_load_n(&live_cur_q, __ATOMIC_RELAXED);
+    int m = __atomic_load_n(&live_max_q, __ATOMIC_RELAXED);
+    if (c < 0 || m <= 0) return false;
+    if (cur_q) *cur_q = c;
+    if (max_q) *max_q = m;
+    return true;
 }
 
 // (runtime/main.c boot: each game start)
@@ -278,4 +299,6 @@ RT_ON_RESET(rupees_reset) {
     }
     vt_s32 = hart_max_obj = hart_cur_obj = 0;
     want = last_seen = want_hearts = last_hearts = want_hearts_tick = -1;
+    __atomic_store_n(&live_cur_q, -1, __ATOMIC_RELAXED);
+    __atomic_store_n(&live_max_q, -1, __ATOMIC_RELAXED);
 }

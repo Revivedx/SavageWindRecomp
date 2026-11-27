@@ -3250,6 +3250,28 @@ static void quick_inventory_hint_draw(const ImGuiIO &io) {
 // Everything menu_render draws, in one place: menu_render_needed (the caller's cue to drain the recorder first) and
 // menu_render (which decides again, and drains itself) must agree on it. The pointer's hover box, the console and the
 // gyro drag were missing here: their frames went to the command buffer while the recorder thread was still filling it.
+extern "C" bool link_health_read(int *cur_q, int *max_q);
+
+static void link_health_draw(ImGuiIO &io, float scale) {
+    (void)io;
+    if (!g_settings.show_health || framepace_title_ui() || framepace_loading_ui() || framepace_menu_ui() || freecam_active())
+        return;
+    int cur = 0, max_h = 0;
+    if (!link_health_read(&cur, &max_h)) return;
+    char buf[48];
+    snprintf(buf, sizeof buf, "HP %d / %d", cur, max_h);
+    float pad_x = 10.0f * scale, pad_y = 6.0f * scale;
+    ImVec2 ts = ImGui::CalcTextSize(buf);
+    ImVec2 pos(16.0f * scale, 110.0f * scale);
+    ImVec2 p1(pos.x + ts.x + pad_x * 2.0f, pos.y + ts.y + pad_y * 2.0f);
+    ImDrawList *dl = ImGui::GetBackgroundDrawList();
+    dl->AddRectFilled(pos, p1, IM_COL32(14, 18, 16, 190), 6.0f * scale);
+    dl->AddRect(pos, p1, IM_COL32(75, 95, 85, 200), 6.0f * scale);
+    float ratio = (float)cur / (float)max_h;
+    ImU32 col = ratio > 0.5f ? IM_COL32(130, 225, 120, 255) : ratio > 0.25f ? IM_COL32(235, 200, 75, 255) : IM_COL32(235, 95, 85, 255);
+    dl->AddText(ImVec2(pos.x + pad_x, pos.y + pad_y), col, buf);
+}
+
 static bool menu_draws(bool *pointer_hover = NULL, float *pointer_box = NULL, bool *gyro_show = NULL, GyroScene *gyro = NULL) {
     if (int page = g_page_open_request.exchange(-1); page >= 0) {
         extern int g_tab_request_ext;
@@ -3263,7 +3285,7 @@ static bool menu_draws(bool *pointer_hover = NULL, float *pointer_box = NULL, bo
     if (pointer_hover) *pointer_hover = hover;
     if (gyro_show) *gyro_show = gyro_on;
     return g_open.load() || g_kbd.load() == 1 || g_sizes.load() || console_is_open() || gyro_on || hover ||
-           g_settings.perf_overlay != PERF_OFF || act_log_enabled() || quick_inventory_sort_hint() || quick_drop_hint_state() ||
+           g_settings.perf_overlay != PERF_OFF || g_settings.show_health || act_log_enabled() || quick_inventory_sort_hint() || quick_drop_hint_state() ||
            collect_map_shown() || ach_ui_active() || bench_hud_visible() || SDL_GetTicks() < g_notice_until.load();
 }
 
@@ -3350,6 +3372,7 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
     }
 
     if (g_settings.perf_overlay != PERF_OFF) perf_overlay_draw(io, scale);
+    if (!open && !kbd && !sizes && !con) link_health_draw(io, scale);
     if (!open && !kbd && !sizes && !con && bench_hud_visible()) bench_ui_overlay(io.DisplaySize.x, io.DisplaySize.y, scale);
     ach_ui_toasts(io.DisplaySize.x, io.DisplaySize.y, scale);
     notice_draw(io, scale);
