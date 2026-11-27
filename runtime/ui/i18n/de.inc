@@ -1669,3 +1669,5 @@ T("Clear baseline", "Referenz löschen")
 T("Removes the stored A/B baseline comparison.", "Entfernt den gespeicherten A/B-Referenzvergleich.")
 T("blue = baseline", "Blau = Referenz")
 T("<8.3ms: %.1f%%  |  8.3-16.7ms: %.1f%%  |  16.7-33.3ms: %.1f%%  |  >33.3ms: %.1f%%", "<8.3ms: %.1f%%  |  8.3-16.7ms: %.1f%%  |  16.7-33.3ms: %.1f%%  |  >33.3ms: %.1f%%")
+    {"Game speed", "Game speed"},
+    {"How fast the game runs in play. 100% is the game's own.", "How fast the game runs in play. 100% is the game's own."},

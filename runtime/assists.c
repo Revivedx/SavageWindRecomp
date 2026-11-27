@@ -100,3 +100,14 @@ int rt_hero_soul(int which) {
 // GameClear flag and hides its rate block when the answer is no. With the option on the answer is 1, so the rate shows
 // before the game is cleared.
 int rt_map_clear_rate(void) { return g_settings.map_clear_rate; }
+
+float assists_speed_scale(float ratio, bool active) {
+    int pct = g_settings.game_speed;
+    if (!active || pct == 0 || pct == 100) return ratio;
+    if (pct < 50) pct = 50;
+    if (pct > 200) pct = 200;
+    float r = ratio * ((float)pct / 100.0f);
+    if (r < 0.05f) r = 0.05f;
+    if (r > 1.5f) r = 1.5f;
+    return r;
+}

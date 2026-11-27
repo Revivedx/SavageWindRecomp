@@ -33,6 +33,7 @@ Settings g_settings = {
     .rumble_strength = RUMBLE_STRENGTH_DEFAULT,
     .freecam_sticks = true,
     .stamina_drain = 100,
+    .game_speed = 100,
     .damage_taken = 100,
     .damage_dealt = 100,
     .colour_vision_strength = COLOUR_VISION_STRENGTH_DEFAULT,
@@ -692,6 +693,10 @@ void settings_load(void) {
         }
         else if (!strcmp(key, "colour_vision_strength")) g_settings.colour_vision_strength = atoi(val);  // (percent)
         else if (!strcmp(key, "god_mode")) g_settings.god_mode = atoi(val) != 0;
+        else if (!strcmp(key, "game_speed")) {
+            int v = atoi(val);
+            g_settings.game_speed = v < 50 ? 50 : v > 200 ? 200 : v;
+        }
         else if (!strcmp(key, "one_hit_kill")) g_settings.one_hit_kill = atoi(val) != 0;
         else if (!strcmp(key, "silent_link")) g_settings.silent_link = atoi(val) != 0;
         else if (!strcmp(key, "hero_soul_wind")) g_settings.hero_soul_wind = atoi(val) != 0;
@@ -1017,6 +1022,7 @@ bool settings_save_to(const char *path) {
     fprintf(f, "colour_vision = %s\n", g_colour_vision_keys[cv >= 0 && cv < COLOUR_VISION_COUNT ? cv : 0]);
     fprintf(f, "colour_vision_strength = %d\n", g_settings.colour_vision_strength);
     fprintf(f, "god_mode = %d\n", g_settings.god_mode);
+    fprintf(f, "game_speed = %d\n", g_settings.game_speed ? g_settings.game_speed : 100);
     fprintf(f, "one_hit_kill = %d\n", g_settings.one_hit_kill);
     fprintf(f, "silent_link = %d\n", g_settings.silent_link);
     fprintf(f, "hero_soul_wind = %d\n", g_settings.hero_soul_wind);
