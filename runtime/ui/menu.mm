@@ -1558,6 +1558,8 @@ static void tab_display(void) {
         if (!g_settings.grass) opt_disable_next();
         opt_toggle("Ground cover", &g_settings.grass_quads, true,
                    "Distant grass ground-cover layer. Off: keeps near grass blades only.");
+        opt_toggle("Fixed high LOD", &g_settings.fixed_lod, false,
+                   "Keep high-detail models at distance instead of switching to simplified LODs.");
         if (!g_settings.grass) opt_disable_next();
         opt_choice("Grass distance", &g_settings.grass_distance, gd_names, GRASS_DIST_COUNT, GRASS_DIST_FOLLOW,
                    "How far out grass blades and ground cover are drawn. Follow draw distance matches Draw distance; "

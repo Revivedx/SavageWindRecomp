@@ -1107,6 +1107,9 @@ void build_items(void) {
     v.push_back(toggle(P_VIDEO_ADV, "Ground cover", "Distant grass ground-cover layer. Off: keeps near grass blades only.",
                        [](const Item &) { return (int)g_settings.grass_quads; },
                        [](const Item &, int x) { g_settings.grass_quads = x; }, 1));
+    v.push_back(toggle(P_VIDEO_ADV, "Fixed high LOD", "Keep high-detail models at distance instead of switching to simplified LODs.",
+                       [](const Item &) { return (int)g_settings.fixed_lod; },
+                       [](const Item &, int x) { g_settings.fixed_lod = x; }, 0));
     v.push_back(choice(P_VIDEO_ADV, "Grass distance", "How far out grass blades are drawn. High reaches about 2.45x independently of Draw distance.",
                        [](const Item &) { return N(k_grass_dist); }, [](const Item &, int x) { return tr(k_grass_dist[x]); },
                        [](const Item &) { return g_settings.grass_distance >= 0 && g_settings.grass_distance < GRASS_DIST_COUNT ? g_settings.grass_distance : 0; },

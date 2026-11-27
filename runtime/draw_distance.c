@@ -106,7 +106,9 @@ float draw_distance_factor(void) {
     }
     if (env > 0) return env;
     int d = level();
-    return d > DRAWDIST_ORIGINAL && d < DRAWDIST_COUNT ? k_factor[d] : 1.0f;
+    float f = d > DRAWDIST_ORIGINAL && d < DRAWDIST_COUNT ? k_factor[d] : 1.0f;
+    if (g_settings.fixed_lod && f < k_factor[DRAWDIST_HIGH]) f = k_factor[DRAWDIST_HIGH];
+    return f;
 }
 
 // the far models' and the distant trees' factor: the actors' one, at most FAR_MAX
@@ -118,6 +120,7 @@ static float far_factor(void) {
         env = f >= 0.25f && f <= 8.0f ? f : 0;
     }
     if (env > 0) return env;
+    if (g_settings.fixed_lod) return FAR_MAX;
     if (level() == DRAWDIST_POTATO && !getenv("SAVAGEWIND_TRAVERSE_SCALE")) return POTATO_FAR;
     float f = draw_distance_factor();
     return f > FAR_MAX ? FAR_MAX : f;
