@@ -27,7 +27,7 @@ void kpi_card(const char *id, const char *label, const char *value, ImVec4 val_c
     ImGui::EndChild();
 }
 
-void draw_frametime_graph(const BenchRouteStats *r, float scale) {
+void draw_frametime_graph(const BenchRouteStats *r, const BenchRouteStats *base, float scale) {
     if (!r || !r->valid || r->spark_n <= 0) return;
     float w = ImGui::GetContentRegionAvail().x;
     if (w < 120 * scale) w = 120 * scale;
@@ -42,6 +42,7 @@ void draw_frametime_graph(const BenchRouteStats *r, float scale) {
     dl->AddRect(p0, p1, IM_COL32(70, 90, 82, 180), 6.0f * scale);
 
     float max_ms = (float)r->max_ms;
+    if (base && base->valid && (float)base->max_ms > max_ms) max_ms = (float)base->max_ms;
     if (max_ms < 40.0f) max_ms = 40.0f;
     if (max_ms > 100.0f) max_ms = 100.0f;
 
@@ -58,6 +59,19 @@ void draw_frametime_graph(const BenchRouteStats *r, float scale) {
         dl->AddText(ImVec2(p0.x + 6 * scale, y - ImGui::GetFontSize() * 0.95f), rf.col, rf.lbl);
     }
 
+    if (base && base->valid && base->spark_n > 1) {
+        int bn = base->spark_n;
+        float bdx = (w - 8 * scale) / (float)(bn - 1);
+        for (int i = 1; i < bn; i++) {
+            float v0 = base->spark_ms[i - 1], v1 = base->spark_ms[i];
+            if (v0 > max_ms) v0 = max_ms;
+            if (v1 > max_ms) v1 = max_ms;
+            ImVec2 a(p0.x + 4 * scale + (float)(i - 1) * bdx, p1.y - (v0 / max_ms) * (h - 8 * scale) - 4 * scale);
+            ImVec2 b(p0.x + 4 * scale + (float)i * bdx, p1.y - (v1 / max_ms) * (h - 8 * scale) - 4 * scale);
+            dl->AddLine(a, b, IM_COL32(110, 185, 245, 145), 1.4f * scale);
+        }
+    }
+
     int n = r->spark_n;
     float dx = n > 1 ? (w - 8 * scale) / (float)(n - 1) : 0.0f;
     for (int i = 1; i < n; i++) {
@@ -71,6 +85,44 @@ void draw_frametime_graph(const BenchRouteStats *r, float scale) {
     }
 }
 
+void draw_hist_bar(const BenchRouteStats *r, float scale) {
+    if (!r || !r->valid || r->frames == 0) return;
+    float w = ImGui::GetContentRegionAvail().x;
+    if (w < 120 * scale) w = 120 * scale;
+    float h = 12 * scale;
+    ImVec2 p0 = ImGui::GetCursorScreenPos();
+    ImGui::Dummy(ImVec2(w, h));
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    static const ImU32 cols[4] = {
+        IM_COL32(115, 205, 105, 230),
+        IM_COL32(175, 215, 90, 230),
+        IM_COL32(235, 195, 75, 230),
+        IM_COL32(235, 95, 85, 230),
+    };
+    float x = p0.x;
+    float inv = 1.0f / (float)r->frames;
+    for (int i = 0; i < 4; i++) {
+        float sw = w * ((float)r->hist[i] * inv);
+        if (sw >= 1.0f) {
+            dl->AddRectFilled(ImVec2(x, p0.y), ImVec2(x + sw, p0.y + h), cols[i]);
+            x += sw;
+        }
+    }
+    dl->AddRect(p0, ImVec2(p0.x + w, p0.y + h), IM_COL32(70, 90, 82, 180));
+    double p_inv = 100.0 / (double)r->frames;
+    ImGui::TextDisabled("<8.3ms: %.1f%%  |  8.3-16.7ms: %.1f%%  |  16.7-33.3ms: %.1f%%  |  >33.3ms: %.1f%%",
+                        r->hist[0] * p_inv, r->hist[1] * p_inv, r->hist[2] * p_inv, r->hist[3] * p_inv);
+}
+
+const BenchRouteStats *find_baseline_route(const BenchSnapshot &base, bool has_base, const BenchRouteStats *cur, bool is_overall) {
+    if (!has_base || !base.has_results || !cur || !cur->valid) return NULL;
+    if (is_overall) return base.overall.valid ? &base.overall : (base.nresults == 1 && base.results[0].valid ? &base.results[0] : NULL);
+    for (int i = 0; i < base.nresults && i < BENCH_MAX_RESULTS; i++) {
+        if (base.results[i].valid && cur->id[0] && !strcmp(base.results[i].id, cur->id)) return &base.results[i];
+    }
+    return NULL;
+}
+
 }  // namespace
 
 void bench_ui_tab(bool *want_close) {
@@ -79,6 +131,9 @@ void bench_ui_tab(bool *want_close) {
     static int dur_idx = 1;     // 10 s
     static int settle_idx = 1;  // 5 s
     static bool uncap = true;
+    static bool camera_pan = false;
+    static bool has_baseline = false;
+    static BenchSnapshot baseline;
     static int selected_row = -1;  // -1 = overall
     static char notice[280];
 
@@ -129,6 +184,11 @@ void bench_ui_tab(bool *want_close) {
     opt_toggle(tr("Uncap FPS and VSync"), &uncap, true,
                tr("Temporarily turns off Frame rate limit, VSync and Frame generation during measurement, then restores your settings afterwards."));
 
+    if (mode != BENCH_MODE_SPOT) {
+        opt_toggle(tr("Camera sweep"), &camera_pan, false,
+                   tr("Gently pans the camera during measurement to stress streaming and LODs instead of holding a fixed view."));
+    }
+
     bool active = snap.phase >= BENCH_TELEPORTING && snap.phase <= BENCH_RESTORING;
     if (in_pause && !active) {
         ImGui::TextColored(ImVec4(0.95f, 0.72f, 0.30f, 1.0f), "%s", tr("Close the pause menu to run the benchmark."));
@@ -138,7 +198,7 @@ void bench_ui_tab(bool *want_close) {
                    active ? tr("Running...") : (can_start ? tr("Start") : (in_pause ? tr("In play only") : tr("In world only"))),
                    tr("Runs the selected benchmark suite and returns Link cleanly to his starting position with full results."), true)) {
         if (!active && can_start) {
-            BenchConfig cfg = {mode, single_route, dur_vals[dur_idx], settle_vals[settle_idx], uncap};
+            BenchConfig cfg = {mode, single_route, dur_vals[dur_idx], settle_vals[settle_idx], uncap, camera_pan};
             if (bench_start(&cfg)) {
                 notice[0] = 0;
                 selected_row = -1;
@@ -157,16 +217,24 @@ void bench_ui_tab(bool *want_close) {
             ImGui::TextColored(ImVec4(0.95f, 0.72f, 0.30f, 1.0f), "%s", tr("Partial results (cancelled early):"));
 
         const BenchRouteStats *kpi = snap.overall.valid ? &snap.overall : &snap.results[0];
+        const BenchRouteStats *kpi_base = find_baseline_route(baseline, has_baseline, kpi, snap.overall.valid);
         if (kpi && kpi->valid) {
             float avail = ImGui::GetContentRegionAvail().x;
             float gap = ImGui::GetStyle().ItemSpacing.x;
             float cw = (avail - gap * 4.0f) / 5.0f;
             if (cw < 80 * scale) cw = 80 * scale;
-            char v_avg[24], v_1p[24], v_01p[24], v_hit[24], v_vram[24];
-            snprintf(v_avg, sizeof v_avg, "%.1f", kpi->avg_fps);
-            snprintf(v_1p, sizeof v_1p, "%.1f", kpi->low_1pct_fps);
-            snprintf(v_01p, sizeof v_01p, "%.1f", kpi->low_01pct_fps);
-            snprintf(v_hit, sizeof v_hit, "%u", kpi->hitches);
+            char v_avg[36], v_1p[36], v_01p[36], v_hit[36], v_vram[36];
+            if (kpi_base) {
+                snprintf(v_avg, sizeof v_avg, "%.1f (%+.1f)", kpi->avg_fps, kpi->avg_fps - kpi_base->avg_fps);
+                snprintf(v_1p, sizeof v_1p, "%.1f (%+.1f)", kpi->low_1pct_fps, kpi->low_1pct_fps - kpi_base->low_1pct_fps);
+                snprintf(v_01p, sizeof v_01p, "%.1f (%+.1f)", kpi->low_01pct_fps, kpi->low_01pct_fps - kpi_base->low_01pct_fps);
+                snprintf(v_hit, sizeof v_hit, "%u (%+d)", kpi->hitches, (int)kpi->hitches - (int)kpi_base->hitches);
+            } else {
+                snprintf(v_avg, sizeof v_avg, "%.1f", kpi->avg_fps);
+                snprintf(v_1p, sizeof v_1p, "%.1f", kpi->low_1pct_fps);
+                snprintf(v_01p, sizeof v_01p, "%.1f", kpi->low_01pct_fps);
+                snprintf(v_hit, sizeof v_hit, "%u", kpi->hitches);
+            }
             if (kpi->vram_peak_mb > 0) snprintf(v_vram, sizeof v_vram, "%.0f MB", kpi->vram_peak_mb);
             else snprintf(v_vram, sizeof v_vram, "-");
 
@@ -238,11 +306,29 @@ void bench_ui_tab(bool *want_close) {
         const BenchRouteStats *graph_r = (selected_row >= 0 && selected_row < snap.nresults)
                                        ? &snap.results[selected_row]
                                        : (snap.overall.valid ? &snap.overall : &snap.results[0]);
+        bool graph_is_overall = !(selected_row >= 0 && selected_row < snap.nresults) && snap.overall.valid;
+        const BenchRouteStats *graph_base = find_baseline_route(baseline, has_baseline, graph_r, graph_is_overall);
         if (graph_r && graph_r->valid) {
-            ImGui::TextDisabled("%s: %s (%.1f - %.1f ms, %s %.2f ms)",
+            ImGui::TextDisabled("%s: %s (%.1f - %.1f ms, %s %.2f ms%s)",
                                 tr("Frame time"), graph_r->name[0] ? graph_r->name : tr("Overall"),
-                                graph_r->min_ms, graph_r->max_ms, tr("median"), graph_r->median_ms);
-            draw_frametime_graph(graph_r, scale);
+                                graph_r->min_ms, graph_r->max_ms, tr("median"), graph_r->median_ms,
+                                graph_base ? " | blue = baseline" : "");
+            draw_frametime_graph(graph_r, graph_base, scale);
+            draw_hist_bar(graph_r, scale);
+        }
+
+        if (opt_action(tr("Baseline comparison"), has_baseline ? tr("Update baseline") : tr("Set baseline"),
+                       tr("Stores the current results as a reference to show FPS/ms deltas and a baseline curve on future runs."), true)) {
+            baseline = snap;
+            has_baseline = true;
+            snprintf(notice, sizeof notice, "%s", tr("Saved current results as baseline."));
+        }
+        if (has_baseline) {
+            if (opt_action(tr("Clear baseline"), tr("Clear"),
+                           tr("Removes the stored A/B baseline comparison."), true)) {
+                has_baseline = false;
+                notice[0] = 0;
+            }
         }
 
         if (opt_action(tr("Copy Markdown report"), tr("Copy"),
