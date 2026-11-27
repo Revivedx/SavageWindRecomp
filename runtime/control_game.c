@@ -7,6 +7,7 @@
 #include <sys/stat.h>
 
 #include "control.h"
+#include "benchmark.h"
 #include "game_flags.h"
 #include "control_cells.h"
 #include "control_places.h"
@@ -503,6 +504,7 @@ void control_game_init(void) {
     };
     control_register(player, (int)(sizeof player / sizeof *player));
     control_settings_init();  // (get for everyone, set only in developer mode)
+    bench_control_init();
     if (!control_enabled()) return;
     static const ControlCmd dev[] = {
         {"time", "[freeze | unfreeze | set <0-24> | <0-24>]", "Show or change the hour of the day", cmd_time, 0},

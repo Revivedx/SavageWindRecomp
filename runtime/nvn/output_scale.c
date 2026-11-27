@@ -485,7 +485,8 @@ void output_scale(double dw, double dh, bool reshape_allowed, OutScale *o) {
 #endif
     extern volatile int g_movie_playing;  // runtime/hle/movie.c: pre-rendered 16:9 cutscenes
     bool movie = __atomic_load_n(&g_movie_playing, __ATOMIC_RELAXED) > 0;
-    bool reshape = reshape_allowed && fabs(shape - 1.0) > 0.005 && !title_fit && !movie &&
+    bool cutscene = g_settings.cutscenes_16_9 && framepace_in_event() && !framepace_dialogue_ui();
+    bool reshape = reshape_allowed && fabs(shape - 1.0) > 0.005 && !title_fit && !movie && !cutscene &&
                    (shape < 1 || !framepace_loading_ui());
     if (!reshape) shape = 1.0;
     // render height in units of the Switch's 1080 lines: the window's (Metal: divided by the upscaler's factor)

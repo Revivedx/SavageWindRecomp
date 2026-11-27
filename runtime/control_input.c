@@ -215,11 +215,15 @@ bool control_look_start(bool use_yaw, double yaw, bool use_pitch, double pitch, 
     return true;
 }
 
+bool control_look_active(void) { return look.state == LOOK_RUN; }
+
 // Called even when no script exists. Expiry uses presented frames, never script time or poll count.
 void control_input_frame(uint64_t frame) {
-    if (!atomic_load_explicit(&enabled, memory_order_relaxed)) return;
+    extern bool bench_active(void);
+    if (!atomic_load_explicit(&enabled, memory_order_relaxed) && !bench_active()) return;
     if (look.state == LOOK_RUN) look_step(frame);
     control_fly_frame(frame);
+    if (!atomic_load_explicit(&enabled, memory_order_relaxed)) return;
     uint64_t b = 0;
     for (int i = 0; i < 16; i++) if (held[i] || frame < until[i]) b |= 1ull << i;
     atomic_store(&buttons, b);
@@ -233,7 +237,11 @@ void control_input_frame(uint64_t frame) {
 }
 static int32_t clamp(int32_t v) { return v > 32767 ? 32767 : v < -32767 ? -32767 : v; }
 void control_input_apply(uint64_t *b, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry) {
-    if (!atomic_load_explicit(&enabled, memory_order_relaxed)) return;
+    extern bool bench_active(void);
+    if (!atomic_load_explicit(&enabled, memory_order_relaxed)) {
+        if (bench_active()) control_fly_input(b, lx, ly);
+        return;
+    }
     *b |= atomic_load(&buttons);
     if (!lx) { control_fly_input(b, NULL, NULL); return; }
     int32_t *x[] = {lx, rx}, *y[] = {ly, ry};

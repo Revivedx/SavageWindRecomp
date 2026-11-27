@@ -138,9 +138,9 @@ int main(void) {
     ST64(animation+0x18, GUEST_HI-4); assert(ui_layout_map_mode(screen) == -1);
     ST64(screen+0x3640, 0); assert(ui_layout_map_mode(screen) == -1);
     ST64(slots+8*0x2a, 0);
-    // Quest notifications, item cards and complete quick selectors retain native geometry.
-    const unsigned native_slots[] = {0xb, 0x27, 0x2d};
-    for (unsigned i = 0; i < 3; i++) {
+    // Camera rune (including its Save to Album modal), quest notifications, item cards and complete quick selectors retain native geometry.
+    const unsigned native_slots[] = {0x6, 0xb, 0x27, 0x2d};
+    for (unsigned i = 0; i < sizeof native_slots / sizeof native_slots[0]; i++) {
         ST64(slots+8*native_slots[i], screen); at = cb->mem + cb->used;
         rt_ui_layout_draw(&c, native_draw); assert(scope_at(at) == UI_LAYOUT_DIALOGUE);
         ST64(slots+8*native_slots[i], 0);

@@ -181,6 +181,16 @@ SITES = [
          '1e200908 bd40ba60 52800028 39053e68', 1),
     # arrows' fall (tools/patches.py _arrow_gravity): the load of the gravity added to an arrow's velocity per update
     Site('arrow_fall_gravity', 'code', 'bd410a81 1e212849 bd410e81 1e21280a 94000000/fc000000 36000000/fff8001f f9404288 2d400500', 0),
+    # Experimental glide decay (tools/patches.py _glide_overspeed_dec): the paraglider's stick-gated update subtracts
+    # its OverSpeedDec parameter from velocity +0x181c / +0x1824 once per guest update, with no time step. The first
+    # three words are identical at both sites; the store word tells them apart. `at` 2 is the fsub at +8.
+    Site('glide_overspeed_dec_181c', 'code', 'f9403668 bd400101 1e213800 bd181e80', 2),
+    Site('glide_overspeed_dec_1824', 'code', 'f9403668 bd400101 1e213800 bd182680', 2),
+    # The fadd mirrors: with a non-positive target the guest ADDS OverSpeedDec instead of subtracting it. The fadd
+    # word is the same at both sites and the following branch back to the shared store cannot tell them apart, so
+    # the distinguishing fcmp word four words earlier is part of the pattern. `at` 4 is the fadd.
+    Site('glide_overspeed_add_181c', 'code', '1e2e2000 540000a5 f9403668 bd400101 1e212800', 4),
+    Site('glide_overspeed_add_1824', 'code', '1e2d2000 540000a5 f9403668 bd400101 1e212800', 4),
     # Experimental shield-surf takeoff grace (#305): contact update, boost removal and launch request.
     Site('surf_contact', 'code', '3941d2a8 36080008/fff8001f bd4066a0 1e202008 5400000d/ff00001f bd403261 1e202028 5400000d/ff00001f', 0),
     Site('surf_boost_remove', 'code', '1e203820 2f00e401 aa1403e1 1e216800 bd003260 0f016680 f94006a0 94000000/fc000000', 0),
@@ -188,11 +198,16 @@ SITES = [
     # a stale actor in the target manager (tools/patches.py _stale_actor_helper, _stale_actor_target; #391, #393): the
     # helper that asks an actor for its link, and the camera target's inline copy of it
     Site('stale_actor_helper', 'code', 'b4000000/ff00001f f942b808 f9404500 14000000/fc000000 d65f03c0', 0),
+    Site('stale_actor_helper2', 'code', 'b4000000/ff00001f f942b808 528071a1 72a900c1 f9404500 14000000/fc000000 d65f03c0', 0),
     Site('stale_actor_kind', 'code', 'b4000000/ff00001f f942b808 aa0003f3 528ebfc1 72a499a1 f9404500 94000000/fc000000', 0),
     Site('stale_actor_target', 'code', 'f942ba68 f9404500 94000000/fc000000 12000008 390006e8 37000000/fff8001f 394002e8 35000008/ff00001f', 0),
-    # and the two loads of an actor's link in the check of one of its flags by name (1.9.0 0x700120c760; #766)
+    # and the loads of an actor's link in the check of one of its flags by name (1.9.0 0x700120c760; #766, #1011)
     Site('stale_actor_flag', 'code', 'f942ba68 52864261 72b85581 f9404500 94000000/fc000000 36000000/fff8001f 52800020 a9424ff4', 0),
     Site('stale_actor_flag2', 'code', 'f942ba68 528120a1 72a6b2c1 f9404500 94000000/fc000000 2a000288 37000008/fff8001f f942ba68', 0),
+    Site('stale_actor_flag3', 'code', 'f942ba68 528071a1 72a900c1 f9404500 94000000/fc000000 14000000/fc000000 52800034 14000000/fc000000', 0),
+    Site('stale_actor_flag4', 'code', 'f942ba68 528cfa41 72ad8a41 f9404500 94000000/fc000000 36000000/fff8001f 14000000/fc000000', 0),
+    # AI message send to an actor link whose actor may be null (1.9.0 0x7000bbb670; #1130)
+    Site('stale_actor_ai_msg', 'code', 'f942f834 3900501f f9400415 b4000015/ff00001f aa0003f6 2a0203f3 f84106c8 f9400908 d63f0100 f94002a8 aa0003e3 12000264 aa1503e0 aa1403e1 f9400905', 0),
     # the physics step's solver microsteps (tools/patches.py _solver_steps): the delta frame times 6
     Site('phys_solver_steps', 'code', '1e231002 1e3c1004 f9401a68 1e2c1009 1e220822 f9400108 1e202048 f9400514', 4),
     # Havok's deactivation at the console's pace (tools/patches.py _phys_tick, _phys_motion_tick): the world step's
@@ -383,10 +398,11 @@ SITES = [
     Site('battle_info_b', 'code', 'a9402428 a91da408 d3609d28 34000008/ff00001f 52800048 b901e808 d65f03c0 '
          'b941dc08', 0),
     Site('battle_info_c', 'code', 'b9400028 b901d008 d65f03c0', 0),
-    # the horse's crash check loading its gear, and the entry of its stop check's look-ahead (tools/patches.py
-    # _horse_crash, _horse_look_ahead; Cheats > Sure-footed horse)
+    # the horse's crash check loading its gear, and the entry of its stop check (tools/patches.py _horse_crash,
+    # _horse_stop_check; Cheats > Improved horse controls)
     Site('horse_crash', 'code', 'b9403428 7100111f 54000001/ff00001f d10303ff 6d072beb f90053f5 6d0823e9 a9097bfd', 0),
-    Site('horse_look_ahead', 'code', 'd105c3ff fd00a3e8 f900affc a914fbfd a9164ff4 910523fd aa0103f4 aa0003f3', 0),
+    Site('horse_stop_check', 'code', 'b940382a 3400000a/ff00001f f9400029 b9400928 37100008/fff8001f 3947102b '
+         '2a1f03e8 3500000b/ff00001f', 0),
     # Gameplay > Keep crouch after camera (tools/patches.py _camera_*; runtime/camera_stealth.c): crouch idle
     # target in the Player AI selector, Camera entry, the two Camera -> Wait exit branches, and Camera::leave().
     Site('camera_squat_idle', 'code',
@@ -405,6 +421,14 @@ SITES = [
     Site('camera_leave', 'code',
          '94000000/fc000000 14000000/fc000000 90000008/9f00001f 91000108/ffc003ff f9400100 14000000/fc000000 '
          'a9be7bfd f9000bf3 910003fd aa0003f3 f9400400 94000000/fc000000 37000000/fff8001f 94000000/fc000000', 4),
+    # the ridden horse's update after its prologue (x0: the riding action), its steering loading the gear's stick
+    # scale, and its steering storing the horse's play rate (tools/patches.py _horse_ride, _horse_stick_scale,
+    # _horse_play_rate; runtime/improved_horse.c; Cheats > Improved horse controls)
+    Site('horse_ride', 'code', 'd10a03ff aa0003f3 52804702 910123e0 2a1f03e1 910123f6 94000000/fc000000 f9400660', 0),
+    Site('horse_stick_scale', 'code', 'bc697901 1e210800 bc1b43a0 94000000/fc000000 d10153a1 aa1403e0 aa1303e2 '
+         '94000000/fc000000', 0),
+    Site('horse_play_rate', 'code', 'bd015500 14000000/fc000000 3948b669 1e2e2140 3948ba68 54000004/ff00001f '
+         '35000009/ff00001f 34000008/ff00001f', 0),
     # the pouch taking arrows off for the player's bow (tools/patches.py _remove_arrows; Accessibility > Infinite arrows)
     Site('pouch_remove_arrows', 'code', 'd101c3ff a9017bfd a9026ffc a90367fa a9045ff8 a90557f6 a9064ff4 910043fd '
          '90000008/9f00001f aa0003f3 f9400108/ffc003ff aa0103e0', 0),
@@ -549,6 +573,11 @@ SITES = [
     # Cheats > Map hooks the read (patches.py _place_icon) and clears the bit for places that were never visited,
     # so they keep the normal look while staying travel destinations.
     Site('place_icon', 'code', 'b9403e68 7217011f f9406121 a9414ff4 1e200c20 a8c27bfd d61f0020 a9414ff4', 0),
+    # The map's completion rate (tools/patches.py _map_clear_rate; runtime/assists.c rt_map_clear_rate): the map
+    # screen asks the game whether the save has the GameClear flag and hides its rate block when the answer is no
+    # (1.9.0 0x7000dab280: bl isGameClear, then tbz).
+    Site('map_clear_rate', 'code', '2a1f03e0 94000000/fc000000 36000000/ff00001f 90007df8/9f00001f f944cf18 '
+         'f9400300 94000000/fc000000', 1),
     # The game's memory (tools/patches.py _game_heap_size; runtime/kernel.c kernel_memory_setup): the size nninitStartup
     # asks SetMemoryHeapSize for (mov w0, #0xc3000000, then the 32 MB block malloc keeps), and the root heap's size
     # main hands sead's heap manager (mov w8, #0xc1000000: the heap less those 32 MB)
@@ -574,6 +603,24 @@ SITES = [
          '39009bf7', 0),
     # ... and StarterPackMgr's heap inside ForResourceL: 225 MB (mov w8, #0xe100000; 20 MB in the mode the csel picks)
     Site('game_starter_pack', 'code', '52a1c208 52a02809 9a881120 94000000/fc000000 aa0003e1 f9012e60 52802000 52800102', 0),
+    # ... and the smaller heaps the HD texture pack's own emulator patch (for 1.6.0) also enlarges: UiHeap (28 MB, or
+    # 27 MB in the mode the branch before it picks), Havok's HavokMainHeap (45 MB), PhysicsSystem (0x24000: mov w0,
+    # #0x4000 / movk w0, #2, lsl #16), PhysicsTempDefault / PhysicsTempLow (384 / 192 KB), GameDataWork (4 MB, in
+    # FixedHeap), GameDataHeap (15 MB) and SaveAreaHeap (5 MB)
+    Site('game_ui_heap', 'code', '52a03800 90000008/9f00001f 90000009/9f00001f 91000129/ffc003ff f9400108/ffc003ff '
+         '910003e1 aa1303e2 52800103', 0),
+    Site('game_ui_heap_b', 'code', '52a03600 14000000/fc000000 90000008/9f00001f f9400100/ffc003ff d65f03c0 d65f03c0 '
+         'd65f03c0 a9be7bfd', 0),
+    Site('game_havok_heap', 'code', '52a05a03 910003e4 aa0103f3 91004115 a90027f5 94000000/fc000000 a9478281 aa1f03e2', 0),
+    Site('game_physics_system', 'code', '72a00040 910003e1 aa1303e2 f90ab909 52800103 52800024 52800025 a9002bf5', 0),
+    Site('game_physics_temp', 'code', '52a000c0 aa1303e2 52800103 a90023f5 52800024 52800025 94000000/fc000000 f900de80',
+         0),
+    Site('game_physics_temp_low', 'code', '52a00060 94000000/fc000000 f900e280 528f3301 aa1303e0 f9400268 52800202 '
+         'f9401908', 0),
+    Site('game_gamedata_work', 'code', '52a00800 52800103 52800024 52800025 91004108 a90027e8 94000000/fc000000 f9002260',
+         0),
+    Site('game_gamedata_heap', 'code', '52a01e00 aa1503e2 aa1f03e3 52800104 52800025 52800026 52800037 910042d8', 0),
+    Site('game_save_area', 'code', '52a00a00 12800005 f9020ff5 911063e1 aa1f03e3 f90213e8 52800104 2a1f03e6', 0),
     Site('main_data', 'data', '', 0),
     Site('main_end', 'end', '', 0),
 ]
@@ -610,7 +657,8 @@ OPTIONAL_GROUPS = [
     ('lookat_update',),  # (the free camera: without it Home does nothing)
     ('gyro_scene_actor',),
     ('surf_contact', 'surf_boost_remove', 'surf_jump_request'),
-    ('stale_actor_helper', 'stale_actor_kind', 'stale_actor_target', 'stale_actor_flag', 'stale_actor_flag2'),
+    ('stale_actor_helper', 'stale_actor_helper2', 'stale_actor_kind', 'stale_actor_target', 'stale_actor_flag',
+     'stale_actor_flag2', 'stale_actor_flag3', 'stale_actor_flag4', 'stale_actor_ai_msg'),
     ('quick_menu_capture_alpha',),
     ('cjk_font_size', 'cjk_font_bin', 'cjk_font_quad'),
     ('kf_angle',),
@@ -641,8 +689,9 @@ OPTIONAL_GROUPS = [
     ('link_life_store', 'link_life_tick'),
     ('stamina_store',),
     ('sprint_cost', 'sprint_press_cost', 'battle_info_field', 'battle_info_b', 'battle_info_c'),  # (Cheats > Free sprint: without them it does nothing)
-    ('horse_crash', 'horse_look_ahead'),  # (Cheats > Sure-footed horse: without them it does nothing)
     ('camera_squat_idle', 'camera_enter_start', 'camera_exit_finished', 'camera_exit_active', 'camera_leave'),
+    ('horse_crash', 'horse_stop_check'),  # (Cheats > Improved horse controls' stops: without them it does nothing)
+    ('horse_ride', 'horse_stick_scale', 'horse_play_rate'),  # (Cheats > Improved horse controls' steering: without them it does nothing)
     ('tp_gate',),  # (a far teleport of the control endpoint: without it a long jump freezes the world)
     ('title_version_text_a', 'title_version_text_b'),  # (the title's version line in full: without them it stops at 15 letters)
     ('item_tick', 'pouch_item_get', 'pouch_mgr'),
@@ -653,6 +702,10 @@ OPTIONAL_GROUPS = [
     ('game_fixed_heap_size', 'game_texarc_heap_size'),  # (both or neither: TexArcWork is made inside FixedHeap)
     ('game_texture_pool', 'game_texture_pool_b'),
     ('game_resource_s', 'game_resource_l', 'game_starter_pack'),  # (StarterPackMgr grows inside ForResourceL)
+    ('game_ui_heap', 'game_ui_heap_b'),
+    ('game_havok_heap', 'game_physics_system', 'game_physics_temp', 'game_physics_temp_low'),
+    ('game_gamedata_work',),
+    ('game_gamedata_heap', 'game_save_area'),
 ]
 OPTIONAL = {n for g in OPTIONAL_GROUPS for n in g}
 
@@ -813,14 +866,22 @@ KNOWN = {
         'day_cycle_time_only': 0x70014266d4,
         'day_cycle_normal': 0x7001426788,
         'arrow_fall_gravity': 0x70005ee734,
+        'glide_overspeed_dec_181c': 0x7000c866f0,
+        'glide_overspeed_dec_1824': 0x7000c867b4,
+        'glide_overspeed_add_181c': 0x7000c86718,
+        'glide_overspeed_add_1824': 0x7000c867dc,
         'surf_contact': 0x70011e9e74,
         'surf_boost_remove': 0x70011e9e94,
         'surf_jump_request': 0x70011ea3d4,
         'stale_actor_helper': 0x700120bc40,
+        'stale_actor_helper2': 0x700120c740,
         'stale_actor_kind': 0x700120ccdc,
         'stale_actor_target': 0x7000dea400,
         'stale_actor_flag': 0x700120c780,
         'stale_actor_flag2': 0x700120c7f0,
+        'stale_actor_flag3': 0x700120c80c,
+        'stale_actor_flag4': 0x700120c830,
+        'stale_actor_ai_msg': 0x7000bbb670,
         'phys_solver_steps': 0x700156f930,
         'demo_move_arrive': 0x7000c711dc,
         'rail_point_radius': 0x7000c89d4c,
@@ -882,6 +943,15 @@ KNOWN = {
         'game_resource_s': 0x700155fda4,
         'game_resource_l': 0x700155fde0,
         'game_starter_pack': 0x7001209a8c,
+        'game_ui_heap': 0x7000e612ec,
+        'game_ui_heap_b': 0x7000e61348,
+        'game_havok_heap': 0x700156dfc8,
+        'game_physics_system': 0x700156e000,
+        'game_physics_temp': 0x700156e034,
+        'game_physics_temp_low': 0x700156e080,
+        'game_gamedata_work': 0x700131b278,
+        'game_gamedata_heap': 0x700112b198,
+        'game_save_area': 0x700112b360,
         'act_hold': 0x7000d16f0c,
         'act_trig': 0x7000d16f74,
         'act_masks': 0x70016d89b4,
@@ -898,12 +968,15 @@ KNOWN = {
         'battle_info_b': 0x700133dcac,
         'battle_info_c': 0x7001349648,
         'horse_crash': 0x70006b16c4,
-        'horse_look_ahead': 0x70006b4218,
+        'horse_stop_check': 0x70006b19c8,
         'camera_squat_idle': 0x7000ca9ef0,
         'camera_enter_start': 0x7000caa6f4,
         'camera_exit_finished': 0x7000cabfb4,
         'camera_exit_active': 0x7000cacfac,
         'camera_leave': 0x7000ca3734,
+        'horse_ride': 0x70006afe60,
+        'horse_stick_scale': 0x70006b1cf4,
+        'horse_play_rate': 0x70006b218c,
         'item_tick': 0x7000cc4c3c,
         'pouch_item_get': 0x7000d921bc,
         'pouch_mgr': 0x7001e18570,
@@ -917,6 +990,7 @@ KNOWN = {
         'place_count_read': 0x7000d7bea4,
         'place_travel': 0x7000d7b904,
         'place_icon': 0x7000dac488,
+        'map_clear_rate': 0x7000dab280,
         'main_data': 0x7001b7a000,
         'main_end': 0x7001e98000,
     },

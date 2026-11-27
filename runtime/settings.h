@@ -192,6 +192,7 @@ typedef struct {
     int sharper_text;    // the game's font sheets enlarged this many times (2 or 4; 0: off), runtime/nvn/text_upscale.c
     bool wide_view;      // a window that isn't 16:9 shows more of the world instead of bars (runtime/nvn/output_scale.c)
     bool hud_edges;      // on windows taller than 16:9 with wide_view, anchor HUD to the window edges
+    bool cutscenes_16_9; // keep in-engine cutscenes at 16:9 with bars on wider or taller windows (#838)
     int hdr;             // HDR_* (runtime/nvn/vulkan/device.c hdr_*)
     int hdr_white;       // nits of SDR white in HDR (0: what Windows gives SDR content on that monitor)
     int hdr_peak_nits;   // peak: scene roll-off and final cap for every element (0: not set yet; first start reads ICC)
@@ -224,13 +225,24 @@ typedef struct {
     bool handheld_setup; // a PC handheld's own settings were taken once (settings_load)
     int hud_size;        // the HUD's size in play, percent of the game's own (HUD_SIZE_CHOICES, runtime/nvn/hud_scale.h)
     bool dynamic_hud;    // hide the HUD while exploring; show it for 5 s when Link takes damage (vulkan/exec.c)
+    bool hud_hide_hearts;     // selectively hide HUD elements (ui_layout.c)
+    bool hud_hide_stamina;
+    bool hud_hide_abilities;
+    bool hud_hide_minimap;
+    bool hud_hide_sensors;
+    bool hud_hide_enemy_bars;
+    bool hud_hide_prompts;
     int menu_speed;      // menu cursor and UI animation speed, percent (MENU_SPEED_CHOICES, runtime/hle/framepace.c)
     int draw_distance;   // DRAWDIST_*: how far placed actors are kept (runtime/draw_distance.c)
     int haze;            // the air's haze, percent of the game's (services/fs.c haze_patch; from the next start)
-    int haze_low;        // savagewind.ini only (#915): a haze below the menu's 75 %, 0-74 (the sky turns teal); -1 unset
-    bool bloom;          // the glow around bright light (off: its draws clear their images: vulkan/exec.c)
-    bool depth_of_field; // the distance blur over far pixels (off: its draw is skipped: vulkan/exec.c)
+    int haze_low;           // savagewind.ini only (#915): a haze below the menu's 75 %, 0-74 (the sky turns teal); -1 unset
+    bool bloom;             // the glow around bright light (off: its draws clear their images: vulkan/exec.c)
+    bool depth_of_field;    // the distance blur over far pixels (off: its draw is skipped: vulkan/exec.c)
+    bool ambient_occlusion; // quarter-res HBAO contact shadows (off: AO + blur cleared to 1.0: vulkan/exec.c)
+    bool map_zoom_blur;  // the blur the world map lays over itself as it opens and after each zoom (off: its blend
+                         // draws are skipped: vulkan/exec.c)
     bool grass;          // grass blades and crossed quads (off: draw_distance.c hides both layers)
+    bool grass_quads;    // distant ground-cover layer (crossed quads; off: keeps near grass blades only)
     int grass_distance;  // GRASS_DIST_*: independent grass draw distance (0: follow draw_distance)
     bool lens_flare;     // sun glare / lens flare (off: vulkan/exec.c skips sun occlusion queries)
     bool fast_fma;       // CPUs without FMA instructions (gamelib_compat): the game's fused multiply-adds rounded twice,
@@ -256,9 +268,11 @@ typedef struct {
     bool infinite_rupees;    // the wallet is kept at 9999 rupees (runtime/rupees.c)
     int item_multiplier;     // 1, 2, 4 or 8: multiply stackable item pickups (runtime/items.c)
     bool free_sprint;        // sprinting takes no stamina while no enemy is fighting Link (runtime/free_sprint.c)
-    bool sure_footed;        // a running horse doesn't stop dead and rear when it hits something (runtime/sure_footed.c)
+    bool improved_horse;     // the horse steers at once, keeps its speed through a turn, and doesn't stop dead and rear
+                             // when it hits something (runtime/improved_horse.c, runtime/sure_footed.c)
     bool collectibles_map;   // the Korok seeds and shrines not found yet on the game's map (runtime/collectibles_map.c)
     bool show_all_places;    // every shrine, tower, lab and stable on the map (runtime/place_display.c)
+    bool map_clear_rate;     // the map's completion percentage before the game is cleared (runtime/assists.c)
     int weather;             // WEATHER_COUNT: the game's, rain or thunderstorms kept out, or one weather held (weather.c)
     bool god_mode;           // Link takes no damage
     bool one_hit_kill;       // whatever else takes damage loses all its life at once

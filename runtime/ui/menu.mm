@@ -25,6 +25,7 @@
 #include "imgui_internal.h"  // (NavCursorVisible)
 #include "osk.h"
 #include "console.h"
+#include "benchmark_ui.h"
 #ifdef SW_METAL
 #include "imgui_impl_metal.h"
 #else
@@ -37,6 +38,7 @@ extern "C" bool vk_feedback_once(void);  // runtime/nvn/vulkan/exec.c (Video > S
 
 extern "C" {
 #include "../amiibo.h"
+#include "../benchmark.h"
 #include "../bookmarks.h"
 #include "../collectibles.h"
 #include "../control.h"
@@ -331,6 +333,12 @@ bool menu_handle_event(const SDL_Event *e) {
     }
     // typing (a text field, the on-screen keyboard, the name entry): keys are text, not menu shortcuts
     bool typing = g_kbd.load() == 1 || console_is_open() || (g_open.load() && g_text_busy.load());
+    if (!g_open.load() && !console_is_open() && bench_active() &&
+        ((e->type == SDL_EVENT_KEY_DOWN && !e->key.repeat && e->key.scancode == SDL_SCANCODE_ESCAPE) ||
+         (e->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN && e->gbutton.button == g_bind_pad[BIND_B]))) {
+        bench_cancel();
+        return true;
+    }
     if (e->type == SDL_EVENT_KEY_UP && e->key.scancode == SDL_SCANCODE_ESCAPE)
         input_pc_escape(false);
     if (pc_cursor_enabled() && !capturing() && !typing && !game_options_input_hold() &&
@@ -1004,6 +1012,15 @@ static void tab_display(void) {
     }
     opt_toggle("Dynamic HUD", &g_settings.dynamic_hud, false,
                "Hides the HUD while exploring and shows it for 5 seconds when Link takes damage.");
+    opt_section("Hide HUD elements");
+    opt_toggle("Hide hearts", &g_settings.hud_hide_hearts, false, "Hides the heart containers on the HUD.");
+    opt_toggle("Hide stamina wheel", &g_settings.hud_hide_stamina, false, "Hides the stamina wheel.");
+    opt_toggle("Hide champion abilities", &g_settings.hud_hide_abilities, false, "Hides the champion ability icons under the hearts.");
+    opt_toggle("Hide minimap", &g_settings.hud_hide_minimap, false, "Hides the minimap during play while keeping the full map.");
+    opt_toggle("Hide sensors & weather", &g_settings.hud_hide_sensors, false,
+               "Hides the Sheikah Sensor, sound meter, temperature gauge, weather and clock.");
+    opt_toggle("Hide enemy health bars", &g_settings.hud_hide_enemy_bars, false, "Hides enemy health bars.");
+    opt_toggle("Hide action prompts", &g_settings.hud_hide_prompts, false, "Hides the on-screen button prompts during play.");
     {
         float tsz = (float)g_settings.menu_text_size;
         if (opt_slider("Overlay text size", &tsz, 80, 150, 5, 100, "%g%%",
@@ -1532,10 +1549,15 @@ static void tab_display(void) {
                "little faster, a flatter image.");
     opt_toggle("Depth of field", &g_settings.depth_of_field, true, "The game blurs the far distance a little. Off: sharp "
                "out to the horizon, a little faster.");
+    opt_toggle("Ambient occlusion", &g_settings.ambient_occlusion, true, "Soft contact shadows in corners and foliage. "
+               "Off: cleaner image, a little faster.");
     opt_toggle("Grass", &g_settings.grass, true, "Grass blades and ground cover. Off: bare terrain, faster.");
     {
         static const char *const gd_names[GRASS_DIST_COUNT] = {"Follow draw distance", "Potato", "Original", "Medium", "High"};
         opt_indent(1);
+        if (!g_settings.grass) opt_disable_next();
+        opt_toggle("Ground cover", &g_settings.grass_quads, true,
+                   "Distant grass ground-cover layer. Off: keeps near grass blades only.");
         if (!g_settings.grass) opt_disable_next();
         opt_choice("Grass distance", &g_settings.grass_distance, gd_names, GRASS_DIST_COUNT, GRASS_DIST_FOLLOW,
                    "How far out grass blades and ground cover are drawn. Follow draw distance matches Draw distance; "
@@ -1671,7 +1693,8 @@ static void tab_audio(void) {
 
 // Cheats: what hands the player things or changes the world (the game's own menus keep to options and assists, so
 // these are only here). The same as the developer console commands next to them (rupees: runtime/rupees.c;
-// weather: runtime/weather.c). Free sprint: runtime/free_sprint.c. Sure-footed horse, menu only: runtime/sure_footed.c.
+// weather: runtime/weather.c). Free sprint: runtime/free_sprint.c. Improved horse controls, menu only:
+// runtime/improved_horse.c and runtime/sure_footed.c.
 // The assists (God mode, damage, stamina, weapon wear, arrows: runtime/assists.c) are every player's, on the Gameplay
 // page (tab_gameplay), not here: Cheats is developer mode only. The hour is the console's `time`
 // (runtime/services/test_warp.c), the blood moon its `bloodmoon` (runtime/blood_moon.c).
@@ -1779,9 +1802,9 @@ static void cheats_options(void) {
     }
 
     opt_section("Travel");
-    opt_toggle("Sure-footed horse", &g_settings.sure_footed, false,
-               "A running horse no longer stops dead and rears when it runs into something."
-               " It no longer stops at cliff edges either.");
+    opt_toggle("Improved horse controls", &g_settings.improved_horse, false,
+               "The horse answers the stick at once, small nudges included, and turns sharper at a canter and gallop"
+               " without losing speed. It no longer stops dead and rears when it runs into something, or at cliff edges.");
 }
 
 // Case-insensitive: does s contain needle (an empty needle matches)
@@ -2950,6 +2973,7 @@ static const char *page_name(int id) {
     case 11: return "Teleport";
     case 12: return "Mods";
     case 13: return "Achievements";
+    case 15: return "Benchmark";
     }
     return "";
 }
@@ -2971,6 +2995,7 @@ static int game_pages(UiNavPage *out) {
     int n = 0;
     out[n++] = {12, "Mods", ICON_PUZZLE, 0, true};
     out[n++] = {13, "Achievements", ICON_TROPHY, 0, true};  // (runtime/ui/achievements_ui.mm)
+    out[n++] = {15, "Benchmark", ICON_SLIDERS, 0, true};    // (runtime/ui/benchmark_ui.mm)
     // (Cheats, Teleport: only when started with -dev or SAVAGEWIND_DEV=1: cheats are developer mode, as the
     // console's give, tp and time)
     if (control_enabled()) out[n++] = {10, "Cheats", ICON_MAGIC, 0, true}, out[n++] = {11, "Teleport", ICON_LOCATION, 0, true};
@@ -2999,6 +3024,12 @@ static void page_body(int id, float scale, bool in_game) {
     case 10: tab_cheats(); break;
     case 11: tab_teleport(); break;
     case 13: ach_ui_tab(); break;
+    case 15: {
+        bool close = false;
+        bench_ui_tab(&close);
+        if (close) set_open(false);
+        break;
+    }
     case 12: {
         bool want_restart = false;
         mods_tab_draw(in_game, &want_restart);
@@ -3233,7 +3264,7 @@ static bool menu_draws(bool *pointer_hover = NULL, float *pointer_box = NULL, bo
     if (gyro_show) *gyro_show = gyro_on;
     return g_open.load() || g_kbd.load() == 1 || g_sizes.load() || console_is_open() || gyro_on || hover ||
            g_settings.perf_overlay != PERF_OFF || act_log_enabled() || quick_inventory_sort_hint() || quick_drop_hint_state() ||
-           collect_map_shown() || ach_ui_active() || SDL_GetTicks() < g_notice_until.load();
+           collect_map_shown() || ach_ui_active() || bench_hud_visible() || SDL_GetTicks() < g_notice_until.load();
 }
 
 bool menu_render_needed(void) { return menu_draws(); }
@@ -3319,6 +3350,7 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
     }
 
     if (g_settings.perf_overlay != PERF_OFF) perf_overlay_draw(io, scale);
+    if (!open && !kbd && !sizes && !con && bench_hud_visible()) bench_ui_overlay(io.DisplaySize.x, io.DisplaySize.y, scale);
     ach_ui_toasts(io.DisplaySize.x, io.DisplaySize.y, scale);
     notice_draw(io, scale);
     if (act_log_enabled()) act_overlay_draw(io, scale);

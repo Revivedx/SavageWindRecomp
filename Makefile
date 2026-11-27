@@ -619,6 +619,15 @@ test-output-scale: $(B)/test_output_scale
 
 .PHONY: test-output-scale
 
+$(B)/test_benchmark: tests/test_benchmark.c runtime/benchmark.c runtime/benchmark.h
+	@mkdir -p $(B)
+	$(CC) -O1 $(OSFLAGS) -Iruntime -o $@ $< -lm
+
+test-benchmark: $(B)/test_benchmark
+	$(B)/test_benchmark
+
+.PHONY: test-benchmark
+
 $(B)/test_window_size: tests/test_window_size.c runtime/window_size.c $(RT_HDRS)
 	@mkdir -p $(B)
 	$(CC) -O1 -DSDL_STATIC_LIB $(OSFLAGS) $(DEPINC) -Iruntime -o $@ tests/test_window_size.c runtime/window_size.c -lSDL3 -lpthread -lm
@@ -888,6 +897,42 @@ test-bloom-scale: $(B)/test_bloom_scale
 	$(B)/test_bloom_scale
 
 .PHONY: test-bloom-scale
+
+# Both patched glide sites call one helper (runtime/hle/framepace.c): compile its exact source with the synthetic
+# fixtures of tests/test_glide_both.c. Run once per option state: the helper caches the option on first call.
+$(B)/glide_both_helper.c: runtime/hle/framepace.c
+	@mkdir -p $(dir $@)
+	@{ printf '#include <stdlib.h>\nint env_int(const char *, int);\nfloat g_frame_ratio;\n'; \
+	   sed -n '/^float rt_glide_overspeed_dec(/,/^}/p' $<; } > $@
+
+$(B)/test_glide_both: tests/test_glide_both.c $(B)/glide_both_helper.c
+	@mkdir -p $(dir $@)
+	$(CC) -O2 -ffp-contract=off -Wall -Wextra -Werror -o $@ $^ -lm
+
+test-glide-both: $(B)/test_glide_both
+	env -u SAVAGEWIND_GLIDE_DECAY $(B)/test_glide_both
+	env SAVAGEWIND_GLIDE_DECAY=0 $(B)/test_glide_both
+	env SAVAGEWIND_GLIDE_DECAY=1 $(B)/test_glide_both
+
+.PHONY: test-glide-both
+
+# Both fadd mirror glide sites call one helper (runtime/hle/framepace.c): compile its exact source with the synthetic
+# fixtures of tests/test_glide_add.c. Run once per option state: the helper caches the option on first call.
+$(B)/glide_add_helper.c: runtime/hle/framepace.c
+	@mkdir -p $(dir $@)
+	@{ printf '#include <stdlib.h>\nint env_int(const char *, int);\nfloat g_frame_ratio;\n'; \
+	   sed -n '/^float rt_glide_overspeed_add(/,/^}/p' $<; } > $@
+
+$(B)/test_glide_add: tests/test_glide_add.c $(B)/glide_add_helper.c
+	@mkdir -p $(dir $@)
+	$(CC) -O2 -ffp-contract=off -Wall -Wextra -Werror -o $@ $^ -lm
+
+test-glide-add: $(B)/test_glide_add
+	env -u SAVAGEWIND_GLIDE_DECAY $(B)/test_glide_add
+	env SAVAGEWIND_GLIDE_DECAY=0 $(B)/test_glide_add
+	env SAVAGEWIND_GLIDE_DECAY=1 $(B)/test_glide_add
+
+.PHONY: test-glide-add
 
 $(B)/test_audio_mix: tests/test_audio_mix.c runtime/audio_mix.h runtime/settings.h
 	@mkdir -p $(B)

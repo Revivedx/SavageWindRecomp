@@ -197,6 +197,19 @@ def main():
             check(False, f'{name}: mismatched opcode accepted')
         except AssertionError:
             check(True, f'{name}: mismatched opcode refused')
+    # Two sites at one address: their SHARED patch, never one silently in place of the other (the UI layouts and the
+    # quick replacement, 2026-11-27); any other pair stops the generator
+    for v, known in gs.KNOWN.items():
+        t = patches.table(known)
+        for names, fn in patches.SHARED.items():
+            addrs = {known[n] for n in names if n in known}
+            if len(addrs) == 1 and len(names & set(known)) == len(names):
+                check(t[addrs.pop()] is fn, f'{v}: {", ".join(sorted(names))} share one patch')
+    try:
+        patches.table({'ui_layout_pane': 0x1000, 'arrow_fall_gravity': 0x1000})
+        check(False, 'an unlisted shared address accepted')
+    except AssertionError:
+        check(True, 'an unlisted shared address refused')
     print(f'ok: {checks} checks')
 
 

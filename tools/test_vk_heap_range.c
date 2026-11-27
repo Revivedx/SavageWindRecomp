@@ -73,10 +73,10 @@ int main(int argc, char **argv) {
     char src[2048]; snprintf(src, sizeof src, "#version 450\nlayout(local_size_x=1) in; layout(std430,set=0,binding=0) buffer B { uint w[]; }; void main(){ w[%llu]=w[%llu]; }", (unsigned long long)(oversized ? offset / 4 + 1 : 1), (unsigned long long)(oversized ? offset / 4 : 0));
     if (physical) snprintf(src, sizeof src,
         "#version 460\n#extension GL_EXT_buffer_reference : require\n#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require\n"
-        "layout(local_size_x=1) in; layout(buffer_reference,std430,buffer_reference_align=4) buffer GMem {uint w[];};"
+        "layout(local_size_x=1) in; layout(buffer_reference,std430,buffer_reference_align=4) buffer GMem {uint v;};"
         "layout(std140,set=0,binding=0) uniform Info {uint64_t addr; uint64_t size;};"
-        "uint load_word(uint64_t at) {return addr!=0ul && size>=4ul && at<=size-4ul ? GMem(addr).w[uint(at>>2)] : 0u;}"
-        "void store_word(uint64_t at,uint x) {if(addr!=0ul && size>=4ul && at<=size-4ul) GMem(addr).w[uint(at>>2)]=x;}"
+        "uint load_word(uint64_t at) {return addr!=0ul && size>=4ul && at<=size-4ul ? GMem(addr+(at&~3ul)).v : 0u;}"
+        "void store_word(uint64_t at,uint x) {if(addr!=0ul && size>=4ul && at<=size-4ul) GMem(addr+(at&~3ul)).v=x;}"
         "void main(){store_word(%lluul,load_word(%lluul)); store_word(16ul,load_word(size));"
         "store_word(20ul,load_word(size-1ul)); store_word(size,42u);}",
         (unsigned long long)(offset+4), (unsigned long long)offset);

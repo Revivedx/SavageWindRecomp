@@ -533,6 +533,31 @@ def _arrow_gravity(gen, a):
             f'  /* {a:#x}: ldr s1, [x20, #0x108] (arrow gravity) */')
 
 
+# Experimental glide decay (runtime/hle/framepace.c rt_glide_overspeed_dec). The paraglider's stick-gated update
+# subtracts its OverSpeedDec parameter from velocity +0x181c (0x7000c866f0) or +0x1824 (0x7000c867b4) once per guest
+# update with no time step, so above 30 fps a windbomb launch loses its momentum too soon. The two sites hold the same
+# fsub word; the store word in their patterns tells them apart. The helper takes s0 (v, v[0]) and s1 (dec, v[1]) as its
+# FP arguments and writes the result back into s0; no other register or the stack changes. The fadd mirrors are patched
+# separately below, with the same register/store contract.
+def _glide_overspeed_dec(gen, a):
+    assert _word(gen, a) == 0x1e213800, hex(_word(gen, a))  # fsub s0, s0, s1
+    return ('{ extern float rt_glide_overspeed_dec(float, float); '
+            'union { uint32_t u; float f; } v = { .u = (uint32_t)c->v[0] }, d = { .u = (uint32_t)c->v[1] }; '
+            'v.f = rt_glide_overspeed_dec(v.f, d.f); c->v[0] = v.u; }'
+            f'  /* {a:#x}: fsub s0, s0, s1 (glide OverSpeedDec) */')
+
+
+# The fadd mirrors of the two glide sites (runtime/hle/framepace.c rt_glide_overspeed_add). With a non-positive target
+# the guest adds OverSpeedDec rather than subtracting it (1.9.0 0x7000c86718 / 0x7000c867dc). Same s0/s1 contract as
+# the fsub patches; only the asserted opcode changes. The shared store after the branch persists c->v[0], untouched.
+def _glide_overspeed_add(gen, a):
+    assert _word(gen, a) == 0x1e212800, hex(_word(gen, a))  # fadd s0, s0, s1
+    return ('{ extern float rt_glide_overspeed_add(float, float); '
+            'union { uint32_t u; float f; } v = { .u = (uint32_t)c->v[0] }, d = { .u = (uint32_t)c->v[1] }; '
+            'v.f = rt_glide_overspeed_add(v.f, d.f); c->v[0] = v.u; }'
+            f'  /* {a:#x}: fadd s0, s0, s1 (glide OverSpeedDec) */')
+
+
 # Experimental shield-surf takeoff grace (#305), runtime/hle/framepace.c. Preserve the original FP subtraction
 # through rt_fsub_s (runtime/cpu.h: fp_op_s on x86-64, a native FSUB on AArch64) when the grace is inactive,
 # including the game's FP exception/rounding behavior.
@@ -612,6 +637,15 @@ def _stale_target_exit(gen, a):
         if w & 0xff00001f == 0xb5000013:  # cbnz x19, <this code>
             return b + 4
     raise AssertionError('stale target: no cbnz x19 above %#x' % a)
+
+
+def _stale_actor_ai_msg(gen, a):
+    assert _word(gen, a) == 0xf942f834, hex(_word(gen, a))  # ldr x20, [x1, #0x5f0]
+    w = _word(gen, a + 0xc)
+    assert w & 0xff00001f == 0xb4000015, hex(w)  # cbz x21, <ret_false>
+    ret_false = (a + 0xc) + sext((w >> 5) & 0x7ffff, 19) * 4
+    return ('{ if (!c->x[1]) { ST8(c->x[0] + 0x14, 0); goto L_%x; } '
+            'c->x[20] = LD64(c->x[1] + 0x5f0); }' % ret_false)
 
 
 def _surf_jump_request(gen, a):
@@ -1125,6 +1159,17 @@ def _game_starter_pack(gen, a):
 # (runtime/kernel.c rt_game_texture_pool; nothing without it).
 
 
+# The smaller heaps the HD texture pack's own emulator patch also enlarges (UI, Havok physics, game data, save area):
+# the pack's sizes with game_memory_mb, the game's own without it (runtime/kernel.c rt_game_heap_pick).
+
+def _game_heap_pick(word, reg, size, more):
+    def patch(gen, a):
+        assert _word(gen, a) == word, hex(_word(gen, a))
+        return (f'{{ extern uint64_t rt_game_heap_pick(uint64_t, uint64_t); c->x[{reg}] = rt_game_heap_pick({size:#x}, '
+                f'{more:#x}); }}  /* {a:#x}: {size:#x} */')
+    return patch
+
+
 # The terrain's distant trees (tera::Core::Tree, 1.9.0 0x70013c94ac, 1.8.2 0x70012b55cc: its per-frame shader setup).
 # The trees past the actor trees are drawn by the terrain, from where it fades them in (+0x14cb0, 100 m; +0x14cb4 the
 # fade, 100 m) out to +0x14cb8 (4000 m, fading over the last +0x14cbc, 500 m; +0x14cc0, 4000 m, where its blocks
@@ -1248,15 +1293,19 @@ def _battle_info(which):
         return (f'{{ extern void rt_battle_info(int, int32_t); {load} rt_battle_info({which}, (int32_t)c->x[8]); }}'
                 f'  /* {a:#x}: the battle info\'s count (enemies in battle: Cheats) */')
     return patch
-# Cheats > Sure-footed horse (runtime/sure_footed.c): every frame the horse's update (1.9.0 0x70006afe4c; x1 of its
-# checks is its state: the gear at +0x34) asks two checks whether to stop the horse (new gear 0). The crash check
-# (0x70006b16c4), only at the top gear (4), looks at what the horse's Body touches: a steep face ahead, higher than the
-# horse can step, is a crash, flagged (+0x3ac bit 15) for the animation picker (0x70006b26bc) to play Crash. Without a
-# crash, the stop check (0x70006b19c8) stops a horse at the top gear when its look-ahead (0x70006b4218, as far as the
-# gear and speed carry it) finds the way blocked: a tree, a rock, a cliff edge; at lower gears it stops only a horse
-# nothing drives. The picker plays Courbette for a stop from gear 3 or 4. Both rears are the long stop at an obstacle;
-# with the option on, the crash check reads gear 0 and the look-ahead finds the way clear, so no obstacle stops a
-# horse, and the stop check's other stop stays the game's.
+# Cheats > Improved horse controls, its stops (runtime/sure_footed.c): every frame the horse's update (1.9.0
+# 0x70006afe4c; x1 of its checks is its state: the gear at +0x34, the gear it just picked at +0x38) asks two checks
+# whether to stop the horse (new gear 0). The crash check (0x70006b16c4), only at the top gear (4), looks at what the
+# horse's Body touches: a steep face ahead, higher than the horse can step, is a crash, flagged (+0x3ac bit 15) for
+# the animation picker (0x70006b26bc) to play Crash. Without a crash, the stop check (0x70006b19c8) overrules a picked
+# gear above 0 for what lies ahead, stopping a horse or keeping a standing one still. The horse's probe rays
+# (0x70006b0eac) end in the state's hit flags, and when the one at +0x1c4 finds nothing (the step ahead too high for
+# it, as at a big root, or no ground: a cliff edge) the check stops (or holds) the horse at any gear but the top one;
+# at the top gear it stops it only when its look-ahead (0x70006b4218, as far as the gear and speed carry it) also
+# finds the way blocked. The picker plays Courbette for a stop from gear 3 or 4, and Dislike (a short rear) for a stop
+# within half a second of a spur. A stop the rider asks for (pulling back) comes from the gear the update picks, not
+# from these checks. With the option on, the crash check reads gear 0 and the stop check answers "keep going", so no
+# obstacle stops a horse at any gear.
 
 def _horse_crash(gen, a):
     assert _word(gen, a) == 0xb9403428, hex(_word(gen, a))  # ldr w8, [x1, #0x34]
@@ -1264,10 +1313,42 @@ def _horse_crash(gen, a):
             f'  /* {a:#x}: ldr w8, [x1, #0x34] (the horse\'s gear at its crash check: Cheats) */')
 
 
-def _horse_look_ahead(gen, a):
-    assert _word(gen, a) == _sub_sp(0x170), hex(_word(gen, a))
-    return ('{ extern int rt_sure_footed(void); if (rt_sure_footed()) { c->x[0] = 1; return; } c->sp -= 0x170; }'
-            f'  /* {a:#x}: sub sp, sp, #0x170 (the horse\'s look-ahead: the way clear with Cheats) */')
+def _horse_stop_check(gen, a):
+    assert _word(gen, a) == 0xb940382a, hex(_word(gen, a))  # ldr w10, [x1, #0x38]
+    return ('{ extern int rt_sure_footed(void); if (rt_sure_footed()) { c->x[0] = 0; return; }'
+            ' c->x[10] = LD32(c->x[1] + 0x38); }'
+            f'  /* {a:#x}: ldr w10, [x1, #0x38] (the horse\'s stop check: no stop with Cheats) */')
+
+
+# Cheats > Improved horse controls, its steering (runtime/improved_horse.c). The ridden horse's update (1.9.0
+# 0x70006afe4c, x0 the riding action) runs its stick through smoothers that take the frame's delta: the lean
+# (+0x268) is the rider's steering (the turn at +0x278 and the term at +0x290 are the horse's own: roads, obstacles).
+# Its steering scales the stick by a per-gear table first (0x70006b1cf4: half at the top gear). The runtime sets the
+# lean's rates in the action at the update's entry and answers the table load. The steering then stores the horse's
+# play rate in its unit (0x70006b218c, +0x154): the runtime raises it while the horse turns, so the turning run keeps
+# the straight run's speed.
+
+def _horse_ride(gen, a):
+    assert _word(gen, a) == _sub_sp(0x280), hex(_word(gen, a))
+    return ('{ extern void rt_horse_ride(uint64_t); rt_horse_ride(c->x[0]); c->sp -= 0x280; }'
+            f'  /* {a:#x}: sub sp, sp, #0x280 (the ridden horse\'s update: its steering rates) */')
+
+
+def _horse_stick_scale(gen, a):
+    # s0 holds the stick's x (loaded from [x19, #0x18] just before), multiplied by s1 next
+    assert _word(gen, a) == 0xbc697901, hex(_word(gen, a))  # ldr s1, [x8, x9, lsl #2]
+    return ('{ extern float rt_horse_stick_scale(int64_t, float, float *); union { uint32_t u; float f; } r = '
+            '{ .u = LD32(c->x[8] + (c->x[9] << 2)) }, s = { .u = (uint32_t)c->v[0] }; '
+            'r.f = rt_horse_stick_scale((int64_t)c->x[9], r.f, &s.f); c->v[0] = s.u; c->v[1] = r.u; }'
+            f'  /* {a:#x}: ldr s1, [x8, x9, lsl #2] (the stick\'s share of the horse\'s steering for its gear) */')
+
+
+def _horse_play_rate(gen, a):
+    # x8: the horse's unit (the steering's [x19]), x20: the riding action; s0 the value stored
+    assert _word(gen, a) == 0xbd015500, hex(_word(gen, a))  # str s0, [x8, #0x154]
+    return ('{ extern float rt_horse_play_rate(uint64_t, float); union { uint32_t u; float f; } r = '
+            '{ .u = (uint32_t)c->v[0] }; r.f = rt_horse_play_rate(c->x[20], r.f); ST32(c->x[8] + 0x154, r.u); }'
+            f'  /* {a:#x}: str s0, [x8, #0x154] (the ridden horse\'s rate while it steers) */')
 
 
 # Adding items (runtime/items.c rt_item_tick): at the entry of Link's damage handling (every frame in play, on the game
@@ -1409,6 +1490,19 @@ def _place_icon(gen, a):
             f'  /* {a:#x}: ldr w8, [x19, #0x3c] (map markers: Cheats > Map) */')
 
 
+# The map's completion rate (tools/game_sites.py map_clear_rate; runtime/assists.c rt_map_clear_rate): the map screen
+# asks the game whether the save has the GameClear flag (1.9.0 0x7000d36aa0) and hides its rate block when the answer is
+# no. With the option on the answer is 1, so the rate shows before the game is cleared.
+def _map_clear_rate(gen, a):
+    w = _word(gen, a)
+    assert w >> 26 == 0x25, hex(w)  # bl isGameClear
+    target = a + sext(w & 0x3ffffff, 26) * 4
+    fn = f'f_{target:x}'
+    return ('{ extern int rt_map_clear_rate(void); if (rt_map_clear_rate()) c->x[0] = 1; '
+            f'else {{ extern void {fn}(Cpu *); c->x[30] = {a + 4:#x}ull; {fn}(c); }} }}'
+            f'  /* {a:#x}: bl {target:#x} (map: is the game cleared) */')
+
+
 # Gameplay > Keep crouch after camera (runtime/camera_stealth.c): when Link enters the Camera rune (`カメラ`), the
 # normal camera action clears his crouch bit and leaves him standing (`待機`) on exit. Record his crouch bit before
 # entering, route normal Camera exits back to crouch idle (`しゃがみ待機`) when enabled, and clear pending state on
@@ -1543,14 +1637,22 @@ PATCHES = {
     'day_cycle_time_only': _day_cycle_step,
     'day_cycle_normal': _day_cycle_step,
     'arrow_fall_gravity': _arrow_gravity,
+    'glide_overspeed_dec_181c': _glide_overspeed_dec,
+    'glide_overspeed_dec_1824': _glide_overspeed_dec,
+    'glide_overspeed_add_181c': _glide_overspeed_add,
+    'glide_overspeed_add_1824': _glide_overspeed_add,
     'surf_contact': _surf_contact,
     'surf_boost_remove': _surf_boost_remove,
     'surf_jump_request': _surf_jump_request,
     'stale_actor_helper': _stale_actor_helper,
+    'stale_actor_helper2': _stale_actor_helper,
     'stale_actor_kind': _stale_actor_kind,
     'stale_actor_target': _stale_actor_target,
     'stale_actor_flag': _stale_actor_flag,
     'stale_actor_flag2': _stale_actor_flag,
+    'stale_actor_flag3': _stale_actor_flag,
+    'stale_actor_flag4': _stale_actor_flag,
+    'stale_actor_ai_msg': _stale_actor_ai_msg,
     'phys_solver_steps': _solver_steps,
     'kf_angle': _kf_angle,
     'demo_move_arrive': _demo_move_arrive,
@@ -1594,13 +1696,22 @@ PATCHES = {
     'tree_ranges': _tree_ranges,
     'game_heap_size': _game_heap_size,
     'game_root_heap_size': _game_root_heap_size,
-    'game_fixed_heap_size': _game_heap_grow(0x52a2ec00, 0, 0x17600000),   # mov w0, #0x17600000
+    'game_fixed_heap_size': _game_heap_grow(0x52a2ec00, 0, 0x17600000, 'rt_game_fixed_heap'),   # mov w0, #0x17600000
     'game_texarc_heap_size': _game_heap_grow(0x52a18000, 0, 0xc000000),   # mov w0, #0xc000000
     'game_texture_pool': _game_heap_grow(0x52a3e809, 9, 0x1f400000, 'rt_game_texture_pool'),    # mov w9, #0x1f400000
     'game_texture_pool_b': _game_heap_grow(0x52a3200b, 11, 0x19000000, 'rt_game_texture_pool'),  # mov w11, #0x19000000
     'game_resource_s': _game_resource_heap(0xb940ce88, 0xcc, 0),   # ldr w8, [x20, #0xcc]
     'game_resource_l': _game_resource_heap(0xb940ca88, 0xc8, 1),   # ldr w8, [x20, #0xc8]
     'game_starter_pack': _game_starter_pack,
+    'game_ui_heap': _game_heap_pick(0x52a03800, 0, 0x1c00000, 0x3600000),        # mov w0, #0x1c00000
+    'game_ui_heap_b': _game_heap_pick(0x52a03600, 0, 0x1b00000, 0x3600000),      # mov w0, #0x1b00000
+    'game_havok_heap': _game_heap_pick(0x52a05a03, 3, 0x2d00000, 0x3780000),     # mov w3, #0x2d00000
+    'game_physics_system': _game_heap_pick(0x72a00040, 0, 0x24000, 0x28000),     # movk w0, #2, lsl #16 (0x24000)
+    'game_physics_temp': _game_heap_pick(0x52a000c0, 0, 0x60000, 0x90000),       # mov w0, #0x60000
+    'game_physics_temp_low': _game_heap_pick(0x52a00060, 0, 0x30000, 0x40000),   # mov w0, #0x30000
+    'game_gamedata_work': _game_heap_pick(0x52a00800, 0, 0x400000, 0xc00000),    # mov w0, #0x400000
+    'game_gamedata_heap': _game_heap_pick(0x52a01e00, 0, 0xf00000, 0x1280000),   # mov w0, #0xf00000
+    'game_save_area': _game_heap_pick(0x52a00a00, 0, 0x500000, 0x780000),        # mov w0, #0x500000
     'menu_wrap': _menu_wrap,
     'act_hold': _act_query(0),
     'act_trig': _act_query(1),
@@ -1617,22 +1728,65 @@ PATCHES = {
     'battle_info_b': _battle_info(1),
     'battle_info_c': _battle_info(2),
     'horse_crash': _horse_crash,
-    'horse_look_ahead': _horse_look_ahead,
+    'horse_stop_check': _horse_stop_check,
     'camera_enter_start': _camera_enter_start,
     'camera_exit_finished': _camera_exit_finished,
     'camera_exit_active': _camera_exit_active,
     'camera_leave': _camera_leave,
+    'horse_ride': _horse_ride,
+    'horse_stick_scale': _horse_stick_scale,
+    'horse_play_rate': _horse_play_rate,
     'item_tick': _item_tick,
     'place_count_read': _place_count_read,
     'place_travel': _place_travel,
     'place_icon': _place_icon,
+    'map_clear_rate': _map_clear_rate,
     'cjk_font_size': _cjk_font_size,
     'cjk_font_bin': _cjk_font_bin,
     'cjk_font_quad': _cjk_font_quad,
 }
 
 
+# Two features patch the same two instructions: the quick replacement (runtime/quick_replace.c) and the UI layouts
+# (runtime/ui_layout.c), at the pane draw's entry and at the layout draw thunk. With one patch per address the later
+# one in PATCHES had silently replaced the other since 2026-11-12, so the layouts never ran. At a shared address both
+# run, in one patch; any other two sites at one address stop the generator.
+def _pane_chain(gen, a):
+    assert _word(gen, a) == 0x39416008, hex(_word(gen, a))  # ldrb w8, [x0, #0x58]
+    fn = _fn(gen, 'ui_layout_pane')
+    return (f'{{ extern void {fn}(Cpu *); extern _Bool rt_quick_replace_pane(Cpu *); '
+            f'extern _Bool rt_ui_layout_pane_draw(Cpu *, void (*)(Cpu *)); '
+            f'if (rt_quick_replace_pane(c) || rt_ui_layout_pane_draw(c, {fn})) return; '
+            'c->x[8] = LD8(c->x[0] + 0x58); }')
+
+
+def _ui_draw_chain(gen, a):
+    assert gen.sites['ui_layout_native'] == gen.sites['replace_ui_draw_native']
+    _ui_layout_draw(gen, a)  # (its checks: the thunk's branch and the native body's gates)
+    fn = _fn(gen, 'ui_layout_native')
+    return (f'{{ extern void {fn}(Cpu *); extern void rt_ui_draw_chain(Cpu *, void (*)(Cpu *)); '
+            f'rt_ui_draw_chain(c, {fn}); return; }}')
+
+
+SHARED = {
+    frozenset(('ui_layout_pane', 'replace_pane_draw')): _pane_chain,
+    frozenset(('ui_layout_draw', 'replace_ui_draw')): _ui_draw_chain,
+}
+
+
 def table(sites):
     """address -> patch, for the main module whose sites these are (tools/game_sites.py; an optional site it lacks
-    has no patch)"""
-    return {sites[name]: fn for name, fn in PATCHES.items() if name in sites}
+    has no patch). Sites at one address take their SHARED patch; any other two stop the generator."""
+    by_addr = {}
+    for name in PATCHES:
+        if name in sites:
+            by_addr.setdefault(sites[name], []).append(name)
+    out = {}
+    for addr, names in by_addr.items():
+        if len(names) == 1:
+            out[addr] = PATCHES[names[0]]
+        elif frozenset(names) in SHARED:
+            out[addr] = SHARED[frozenset(names)]
+        else:
+            raise AssertionError('sites %s share %#x: give them a SHARED patch' % (', '.join(names), addr))
+    return out

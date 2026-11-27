@@ -10,7 +10,7 @@ typedef struct { bool in_feedback_layout; } TexBackend;
 static struct { uint64_t tex[6][32]; NvnDescPool *tpool, *spool; uint32_t color_state[1]; } st;
 static struct { NvnTexture *t; } scene_up;
 static uint32_t vk_view_gen;
-static int nfeedback;
+static struct { int n; } fbk;  // (exec/internal.h ExecFeedback: the one field texture_info reads)
 static struct { int mvec; } ps = {.mvec = -1};  // (exec/internal.h ExecPass: the one field texture_info reads)
 static float scene_mip_bias;
 static bool rt_jitter_on(void) { return false; }

@@ -228,7 +228,7 @@ int rt_grass_range(uint64_t cam, uint32_t cell_bits, uint32_t *s0, uint32_t *a, 
                 t, 1 / (tt * p.f) - 1 / (tt * q.f), 1 / (x.f * p.f));
         }
     }
-    if (!g_settings.grass) {
+    if (!g_settings.grass || (quads && !g_settings.grass_quads)) {
         if (!quads) g_cone = 0;
         *a = *b = 0x49742400;  // 1e6f: shrink grass region to 0 m
         return 1;
@@ -287,7 +287,7 @@ static uint32_t grass_fade(uint64_t mgr, uint32_t k, int quads) {
             }
         }
     }
-    if (!g_settings.grass) return 0x49742400;  // 1e6f: fade out immediately
+    if (!g_settings.grass || (quads && !g_settings.grass_quads)) return 0x49742400;  // 1e6f: fade out immediately
     if (f == 1.0f) return k;  // (Original: the game's own, bit for bit)
     union { uint32_t u; float f; } x = {.u = k};
     if (x.f > 0 && x.f < 3.0e38f) x.f /= f;

@@ -293,6 +293,37 @@ int main(void) {
         assert(pc_bow_buttons(&bow, t + 260000000ull) == 0);
         puts("PASS: pc_bow settle does not emit bare B (Sprint)");
     }
+
+    // Horseback keyboard steering + braking (#290, #1154)
+    {
+        g_site.horse_cam_lr = 0;
+        horse_cam_ns = 0;
+        int32_t lx = 32767, ly = 32767;
+        horse_keyboard_stick(&lx, &ly);
+        assert(lx == 32767 && ly == 32767);
+        lx = -32767; ly = -32767;
+        horse_keyboard_stick(&lx, &ly);
+        assert(lx == -32767 && ly == -32767);
+
+        g_site.horse_cam_lr = 0x70001234ull;
+        horse_cam_ns = now;
+        lx = 32767; ly = 32767;   // W + D
+        horse_keyboard_stick(&lx, &ly);
+        assert(lx == 32767 && ly == 0);
+        lx = -32767; ly = -32767; // S + A
+        horse_keyboard_stick(&lx, &ly);
+        assert(lx == -13106 && ly == -32767);
+        lx = 32767; ly = -32767;  // S + D
+        horse_keyboard_stick(&lx, &ly);
+        assert(lx == 13106 && ly == -32767);
+        lx = 0; ly = -32767;      // S alone
+        horse_keyboard_stick(&lx, &ly);
+        assert(lx == 0 && ly == -32767);
+
+        g_site.horse_cam_lr = 0;
+        horse_cam_ns = 0;
+        puts("PASS: horse keyboard stick allows braking (S) while steering (A/D)");
+    }
 }
 
 uint64_t quick_replace_buttons(uint64_t b) { return b; }

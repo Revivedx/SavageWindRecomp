@@ -409,6 +409,12 @@ static bool horse_riding(void) {
     return t && plat_now_ns() - t < CAM_CALLER_NS;
 }
 
+static void horse_keyboard_stick(int32_t *klx, int32_t *kly) {
+    if (!horse_riding() || !*klx) return;
+    if (*kly > 0) *kly = 0;                     // (#290) W + A/D: pure lateral steering
+    else if (*kly < 0) *klx = *klx * 40 / 100;  // (#1154) S + A/D: keep inside rear braking cone (~22 deg) while steering
+}
+
 // Link is on a horse or the Master Cycle Zero (vulkan/exec.c: frame generation moves his box with him, and what he rides
 // is in it then). The cycle: the game asks its accelerate action every frame while Link rides it (bindings.c).
 bool rt_link_mounted(void) {
@@ -785,7 +791,11 @@ void input_handle_event(const SDL_Event *e) {
              (g_bind_key2[BIND_FLY] && e->key.scancode == g_bind_key2[BIND_FLY])) &&
             control_enabled() && !menu_input_captured()) control_fly_toggle();  // (fly mode, test builds)
         if (e->key.scancode < SDL_SCANCODE_COUNT) keys_down[e->key.scancode] = e->type == SDL_EVENT_KEY_DOWN;
-        if (e->type == SDL_EVENT_KEY_DOWN) last_device = DEVICE_KEYBOARD;
+        // (not the OS's own shortcuts: Print Screen, or a key with the Windows / Command key held, e.g. Win+Shift+S for a
+        // screenshot, must not turn a controller's button prompts into keycaps)
+        if (e->type == SDL_EVENT_KEY_DOWN && e->key.scancode != SDL_SCANCODE_PRINTSCREEN &&
+            e->key.scancode != SDL_SCANCODE_LGUI && e->key.scancode != SDL_SCANCODE_RGUI &&
+            !(e->key.mod & SDL_KMOD_GUI)) last_device = DEVICE_KEYBOARD;
         recompute_keyboard();
         break;
     case SDL_EVENT_MOUSE_WHEEL:
@@ -1253,7 +1263,7 @@ static void fill_state(Cpu *c) {
     int32_t plx = sticks ? pad_lx : 0, ply = sticks ? pad_ly : 0, prx = sticks ? pad_rx : 0, pry = sticks ? pad_ry : 0;
     bool map_keys=pc_cursor_map_navigation();
     int32_t klx = menu || map_keys ? 0 : key_lx, kly = menu || map_keys ? 0 : key_ly;
-    if (horse_riding() && klx && kly > 0) kly = 0;
+    horse_keyboard_stick(&klx, &kly);
     int32_t lx = clamp_axis(klx + plx + script_lx);
     int32_t ly = clamp_axis(kly + ply + script_ly);
     // Gate at each poll: an arrow or Enter held when a menu closes must never move the player or press A.

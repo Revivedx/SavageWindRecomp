@@ -1788,9 +1788,10 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
                     sp(&c->body, "      if (ok) { uint wi = uint(ga >> 2); uint sh = uint(ga & %s) * 8u; uint gm = ~(0x%xu << sh), gv = (%s & 0x%xu) << sh; "
                        "%s }\n", size < 2 ? "3ul" : "2ul", size < 2 ? 0xFFu : 0xFFFFu, R(d),
                        size < 2 ? 0xFFu : 0xFFFFu,
-                       maxwell_gmem_split ? "if (wi < GSPLIT) { atomicAnd(gmem_.w[wi], gm); atomicOr(gmem_.w[wi], gv); } "
-                                            "else { atomicAnd(gmem2_.w[wi - GSPLIT], gm); atomicOr(gmem2_.w[wi - GSPLIT], gv); }"
-                                          : "atomicAnd(gmem_.w[wi], gm); atomicOr(gmem_.w[wi], gv);");
+                       maxwell_gmem_bda ? "atomicAnd(GW_(wi), gm); atomicOr(GW_(wi), gv);"
+                       : maxwell_gmem_split ? "if (wi < GSPLIT) { atomicAnd(gmem_.w[wi], gm); atomicOr(gmem_.w[wi], gv); } "
+                                              "else { atomicAnd(gmem2_.w[wi - GSPLIT], gm); atomicOr(gmem2_.w[wi - GSPLIT], gv); }"
+                                            : "atomicAnd(gmem_.w[wi], gm); atomicOr(gmem_.w[wi], gv);");
                 else
                     for (int k = 0; k < nw; k++)
                         sp(&c->body, "      if (ok) GST(uint(ga >> 2) + %du, %s);\n", k, R(d == RZ ? RZ : d + k));
@@ -2343,11 +2344,16 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
         // The heap in one storage buffer, or (maxwell_gmem_split: the device's maxStorageBufferRange is below the heap,
         // Mali-G610's 2 GB against 3 GB) in two, split at GMEM_SPLIT. GLD / GST read and write a word of it.
         bool split = maxwell_gmem_split && !maxwell_gmem_bda;
-        if (maxwell_gmem_bda)  // (the heap by address: GMemInfo holds it and its mapped size; emit_insn checks every access)
+        // (maxwell_gmem_bda) The heap by address: GMemInfo holds it and its mapped size, and emit_insn checks every
+        // access. Each word's address is made in 64 bits (GW_). As a 32-bit index into one array from the heap's start,
+        // a 6 GB heap (game_memory_mb) put words past 2-4 GB elsewhere on NVIDIA: particles read and wrote the wrong
+        // memory, and the horse's gallop wind drew as long lines.
+        if (maxwell_gmem_bda)
             sp(&s, "#extension GL_EXT_buffer_reference : require\n"
-                   "layout(buffer_reference, std430, buffer_reference_align = 4) %sbuffer GMem { uint w[]; };\n"
+                   "layout(buffer_reference, std430, buffer_reference_align = 4) %sbuffer GMem { uint v; };\n"
                    "layout(std140, set = %d, binding = %d) uniform GMemInfo { uint64_t gmem_addr; uint64_t gmem_size; };\n"
-                   "#define gmem_ GMem(gmem_addr)\n", c->uses_gmem_store ? "" : "readonly ", set, GMEM_BUFFER_INDEX);
+                   "#define GW_(i) GMem(gmem_addr + (uint64_t(i) << 2)).v\n", c->uses_gmem_store ? "" : "readonly ", set,
+               GMEM_BUFFER_INDEX);
         else
             sp(&s, "layout(std430, set = %d, binding = %d) %sbuffer GMem { uint w[]; } gmem_;\n", set, GMEM_BUFFER_INDEX,
                c->uses_gmem_store ? "" : "readonly ");
@@ -2355,6 +2361,7 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
             sp(&s, "layout(std430, set = %d, binding = %d) %sbuffer GMem2 { uint w[]; } gmem2_;\n", set, GMEM2_BUFFER_INDEX,
                c->uses_gmem_store ? "" : "readonly ");
         if (split) sp(&s, "#define GSPLIT 0x%xu\n#define GLD0(i) ((i) < GSPLIT ? gmem_.w[(i)] : gmem2_.w[(i) - GSPLIT])\n", (unsigned)(GMEM_SPLIT >> 2));
+        else if (maxwell_gmem_bda) sp(&s, "#define GLD0(i) GW_(i)\n");
         else sp(&s, "#define GLD0(i) gmem_.w[(i)]\n");
         if (stage == STAGE_COMPUTE && maxwell_gmem_snap) {
             // A compute shader reads its constant buffers through global memory, by the addresses the driver's block
@@ -2368,12 +2375,16 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
                (unsigned)(maxwell_gmem_size >> 2), (unsigned)(maxwell_gmem_size >> 2));
             if (split)
                 sp(&s, "#define GST(i, v) { uint gi_ = (i); if (gi_ < GSPLIT) gmem_.w[gi_] = (v); else gmem2_.w[gi_ - GSPLIT] = (v); }\n");
+            else if (maxwell_gmem_bda)
+                sp(&s, "#define GST(i, v) { GW_(i) = (v); }\n");
             else
                 sp(&s, "#define GST(i, v) { gmem_.w[(i)] = (v); }\n");
         } else if (c->uses_gmem_store || !maxwell_gmem_snap) {
             sp(&s, "#define GLD(i) GLD0(i)\n");
             if (split)
                 sp(&s, "#define GST(i, v) { uint gi_ = (i); if (gi_ < GSPLIT) gmem_.w[gi_] = (v); else gmem2_.w[gi_ - GSPLIT] = (v); }\n");
+            else if (maxwell_gmem_bda)
+                sp(&s, "#define GST(i, v) { GW_(i) = (v); }\n");
             else
                 sp(&s, "#define GST(i, v) { gmem_.w[(i)] = (v); }\n");
         } else {
