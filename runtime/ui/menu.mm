@@ -1609,6 +1609,8 @@ static void tab_gameplay(void) {
         game_opt_defaults();
     opt_section("Savage Wind");
     game_items_f1_rows(0);
+    opt_section("Accessibility");  // (the Options screen's Accessibility assists: runtime/assists.c)
+    game_items_f1_rows(3);
     opt_end();
 }
 
@@ -1645,8 +1647,9 @@ static void tab_audio(void) {
 // Cheats: what hands the player things or changes the world (the game's own menus keep to options and assists, so
 // these are only here). The same as the developer console commands next to them (rupees: runtime/rupees.c;
 // weather: runtime/weather.c). Free sprint: runtime/free_sprint.c. Sure-footed horse, menu only: runtime/sure_footed.c.
-// The assists below are Options > Accessibility's own settings (runtime/assists.c), the same rows here; the hour is the
-// console's `time` (runtime/services/test_warp.c), the blood moon its `bloodmoon` (runtime/blood_moon.c).
+// The assists (God mode, damage, stamina, weapon wear, arrows: runtime/assists.c) are every player's, on the Gameplay
+// page (tab_gameplay), not here: Cheats is developer mode only. The hour is the console's `time`
+// (runtime/services/test_warp.c), the blood moon its `bloodmoon` (runtime/blood_moon.c).
 extern "C" bool rupees_set(int32_t count);
 extern "C" bool hearts_set(int32_t count);
 extern "C" void test_warp_set_hour(float hour);
@@ -1654,27 +1657,9 @@ extern "C" void test_warp_hold_hour(float hour);
 extern "C" float test_warp_hour(bool *held);
 #include "../blood_moon.h"
 
-// Damage taken, Damage dealt, Stamina drain (Accessibility's rows: game_options.mm k_damage, settings.h DAMAGE_CHOICES)
-static void cheats_percent(int which) {  // 0: Damage taken, 1: Damage dealt, 2: Stamina drain
-    static const int damage[] = DAMAGE_CHOICES;
-    static const char *const damage_names[] = {"25%", "50%", "75%", "100%", "150%", "200%", "300%", "400%"};
-    enum { ND = sizeof damage / sizeof damage[0] };
-    static_assert(sizeof damage_names / sizeof damage_names[0] == ND, "a name for each damage choice");
-    int &setting = which == 1 ? g_settings.damage_dealt : which == 2 ? g_settings.stamina_drain : g_settings.damage_taken;
-    int d = 3;
-    for (int i = 0; i < ND; i++) if (setting == damage[i]) d = i;
-    if (opt_choice(which == 1 ? "Damage dealt" : which == 2 ? "Stamina drain" : "Damage taken", &d, damage_names, ND, 3,
-                   which == 1   ? "How much damage enemies take. 100% is the game's own."
-                   : which == 2 ? "How fast stamina drains. 100% is the game's own."
-                                : "How much damage Link takes. 100% is the game's own.", false))
-        setting = damage[d];
-}
-
 // The cheat rows, in sections by what they change (tab_cheats adds the Map and Add items sections after them)
 static void cheats_options(void) {
     opt_section("Link");
-    opt_toggle("God mode", &g_settings.god_mode, false,
-               "Link takes no damage.");
     {
         static char heart_buf[16];
         if (opt_text("Set hearts", heart_buf, sizeof heart_buf, "",
@@ -1688,10 +1673,6 @@ static void cheats_options(void) {
                 heart_buf[0] = 0;
         }
     }
-    cheats_percent(0);
-    opt_toggle("Infinite stamina", &g_settings.infinite_stamina, false,
-               "The stamina wheel never runs out.");
-    cheats_percent(2);
     opt_toggle("Silent Link", &g_settings.silent_link, false,
                "Link stays quiet, so enemies do not hear him.");
     opt_toggle("Free sprint out of combat", &g_settings.free_sprint, false,
@@ -1716,34 +1697,6 @@ static void cheats_options(void) {
             opt_indent(-1);
         }
     }
-
-    opt_section("Combat");
-    opt_toggle("One-hit kill", &g_settings.one_hit_kill, false, "Enemies go down in one hit.");
-    cheats_percent(1);
-    {   // (Accessibility's row: game_options.mm k_wear)
-        static const int wear[] = {0, 12, 17, 20, 25, 33, 50, 100, 150, 200, 250, 300};
-        static const char *const wear_names[] = {"Fairy", NULL, NULL, NULL, NULL, NULL, "Peter Pan",
-                                                 "Hylian", "Hero", "Master", "Legend", "Dude, are you ok?"};
-        static const char *const wear_times[] = {"0x", "0.12x", "0.17x", "0.2x", "0.25x", "0.33x", "0.5x", "1x", "1.5x",
-                                                 "2x", "2.5x", "3x"};
-        enum { NW = sizeof wear / sizeof wear[0] };
-        static_assert(sizeof wear_names / sizeof wear_names[0] == NW && sizeof wear_times / sizeof wear_times[0] == NW,
-                      "a name and a factor for each wear choice");  // (i18n-skip)
-        // (each with how much it wears, as the game's Options page shows it: "Hero (1.5x)", not the name alone)
-        std::string labels[NW];
-        const char *label_ptrs[NW];
-        for (int i = 0; i < NW; i++) {
-            labels[i] = wear_names[i] ? std::string(tr(wear_names[i])) + " (" + wear_times[i] + ")" : wear_times[i];
-            label_ptrs[i] = labels[i].c_str();
-        }
-        int w = 7;
-        for (int i = 0; i < NW; i++) if (g_settings.weapon_wear == wear[i]) w = i;
-        if (opt_choice_item("Weapon wear", &w, label_ptrs, NW, 7,
-                            "How fast weapons, bows and shields wear out. Fairy: never. Hylian: the game's own.", false, true))
-            g_settings.weapon_wear = wear[w], g_settings.no_weapon_wear = wear[w] == 0;
-    }
-    opt_toggle("Infinite arrows", &g_settings.infinite_arrows, false,
-               "Shooting a bow uses up no arrows. You still need one to shoot.");
 
     opt_section("Rupees and pickups");
     opt_toggle("Infinite rupees", &g_settings.infinite_rupees, false,
