@@ -110,6 +110,7 @@ bool bench_active(void);
 bool bench_hud_visible(void);
 void bench_snapshot(BenchSnapshot *out);
 void bench_frame(uint64_t frame);
+void bench_control_init(void);
 
 void bench_compute_stats(const uint32_t *frame_us, uint32_t count, double duration_s, BenchRouteStats *out);
 size_t bench_format_markdown(const BenchSnapshot *snap, char *buf, size_t n);

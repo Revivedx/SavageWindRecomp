@@ -187,6 +187,7 @@ size_t bench_format_markdown(const BenchSnapshot *snap, char *buf, size_t n) {
 #ifndef BENCH_STATS_ONLY
 #include <pthread.h>
 #include "control.h"
+#include "framepace.h"
 #include "hle.h"
 #include "nvn/output_scale.h"
 #include "paths.h"
@@ -524,6 +525,7 @@ static void finish_measuring_route(uint64_t now_ns, double elapsed_s) {
 
 bool bench_start(const BenchConfig *cfg) {
     if (!cfg) return false;
+    if (framepace_title_ui() || framepace_loading_ui() || framepace_menu_ui()) return false;
     float pos[3];
     if (!control_tp_link_pos(pos)) return false;
     pthread_mutex_lock(&g_lock);
@@ -744,6 +746,73 @@ RT_ON_RESET(bench_reset) {
     g_all_cap = 0;
     g_all_frames = 0;
     pthread_mutex_unlock(&g_lock);
+}
+
+static void cmd_bench(int argc, char **argv, ControlReply *r) {
+    if (argc < 2 || !strcmp(argv[1], "status")) {
+        BenchSnapshot snap;
+        bench_snapshot(&snap);
+        static const char *const phase_names[] = {
+            "idle", "teleporting", "aiming", "settling", "measuring", "restoring", "done", "cancelled"
+        };
+        const char *pn = (snap.phase >= 0 && snap.phase <= BENCH_CANCELLED) ? phase_names[snap.phase] : "unknown";
+        control_field_str(r, "phase", pn);
+        control_field_bool(r, "has_results", snap.has_results);
+        if (snap.phase >= BENCH_TELEPORTING && snap.phase <= BENCH_RESTORING) {
+            control_field_str(r, "route", snap.current_route_name);
+            control_field_num(r, "live_fps", snap.live_fps);
+            control_text(r, "Benchmark %s: %s (%d/%d, %.1f fps)", pn, snap.current_route_name,
+                         snap.route_idx + 1, snap.route_total, snap.live_fps);
+        } else if (snap.has_results && snap.overall.valid) {
+            control_field_num(r, "avg_fps", snap.overall.avg_fps);
+            control_field_num(r, "low_1pct_fps", snap.overall.low_1pct_fps);
+            control_field_int(r, "hitches", (int64_t)snap.overall.hitches);
+            control_text(r, "Benchmark %s: %.1f avg fps, %.1f 1%% low, %u hitches (%d routes)",
+                         pn, snap.overall.avg_fps, snap.overall.low_1pct_fps, snap.overall.hitches, snap.nresults);
+        } else {
+            control_text(r, "Benchmark %s", pn);
+        }
+        return;
+    }
+    if (!strcmp(argv[1], "cancel")) {
+        bench_cancel();
+        control_text(r, "Benchmark cancel requested");
+        return;
+    }
+    BenchConfig cfg = {BENCH_MODE_FULL, 0, 10, 5, true, false};
+    if (!strcmp(argv[1], "full")) cfg.mode = BENCH_MODE_FULL;
+    else if (!strcmp(argv[1], "quick")) cfg.mode = BENCH_MODE_QUICK;
+    else if (!strcmp(argv[1], "spot")) cfg.mode = BENCH_MODE_SPOT;
+    else if (!strcmp(argv[1], "route")) {
+        if (argc < 3) {
+            control_fail(r, "bench route: specify one of plateau, kakariko, field, rito, castle, hateno, korok");
+            return;
+        }
+        int found = -1;
+        for (int i = 0; i < BENCH_ROUTE_COUNT; i++)
+            if (!strcmp(argv[2], k_routes[i].id)) { found = i; break; }
+        if (found < 0) {
+            control_fail(r, "bench route: unknown route '%s'", argv[2]);
+            return;
+        }
+        cfg.mode = BENCH_MODE_SINGLE;
+        cfg.single_route = found;
+    } else {
+        control_fail(r, "bench: use bench [status | full | quick | spot | route <name> | cancel]");
+        return;
+    }
+    if (!bench_start(&cfg)) {
+        control_fail(r, "bench: cannot start (must be in active gameplay, not in menus or already running)");
+        return;
+    }
+    control_text(r, "Benchmark started (%s)", argv[1]);
+}
+
+void bench_control_init(void) {
+    static const ControlCmd cmds[] = {
+        {"bench", "[status | full | quick | spot | route <name> | cancel]", "Run or inspect the built-in performance benchmark", cmd_bench, CONTROL_PLAYER},
+    };
+    control_register(cmds, 1);
 }
 
 #endif
