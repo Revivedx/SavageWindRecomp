@@ -11,6 +11,8 @@
 //    `layout(std430, set=S, binding=17) [readonly] buffer GMem { uint w[]; } gmem_;`, 32-bit words relative to
 //    maxwell_gmem_base. `readonly` unless the shader stores (needs vertexPipeline/fragmentStoresAndAtomics then);
 //    byte / short stores are atomicAnd + atomicOr on the containing word.
+//    With maxwell_gmem_bda, binding 17 is `uniform GMemInfo { uint64_t gmem_addr; uint64_t gmem_size; }` instead, and
+//    word i is `buffer_reference GMem { uint v; }` at gmem_addr + i * 4, its address made in 64 bits (GW_(i)).
 //    With maxwell_gmem_snap, binding GSNAP_BUFFER_INDEX (21) too: a read-only vertex or fragment stage's copied
 //    ranges (`buffer GSnap { uvec4 gs_r[4]; uint w[]; }`), or a compute shader's constant buffers' copies (`buffer
 //    GSnap { uint w[]; }`, read at the GSNAP_CS_SPAN past the heap's window).
