@@ -1587,6 +1587,17 @@ void build_items(void) {
                        },
                        [](const Item &) { return nearest(k_cvd_strength, N(k_cvd_strength), g_settings.colour_vision_strength); },
                        [](const Item &, int x) { g_settings.colour_vision_strength = k_cvd_strength[x]; }, N(k_cvd_strength) - 1));
+    static constexpr int k_text_size[] = TEXT_SIZE_CHOICES;
+    v.push_back(choice(P_ACCESS, "Dialogue text size",
+                       "Scales conversation and sign windows along with their text. 100% is the game's own.",
+                       [](const Item &) { return N(k_text_size); },
+                       [](const Item &, int x) {
+                           static std::string s;
+                           s = pct(k_text_size[x]);
+                           return s.c_str();
+                       },
+                       [](const Item &) { return nearest(k_text_size, N(k_text_size), (float)g_settings.text_size); },
+                       [](const Item &, int x) { g_settings.text_size = k_text_size[x]; }, TEXT_SIZE_DEFAULT_INDEX));
     v.push_back(toggle(P_ACCESS, "God mode", "Link takes no damage.",
                        [](const Item &) { return (int)g_settings.god_mode; },
                        [](const Item &, int x) { g_settings.god_mode = x; }, 0));
@@ -2230,7 +2241,7 @@ static const char *const k_f1_controls[] = {"Button icons", "HUD button layout",
                                             "Menus wrap around", "Motion source", "Motion sensitivity",
                                             "Vertical motion sensitivity", "Invert motion", "Lean to turn",
                                             "Shrine keyboard gyro", "Shrine mouse drag"};
-static const char *const k_f1_access[] = {"Colour vision", "Correction strength"};
+static const char *const k_f1_access[] = {"Colour vision", "Correction strength", "Dialogue text size"};
 // (the assists: every player's, so the Gameplay page and not Cheats, which is developer mode only)
 static const char *const k_f1_assists[] = {"God mode", "Damage taken", "Infinite stamina", "Stamina drain",
                                            "One-hit kill", "Damage dealt", "Weapon wear", "Infinite arrows"};

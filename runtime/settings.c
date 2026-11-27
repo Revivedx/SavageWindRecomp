@@ -98,6 +98,7 @@ Settings g_settings = {
     .hdr_clip_nits = 0,    // (legacy: the final cap is hdr_peak_nits)
     .fov = 100,
     .hud_size = 100,
+    .text_size = 100,
     .menu_speed = 100,
     .menu_text_size = 100,
     .menu_remember_pos = false,
@@ -644,6 +645,7 @@ void settings_load(void) {
         }
         else if (!strcmp(key, "field_of_view")) g_settings.fov = atoi(val);  // (percent)
         else if (!strcmp(key, "hud_size")) g_settings.hud_size = atoi(val);  // (percent)
+        else if (!strcmp(key, "text_size")) g_settings.text_size = atoi(val);  // (percent)
         else if (!strcmp(key, "dynamic_hud")) g_settings.dynamic_hud = atoi(val) != 0;
         else if (!strcmp(key, "hud_hide_hearts")) g_settings.hud_hide_hearts = atoi(val) != 0;
         else if (!strcmp(key, "hud_hide_stamina")) g_settings.hud_hide_stamina = atoi(val) != 0;
@@ -813,6 +815,7 @@ void settings_load(void) {
     if (g_settings.motion_source < 0 || g_settings.motion_source >= MOTION_SOURCE_COUNT) g_settings.motion_source = MOTION_SOURCE_AUTO;
     if (g_settings.fov < 50 || g_settings.fov > 200) g_settings.fov = 100;
     if (g_settings.hud_size != 0 && (g_settings.hud_size < 50 || g_settings.hud_size > 150)) g_settings.hud_size = 100;
+    if (g_settings.text_size < 85 || g_settings.text_size > 150) g_settings.text_size = 100;
     if (g_settings.menu_speed < 70 || g_settings.menu_speed > 300) g_settings.menu_speed = 100;
 #define CLAMP(v, lo, hi) ((v) < (lo) ? (lo) : (v) > (hi) ? (hi) : (v))
     g_settings.color_exposure = CLAMP(g_settings.color_exposure, -20, 20);
@@ -987,6 +990,7 @@ bool settings_save_to(const char *path) {
     }
     fprintf(f, "field_of_view = %d\n", g_settings.fov);
     fprintf(f, "hud_size = %d\n", g_settings.hud_size);
+    fprintf(f, "text_size = %d\n", g_settings.text_size);
     fprintf(f, "dynamic_hud = %d\n", g_settings.dynamic_hud ? 1 : 0);
     fprintf(f, "hud_hide_hearts = %d\n", g_settings.hud_hide_hearts ? 1 : 0);
     fprintf(f, "hud_hide_stamina = %d\n", g_settings.hud_hide_stamina ? 1 : 0);
