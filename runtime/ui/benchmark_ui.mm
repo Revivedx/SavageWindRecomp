@@ -110,8 +110,10 @@ void draw_hist_bar(const BenchRouteStats *r, float scale) {
     }
     dl->AddRect(p0, ImVec2(p0.x + w, p0.y + h), IM_COL32(70, 90, 82, 180));
     double p_inv = 100.0 / (double)r->frames;
-    ImGui::TextDisabled("<8.3ms: %.1f%%  |  8.3-16.7ms: %.1f%%  |  16.7-33.3ms: %.1f%%  |  >33.3ms: %.1f%%",
-                        r->hist[0] * p_inv, r->hist[1] * p_inv, r->hist[2] * p_inv, r->hist[3] * p_inv);
+    char hbuf[160];
+    snprintf(hbuf, sizeof hbuf, "<8.3ms: %.1f%%  |  8.3-16.7ms: %.1f%%  |  16.7-33.3ms: %.1f%%  |  >33.3ms: %.1f%%",
+             r->hist[0] * p_inv, r->hist[1] * p_inv, r->hist[2] * p_inv, r->hist[3] * p_inv);
+    ImGui::TextDisabled("%s", hbuf);
 }
 
 const BenchRouteStats *find_baseline_route(const BenchSnapshot &base, bool has_base, const BenchRouteStats *cur, bool is_overall) {
@@ -309,10 +311,13 @@ void bench_ui_tab(bool *want_close) {
         bool graph_is_overall = !(selected_row >= 0 && selected_row < snap.nresults) && snap.overall.valid;
         const BenchRouteStats *graph_base = find_baseline_route(baseline, has_baseline, graph_r, graph_is_overall);
         if (graph_r && graph_r->valid) {
-            ImGui::TextDisabled("%s: %s (%.1f - %.1f ms, %s %.2f ms%s)",
+            ImGui::TextDisabled("%s: %s (%.1f - %.1f ms, %s %.2f ms)",
                                 tr("Frame time"), graph_r->name[0] ? graph_r->name : tr("Overall"),
-                                graph_r->min_ms, graph_r->max_ms, tr("median"), graph_r->median_ms,
-                                graph_base ? " | blue = baseline" : "");
+                                graph_r->min_ms, graph_r->max_ms, tr("median"), graph_r->median_ms);
+            if (graph_base) {
+                ImGui::SameLine();
+                ImGui::TextColored(ImVec4(0.43f, 0.73f, 0.96f, 1.0f), "(%s)", tr("blue = baseline"));
+            }
             draw_frametime_graph(graph_r, graph_base, scale);
             draw_hist_bar(graph_r, scale);
         }
