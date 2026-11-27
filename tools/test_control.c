@@ -18,6 +18,10 @@ void control_place_frame(void) {}
 void bench_frame(void) {}
 bool bench_active(void) { return false; }
 void control_tp_frame(void) {}
+bool assists_no_fall_damage_enabled(void) { return false; }
+bool control_tp_link_pos(float pos[3]) { (void)pos; return false; }
+int control_cell_player_fall_top, control_cell_player_fall_top2;
+void control_cell_set(const void *c, const void *v) { (void)c; (void)v; }
 
 static int failures, checks;
 #define CHECK(cond) do { checks++; if (!(cond)) { failures++; printf("FAIL line %d: %s\n", __LINE__, #cond); } } while (0)

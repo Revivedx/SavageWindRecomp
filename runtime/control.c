@@ -537,11 +537,23 @@ int control_console_names(const char *prefix, const char **out, int max) {
 extern void bench_frame(uint64_t frame);
 extern bool bench_active(void);
 extern void control_tp_frame(uint64_t frame);
+#include "control_cells.h"
+extern bool assists_no_fall_damage_enabled(void);
+
+static void assists_frame(void) {
+    if (!assists_no_fall_damage_enabled()) return;
+    float pos[3];
+    if (!control_tp_link_pos(pos)) return;
+    double y = pos[1];
+    control_cell_set(&control_cell_player_fall_top, &y);
+    control_cell_set(&control_cell_player_fall_top2, &y);
+}
 
 void control_frame(uint64_t frame) {
     if (!initialized) return;
     control_place_frame();
     bench_frame(frame);
+    assists_frame();
     if (!dev_mode && bench_active()) control_tp_frame(frame);
     if (dev_mode) control_game_frame(frame);
     console_pump();

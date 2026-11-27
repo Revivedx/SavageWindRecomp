@@ -1669,3 +1669,5 @@ T("Clear baseline", "Cancella riferimento")
 T("Removes the stored A/B baseline comparison.", "Rimuove il riferimento salvato per il confronto A/B.")
 T("blue = baseline", "blu = riferimento")
 T("<8.3ms: %.1f%%  |  8.3-16.7ms: %.1f%%  |  16.7-33.3ms: %.1f%%  |  >33.3ms: %.1f%%", "<8.3ms: %.1f%%  |  8.3-16.7ms: %.1f%%  |  16.7-33.3ms: %.1f%%  |  >33.3ms: %.1f%%")
+    {"No fall damage", "No fall damage"},
+    {"Link takes no damage from falling.", "Link takes no damage from falling."},

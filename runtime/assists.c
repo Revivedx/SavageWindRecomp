@@ -100,3 +100,5 @@ int rt_hero_soul(int which) {
 // GameClear flag and hides its rate block when the answer is no. With the option on the answer is 1, so the rate shows
 // before the game is cleared.
 int rt_map_clear_rate(void) { return g_settings.map_clear_rate; }
+
+bool assists_no_fall_damage_enabled(void) { return g_settings.no_fall_damage; }

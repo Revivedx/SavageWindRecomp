@@ -692,6 +692,7 @@ void settings_load(void) {
         }
         else if (!strcmp(key, "colour_vision_strength")) g_settings.colour_vision_strength = atoi(val);  // (percent)
         else if (!strcmp(key, "god_mode")) g_settings.god_mode = atoi(val) != 0;
+        else if (!strcmp(key, "no_fall_damage")) g_settings.no_fall_damage = atoi(val) != 0;
         else if (!strcmp(key, "one_hit_kill")) g_settings.one_hit_kill = atoi(val) != 0;
         else if (!strcmp(key, "silent_link")) g_settings.silent_link = atoi(val) != 0;
         else if (!strcmp(key, "hero_soul_wind")) g_settings.hero_soul_wind = atoi(val) != 0;
@@ -1017,6 +1018,7 @@ bool settings_save_to(const char *path) {
     fprintf(f, "colour_vision = %s\n", g_colour_vision_keys[cv >= 0 && cv < COLOUR_VISION_COUNT ? cv : 0]);
     fprintf(f, "colour_vision_strength = %d\n", g_settings.colour_vision_strength);
     fprintf(f, "god_mode = %d\n", g_settings.god_mode);
+    fprintf(f, "no_fall_damage = %d\n", g_settings.no_fall_damage);
     fprintf(f, "one_hit_kill = %d\n", g_settings.one_hit_kill);
     fprintf(f, "silent_link = %d\n", g_settings.silent_link);
     fprintf(f, "hero_soul_wind = %d\n", g_settings.hero_soul_wind);
