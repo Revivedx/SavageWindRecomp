@@ -2167,8 +2167,10 @@ static void f1_item_row(const Item &it) {
     } else if (it.kind == KIND_CHOICE) {
         int n = it.count(it), v = it.get(it);
         if (n <= 0) return;
+        std::vector<std::string> text((size_t)n);
+        for (int i = 0; i < n; i++) text[(size_t)i] = it.label(it, i);
         std::vector<const char *> names((size_t)n);
-        for (int i = 0; i < n; i++) names[(size_t)i] = it.label(it, i);
+        for (int i = 0; i < n; i++) names[(size_t)i] = text[(size_t)i].c_str();
         bool changed;
         if (it.value_off) {
             std::unique_ptr<bool[]> avail(new bool[(size_t)n]);
