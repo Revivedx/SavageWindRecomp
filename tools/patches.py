@@ -54,7 +54,7 @@ def _cjk_font_bin(gen, a):
     return ('{ extern uint32_t rt_cjk_font_scale(void); '
             'uint64_t ea = c->x[28] + 0x36ull; '
             'uint32_t scale = rt_cjk_font_scale(); '
-            'c->v[1] = (u128)((uint32_t)LD16(ea) * scale); }')
+            'c->v[1] = (__uint128_t)((uint32_t)LD16(ea) * scale); }')
 
 
 def _cjk_font_quad(gen, a):
@@ -73,8 +73,8 @@ def _cjk_font_quad(gen, a):
             'memcpy(&u_s11, &f_s11, 4); '
             'memcpy(&u_s8, &f_s8, 4); '
             '} '
-            'c->v[11] = (u128)u_s11; '
-            'c->v[8] = (u128)u_s8; }')
+            'c->v[11] = (__uint128_t)u_s11; '
+            'c->v[8] = (__uint128_t)u_s8; }')
 
 
 def _quick_sort_enter(gen, a):
