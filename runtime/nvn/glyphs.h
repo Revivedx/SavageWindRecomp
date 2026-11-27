@@ -48,3 +48,5 @@ int glyphs_letter_index(int btn);
 // the Switch: Button icons' device, or on Automatic the controller connected. Decided when the game files are opened
 // (the layouts are patched then): another one shows from the next start.
 int glyphs_console(void);
+// Active controller family for button prompts (0 Nintendo/Switch, 1 Xbox, 2 PlayStation, 3 Steam Deck).
+int glyphs_pad_family(void);

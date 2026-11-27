@@ -1,6 +1,7 @@
 // Control remapping: tables runtime/hle/input.c reads on every input event (so a change applies at once), the
 // capture used by the "click a binding, then press" UI, and their savagewind.ini lines. See runtime/input_bind.h.
 #include <SDL3/SDL.h>
+#include <ctype.h>
 #include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
@@ -124,20 +125,43 @@ const char *bind_key_label(int sc) {
     return n && *n ? n : "(unnamed key)";
 }
 
+static bool contains_ci(const char *hay, const char *needle) {
+    if (!hay || !needle || !*needle) return false;
+    for (const char *p = hay; *p; p++) {
+        size_t i = 0;
+        while (needle[i] && p[i] && tolower((unsigned char)p[i]) == tolower((unsigned char)needle[i])) i++;
+        if (!needle[i]) return true;
+    }
+    return false;
+}
+
 // Steam Input (a Deck's Gaming Mode) shows every controller as a virtual one of Valve's, an "Xbox 360" pad; SDL gives
 // the controller behind it (type, name) when Steam says, often it doesn't (an 8BitDo: "Steam Virtual Gamepad"). So:
-// PlayStation by its type; Nintendo's by theirs; a controller not Valve's by its type (Xbox, or none of these); a Valve pad is the Deck's own controls when it says so (the Deck's product, its
-// name) or, saying nothing, when it is the first one opened (Steam Input's for the Deck's controls, there from boot) in
-// Steam Deck mode; Steam Input's for another controller, an Xbox one. (A Valve vendor alone made each the Deck's.)
+// PlayStation by its type, Sony vendor or name; Nintendo's by theirs; a Valve pad is the Deck's own controls when it
+// says so (the Deck's product, its name) or, saying nothing, when it is the first one opened (Steam Input's for the
+// Deck's controls, there from boot) in Steam Deck mode; Steam Input's for another controller, an Xbox one; otherwise
+// Xbox by type, Microsoft vendor or name; fallback Nintendo.
 int bind_pad_family(int type, int vendor, int product, const char *name, bool first) {
-    if (type == SDL_GAMEPAD_TYPE_PS3 || type == SDL_GAMEPAD_TYPE_PS4 || type == SDL_GAMEPAD_TYPE_PS5) return 2;
+    if (type == SDL_GAMEPAD_TYPE_PS3 || type == SDL_GAMEPAD_TYPE_PS4 || type == SDL_GAMEPAD_TYPE_PS5 ||
+        vendor == 0x054c || contains_ci(name, "playstation") || contains_ci(name, "dualsense") ||
+        contains_ci(name, "dualshock") || contains_ci(name, "sixaxis") || contains_ci(name, "ps5") ||
+        contains_ci(name, "ps4") || contains_ci(name, "ps3"))
+        return 2;
     if (type == SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_PRO || type == SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_LEFT ||
-        type == SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_RIGHT || type == SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_PAIR)
+        type == SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_RIGHT || type == SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_PAIR ||
+        type == SDL_GAMEPAD_TYPE_GAMECUBE || vendor == 0x057e || contains_ci(name, "nintendo") ||
+        contains_ci(name, "switch") || contains_ci(name, "joy-con"))
         return 0;
-    if (vendor != BIND_VALVE_VENDOR) return type == SDL_GAMEPAD_TYPE_XBOX360 || type == SDL_GAMEPAD_TYPE_XBOXONE ? 1 : 0;
-    if (product == BIND_DECK_PRODUCT || (name && strstr(name, "Steam Deck"))) return 3;
-    bool unnamed = !name || !*name || strstr(name, "Steam Virtual") || strstr(name, "Steam Controller");
-    return unnamed && first && settings_steam_deck() ? 3 : 1;
+    if (vendor == BIND_VALVE_VENDOR) {
+        if (product == BIND_DECK_PRODUCT || (name && strstr(name, "Steam Deck"))) return 3;
+        bool unnamed = !name || !*name || strstr(name, "Steam Virtual") || strstr(name, "Steam Controller");
+        return unnamed && first && settings_steam_deck() ? 3 : 1;
+    }
+    if (type == SDL_GAMEPAD_TYPE_XBOX360 || type == SDL_GAMEPAD_TYPE_XBOXONE || vendor == 0x045e ||
+        contains_ci(name, "xbox") || contains_ci(name, "x-box") || contains_ci(name, "xinput") ||
+        contains_ci(name, "x360"))
+        return 1;
+    return 0;
 }
 
 int bind_label_family(void) {
@@ -824,7 +848,7 @@ static bool named(uint64_t obj, unsigned off, const char *name) {
     return p >= GUEST_LO && p < GUEST_HI - 64 && !strcmp((const char *)(uintptr_t)p, name);
 }
 static uint64_t a_label;  // the A prompt's label (T_GuideA_01: its text at +0xe0, UTF-16)
-static uint64_t a_group;  // the A slot (N_A_00)
+static uint64_t hud_groups[4];  // N_A_00, N_B_00, N_X_00, N_Y_00
 // The A prompt's opacity (0-255; 0 while it isn't shown, as in a fade from 0 up and back down)
 static int interact_prompt_alpha(void) {
     static uint64_t screen, group, hud;  // DoCommand_00, its N_A_00 and N_InOut_00 (found again when the HUD is rebuilt)
@@ -833,6 +857,7 @@ static int interact_prompt_alpha(void) {
         strncmp((const char *)(uintptr_t)(group + 0xb8), "N_A_00", 8) ||
         strncmp((const char *)(uintptr_t)(hud + 0xb8), "N_InOut_00", 12)) {
         screen = group = hud = 0;
+        memset(hud_groups, 0, sizeof hud_groups);
         uint64_t mgr = LD64(g_site.screen_mgr), arr = mgr ? LD64(mgr + 0x30) : 0;
         unsigned count = mgr ? LD32(mgr + 0x28) : 0;
         for (unsigned i = 0; arr && i < count && i < 256 && !screen; i++)
@@ -840,22 +865,28 @@ static int interact_prompt_alpha(void) {
         uint64_t layout = screen ? LD64(screen + 0x30) : 0, root = layout >= GUEST_LO ? LD64(layout + 0x18) : 0;
         unsigned budget = 64;
         hud = pane_child(root, "N_InOut_00", 0, &budget);
-        budget = 64;
-        group = pane_child(hud, "N_A_00", 0, &budget);
+        static const char *const gnames[4] = {"N_A_00", "N_B_00", "N_X_00", "N_Y_00"};
+        for (int i = 0; i < 4; i++) {
+            budget = 64;
+            hud_groups[i] = pane_child(hud, gnames[i], 0, &budget);
+        }
+        group = hud_groups[0];
         budget = 64;
         a_label = pane_child(group, "T_GuideA_01", 0, &budget);
-        if (!group) { screen = group = hud = a_label = 0; return 0; }
+        if (!group) { screen = group = hud = a_label = 0; memset(hud_groups, 0, sizeof hud_groups); return 0; }
     }
-    a_group = group;
     return (LD8(group + 0x58) & 1) && (LD8(hud + 0x58) & 1) ? LD8(hud + 0x5a) : 0;  // (visible; global alpha)
 }
 static bool interact_prompt_up(void) { return interact_prompt_alpha() >= 0x80; }
 
-uint64_t act_a_slot_pane(const char *name) {
-    interact_prompt_alpha();  // (finds the slot again after the HUD is rebuilt)
+uint64_t act_hud_slot_pane(int slot, const char *name) {
+    interact_prompt_alpha();  // (finds the slots again after the HUD is rebuilt)
+    if (slot < 0 || slot >= 4 || !hud_groups[slot]) return 0;
     unsigned budget = 64;
-    return a_group ? pane_child(a_group, name, 0, &budget) : 0;
+    return pane_child(hud_groups[slot], name, 0, &budget);
 }
+
+uint64_t act_a_slot_pane(const char *name) { return act_hud_slot_pane(0, name); }
 
 uint32_t act_a_prompt_label(void) {  // (while the prompt is on screen at all: fading in or out too)
     if (!interact_prompt_alpha() || !a_label) return 0;

@@ -205,7 +205,7 @@ static void switch_table(const char *id, const int *order, int rows, int fam, in
 
 extern "C" void controls_bindings_draw(float scale) {
     (void)scale;
-    int fam = bind_label_family();
+    int fam = glyphs_pad_family();
     static const char *const fam_name[] = {"Nintendo", "Xbox", "PlayStation", "Steam Deck"};
     int n = 0;
     SDL_JoystickID *ids = SDL_GetGamepads(&n);

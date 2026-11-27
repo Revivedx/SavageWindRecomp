@@ -100,6 +100,7 @@ static _Atomic uint32_t test_pad;
 static _Atomic int32_t test_lx, test_ly;  // (a resting stick's drift: "lstick" in SAVAGEWIND_HOST_INPUT)
 static _Atomic bool host_test;  // (then a real controller is left out: the player's own pad must not spoil the test)
 static _Atomic int last_device;  // DEVICE_*: what the player used last
+static _Atomic bool user_touched_kbd;
 static _Atomic bool tilt_held;  // the tilt binding: the mouse tilts the controller instead of turning the camera
 bool input_tilt_active(void) { return tilt_held; }
 extern bool menu_input_captured(void);  // runtime/ui/menu.mm: overlay menu or name entry up (it has the keys / pad)
@@ -691,7 +692,10 @@ static void pad_use(SDL_Gamepad *p) {
     if (p == pad || (p && motion_pad_sensor_only(p))) return;
     if (pad) vibration_update(pad, false);
     pad = p;
-    if (pad) LOG("[input] gamepad in use: %s\n", SDL_GetGamepadName(pad));
+    if (pad) {
+        LOG("[input] gamepad in use: %s\n", SDL_GetGamepadName(pad));
+        if (!user_touched_kbd) last_device = DEVICE_PAD;
+    }
     motion_pads(pad, pads, npads);
     note_family();
     recompute_pad();
@@ -795,7 +799,10 @@ void input_handle_event(const SDL_Event *e) {
         // screenshot, must not turn a controller's button prompts into keycaps)
         if (e->type == SDL_EVENT_KEY_DOWN && e->key.scancode != SDL_SCANCODE_PRINTSCREEN &&
             e->key.scancode != SDL_SCANCODE_LGUI && e->key.scancode != SDL_SCANCODE_RGUI &&
-            !(e->key.mod & SDL_KMOD_GUI)) last_device = DEVICE_KEYBOARD;
+            !(e->key.mod & SDL_KMOD_GUI)) {
+            last_device = DEVICE_KEYBOARD;
+            user_touched_kbd = true;
+        }
         recompute_keyboard();
         break;
     case SDL_EVENT_MOUSE_WHEEL:
@@ -809,7 +816,10 @@ void input_handle_event(const SDL_Event *e) {
             extern void freecam_mouse(float dx, float dy);
             if (freecam_active()) { freecam_mouse(e->motion.xrel, e->motion.yrel); break; }
         }
-        if ((tilt_held || mouse_held) && fabsf(e->motion.xrel) + fabsf(e->motion.yrel) > 4) last_device = DEVICE_KEYBOARD;
+        if ((tilt_held || mouse_held) && fabsf(e->motion.xrel) + fabsf(e->motion.yrel) > 4) {
+            last_device = DEVICE_KEYBOARD;
+            user_touched_kbd = true;
+        }
         if (tilt_held) {
             motion_mouse(e->motion.xrel, e->motion.yrel);
         } else if (mouse_held) {
@@ -826,7 +836,7 @@ void input_handle_event(const SDL_Event *e) {
         if (e->button.button < sizeof mouse_down && (mouse_held || (test_mouse && test_event(e)) ||
             (e->type == SDL_EVENT_MOUSE_BUTTON_UP && mouse_down[e->button.button]) ||
             (pc_cursor_active() && e->button.button != SDL_BUTTON_LEFT && e->button.button != SDL_BUTTON_RIGHT))) {
-            if (e->type == SDL_EVENT_MOUSE_BUTTON_DOWN) last_device = DEVICE_KEYBOARD;
+            if (e->type == SDL_EVENT_MOUSE_BUTTON_DOWN) { last_device = DEVICE_KEYBOARD; user_touched_kbd = true; }
             mouse_down[e->button.button] = e->type == SDL_EVENT_MOUSE_BUTTON_DOWN;
             recompute_keyboard();
         }

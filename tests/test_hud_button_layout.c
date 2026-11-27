@@ -46,7 +46,7 @@ bool fsr3_upscaler_enabled(void) { return false; }
 float winsize_refresh_rate(void) { return 0; }
 void menu_tex_add(const uint8_t *b, uint64_t n) { (void)b, (void)n; }
 int menu_tex_count(void) { return 0; }
-void text_sheet_add(const uint8_t *b, uint64_t n) { (void)b, (void)n; }
+void text_sheet_add(const uint8_t *b, size_t n, const TextSheetInfo *info) { (void)b, (void)n, (void)info; }
 int text_sheet_count(void) { return 0; }
 uint8_t *yaz0_unpack(const uint8_t *z, size_t zn, size_t *out_n) { (void)z, (void)zn, (void)out_n; return NULL; }
 int sarc_find(const uint8_t *arc, size_t an, const char *name, uint32_t *doff, uint32_t *s, uint32_t *e) {
@@ -188,8 +188,48 @@ int main(void) {
     assert(pos[0] == 1 && pos[1] == 0 && pos[2] == 2 && pos[3] == 3);
 
     g_settings.button_layout = BUTTON_LAYOUT_XBOX;
+    g_settings.button_icons = ICONS_NINTENDO;
     glyphs_hud_positions(pos);
     assert(pos[0] == 1 && pos[1] == 0 && pos[2] == 3 && pos[3] == 2);
+
+    // Under Xbox/PlayStation icons, BUTTON_LAYOUT_XBOX uses physical bindings (no double-swap)
+    bind_reset(BIND_DEV_PAD);
+    g_settings.button_icons = ICONS_XBOX;
+    glyphs_hud_positions(pos);
+    assert(pos[0] == 0 && pos[1] == 1 && pos[2] == 2 && pos[3] == 3);
+    g_bind_pad[BIND_A] = SDL_GAMEPAD_BUTTON_SOUTH;
+    g_bind_pad[BIND_B] = SDL_GAMEPAD_BUTTON_EAST;
+    glyphs_hud_positions(pos);
+    assert(pos[0] == 1 && pos[1] == 0 && pos[2] == 2 && pos[3] == 3);
+    g_settings.button_icons = ICONS_PLAYSTATION;
+    glyphs_hud_positions(pos);
+    assert(pos[0] == 1 && pos[1] == 0 && pos[2] == 2 && pos[3] == 3);
+    g_settings.button_icons = ICONS_AUTO;
+    bind_reset(BIND_DEV_PAD);
+
+    // bind_pad_family() detection for PlayStation, Xbox, Nintendo, Steam Deck
+    assert(bind_pad_family(SDL_GAMEPAD_TYPE_PS4, 0, 0, NULL, false) == 2);
+    assert(bind_pad_family(SDL_GAMEPAD_TYPE_PS5, 0, 0, NULL, false) == 2);
+    assert(bind_pad_family(SDL_GAMEPAD_TYPE_STANDARD, 0x054c, 0, NULL, false) == 2);
+    assert(bind_pad_family(SDL_GAMEPAD_TYPE_STANDARD, 0, 0, "DualSense Wireless Controller", false) == 2);
+    assert(bind_pad_family(SDL_GAMEPAD_TYPE_STANDARD, 0, 0, "DualShock 4", false) == 2);
+    assert(bind_pad_family(SDL_GAMEPAD_TYPE_XBOX360, 0, 0, NULL, false) == 1);
+    assert(bind_pad_family(SDL_GAMEPAD_TYPE_XBOXONE, 0, 0, NULL, false) == 1);
+    assert(bind_pad_family(SDL_GAMEPAD_TYPE_STANDARD, 0x045e, 0, NULL, false) == 1);
+    assert(bind_pad_family(SDL_GAMEPAD_TYPE_STANDARD, 0, 0, "Xbox Wireless Controller", false) == 1);
+    assert(bind_pad_family(SDL_GAMEPAD_TYPE_STANDARD, 0, 0, "Generic X-Box pad", false) == 1);
+    assert(bind_pad_family(SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_PRO, 0, 0, NULL, false) == 0);
+    assert(bind_pad_family(SDL_GAMEPAD_TYPE_STANDARD, 0x057e, 0, NULL, false) == 0);
+    assert(bind_pad_family(SDL_GAMEPAD_TYPE_STANDARD, 0, 0, "Generic Gamepad", false) == 0);
+    assert(bind_pad_family(SDL_GAMEPAD_TYPE_STANDARD, BIND_VALVE_VENDOR, BIND_DECK_PRODUCT, NULL, false) == 3);
+
+    // glyphs_hud_positions_stale(): non-West Swap A/B updates live (not stale); West-crossing GameCube is stale
+    int built[4] = {0, 1, 2, 3};
+    glyphs_hud_positions_built(built);
+    g_settings.button_layout = BUTTON_LAYOUT_SWAP_AB;
+    assert(!glyphs_hud_positions_stale());
+    g_settings.button_layout = BUTTON_LAYOUT_GAMECUBE;
+    assert(glyphs_hud_positions_stale());
 
     g_settings.button_layout = BUTTON_LAYOUT_SWAP_XY;
     glyphs_hud_positions(pos);

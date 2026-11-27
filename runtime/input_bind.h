@@ -130,6 +130,8 @@ bool act_cycle_live(void);  // the game asks about Cycle accelerate (38) every f
 uint32_t act_a_prompt_label(void);
 // A pane of the HUD's A slot by name (DoCommand_00 > N_A_00 > ...), or 0
 uint64_t act_a_slot_pane(const char *name);
+// A pane of one of the HUD's four face-button diamond slots (slot 0..3: N_A_00, N_B_00, N_X_00, N_Y_00), or 0
+uint64_t act_hud_slot_pane(int slot, const char *name);
 void act_masks(const uint32_t *table);        // the game's table of one mask per action (its address, from the patch)
 void act_reset(void);                         // every action back to the default
 

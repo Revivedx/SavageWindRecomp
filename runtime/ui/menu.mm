@@ -2532,7 +2532,7 @@ static void collect_prompt(ImDrawList *dl, const CollectMapView &v, float cx, fl
     if (!g_hint_buttons) {
         bool keyboard = input_last_device() == DEVICE_KEYBOARD;
         snprintf(name, sizeof name, "%s", keyboard ? tr(bind_key_label(g_bind_key[BIND_DOWN]))
-                                                   : tr(bind_pad_label(g_bind_pad[BIND_DOWN], input_pad_family())));
+                                                   : tr(bind_pad_label(g_bind_pad[BIND_DOWN], bind_label_family())));
         iw = fmaxf(iw, g_menu_font->CalcTextSizeA(fs * .7f, FLT_MAX, 0, name).x + 16 * u);
     }
     // where the leftmost prompt's label starts: its picture's right edge less the padding, its button and the gap before
@@ -3186,10 +3186,10 @@ static void quick_inventory_hint_draw(const ImGuiIO &io) {
     if (input_last_device() == DEVICE_KEYBOARD) kind = ICONS_KEYBOARD;
     if (kind <= ICONS_AUTO || kind >= ICONS_COUNT) {
         int family = input_pad_family();
-        kind = family == 1 ? ICONS_XBOX : family == 2 ? ICONS_PLAYSTATION : ICONS_NINTENDO;
+        kind = family == 1 ? ICONS_XBOX : family == 2 ? ICONS_PLAYSTATION : family == 3 ? ICONS_STEAMDECK : ICONS_NINTENDO;
     }
     bool keyboard = kind == ICONS_KEYBOARD;
-    int family = kind == ICONS_XBOX ? 1 : kind == ICONS_PLAYSTATION ? 2 : 0;
+    int family = kind == ICONS_XBOX ? 1 : kind == ICONS_PLAYSTATION ? 2 : kind == ICONS_STEAMDECK ? 3 : 0;
     float canvas = fminf(io.DisplaySize.x / 1280.f, io.DisplaySize.y / 720.f);
     float scale = canvas / 1.5f, fs = 32 * scale, radius = 15 * scale, gap = 10 * scale;
     int drop = quick_drop_hint_state();
