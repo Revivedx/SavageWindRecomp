@@ -9661,7 +9661,7 @@ static void draw_(CmdRec *r, bool indexed) {
         prof_feedback_resolve += now - prof_stage_start;
         prof_stage_start = now;
     }
-    if (vk_hdr_game_enabled() && pr->fi && pr->fi->ntex == 2 && !pr->hdr && !pr->hdr_tried)
+    if ((vk_hdr_game_enabled() || !g_settings.tone_mapper) && pr->fi && pr->fi->ntex == 2 && !pr->hdr && !pr->hdr_tried)
         hdr_make_tonemap_prog(pr);
     // (ray traced reflections: the lit scene of this frame, kept for the next frame's rays to take colours from, once
     //  the draw that composites it into the final image comes)
@@ -9681,7 +9681,7 @@ static void draw_(CmdRec *r, bool indexed) {
         }
     }
     scene_post(pr, r);
-    if (pr->hdr && vk_hdr_game_enabled()) pr = pr->hdr;  // (the game's tonemap draw: the extended-curve variant, HDR only)
+    if (pr->hdr && (vk_hdr_game_enabled() || !g_settings.tone_mapper)) pr = pr->hdr;  // (the game's tonemap draw: HDR or tone mapper off)
     fg_draw(pr, r);
     snap_reason = "draw-depthwrite";
     if (st.rt.depth && st.ds[0] && st.ds[1]) snapshots_invalidate(st.rt.depth);

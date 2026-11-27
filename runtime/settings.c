@@ -112,6 +112,7 @@ Settings g_settings = {
     .grass = true,
     .grass_quads = true,
     .lens_flare = true,
+    .tone_mapper = true,
     .fast_fma = true,
 };
 
@@ -725,6 +726,7 @@ void settings_load(void) {
                 if (!strcmp(val, k_grass_dist[i])) g_settings.grass_distance = i;
         }
         else if (!strcmp(key, "lens_flare")) g_settings.lens_flare = atoi(val) != 0;
+        else if (!strcmp(key, "tone_mapper")) g_settings.tone_mapper = atoi(val) != 0;
         // (dynamic_resolution, the game's own counters, did nothing and was saved on: not read. The frame-rate one is
         // the upscaler's Dynamic mode, upscale_quality.)
         else if (!strcmp(key, "fast_fma")) g_settings.fast_fma = atoi(val) != 0;
@@ -1041,6 +1043,7 @@ bool settings_save_to(const char *path) {
     int gd = g_settings.grass_distance;
     fprintf(f, "grass_distance = %s\n", k_grass_dist[gd >= 0 && gd < GRASS_DIST_COUNT ? gd : GRASS_DIST_FOLLOW]);
     fprintf(f, "lens_flare = %d\n", g_settings.lens_flare ? 1 : 0);
+    fprintf(f, "tone_mapper = %d\n", g_settings.tone_mapper ? 1 : 0);
     fprintf(f, "fast_fma = %d\n", g_settings.fast_fma ? 1 : 0);
     fprintf(f, "colour_exposure = %.1f\n", g_settings.color_exposure / 10.0);
     fprintf(f, "colour_contrast = %d\n", g_settings.color_contrast);

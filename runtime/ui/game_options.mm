@@ -1114,6 +1114,9 @@ void build_items(void) {
     v.push_back(toggle(P_VIDEO_ADV, "Lens flare", "Sun glare and lens flare. Off: no sun flare.",
                        [](const Item &) { return (int)g_settings.lens_flare; },
                        [](const Item &, int x) { g_settings.lens_flare = x; }, 1));
+    v.push_back(toggle(P_VIDEO_ADV, "Tone mapper", "Filmic tone mapping and colour grade. Off: raw linear output without highlight compression.",
+                       [](const Item &) { return (int)g_settings.tone_mapper; },
+                       [](const Item &, int x) { g_settings.tone_mapper = x; }, 1));
     if (gamelib_compat())  // (runtime/gamelib.h: a CPU without FMA instructions; simd.h simd_fma_unfused)
         v.push_back(toggle(P_VIDEO_ADV, "Fast math", "Your CPU has no FMA instructions. On: faster, some results round a tiny bit differently from the console.",
                            [](const Item &) { return (int)g_settings.fast_fma; },
