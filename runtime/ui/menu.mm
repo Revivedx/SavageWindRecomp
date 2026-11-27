@@ -1003,6 +1003,15 @@ static void tab_display(void) {
     }
     opt_toggle("Dynamic HUD", &g_settings.dynamic_hud, false,
                "Hides the HUD while exploring and shows it for 5 seconds when Link takes damage.");
+    opt_section("Hide HUD elements");
+    opt_toggle("Hide hearts", &g_settings.hud_hide_hearts, false, "Hides the heart containers on the HUD.");
+    opt_toggle("Hide stamina wheel", &g_settings.hud_hide_stamina, false, "Hides the stamina wheel.");
+    opt_toggle("Hide champion abilities", &g_settings.hud_hide_abilities, false, "Hides the champion ability icons under the hearts.");
+    opt_toggle("Hide minimap", &g_settings.hud_hide_minimap, false, "Hides the minimap during play while keeping the full map.");
+    opt_toggle("Hide sensors & weather", &g_settings.hud_hide_sensors, false,
+               "Hides the Sheikah Sensor, sound meter, temperature gauge, weather and clock.");
+    opt_toggle("Hide enemy health bars", &g_settings.hud_hide_enemy_bars, false, "Hides enemy health bars.");
+    opt_toggle("Hide action prompts", &g_settings.hud_hide_prompts, false, "Hides the on-screen button prompts during play.");
     {
         float tsz = (float)g_settings.menu_text_size;
         if (opt_slider("Overlay text size", &tsz, 80, 150, 5, 100, "%g%%",

@@ -24,6 +24,8 @@ int main(int argc, char **argv) {
     assert(g_settings.sparse_heap == atoi(argv[4]));
     assert(g_settings.tex_lod_bias == atoi(argv[5]));
     assert(g_settings.audio_output == atoi(argv[4]));
+    assert(g_settings.hud_hide_hearts == (atoi(argv[3]) == 0));
+    assert(g_settings.hud_hide_minimap == (atoi(argv[3]) == 0));
     // Video > Frame rate: 72 is offered (#1080), between 60 and 90, and the list stays ascending
     {
         const int *fps;
@@ -42,6 +44,8 @@ int main(int argc, char **argv) {
     g_settings.sparse_heap = (g_settings.sparse_heap + 1) % SPARSE_HEAP_COUNT;
     g_settings.tex_lod_bias = (g_settings.tex_lod_bias + 1) % TEX_LOD_COUNT;
     g_settings.audio_output = (g_settings.audio_output + 1) % AUDIO_OUT_COUNT;
+    g_settings.hud_hide_hearts = !g_settings.hud_hide_hearts;
+    g_settings.hud_hide_minimap = !g_settings.hud_hide_minimap;
     settings_save();
     // Potato: no grass, no lens flare, AMD CAS at 80%; another preset brings grass and the flare back
     graphics_preset_apply(GPRESET_POTATO);

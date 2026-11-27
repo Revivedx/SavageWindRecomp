@@ -633,6 +633,13 @@ void settings_load(void) {
         else if (!strcmp(key, "field_of_view")) g_settings.fov = atoi(val);  // (percent)
         else if (!strcmp(key, "hud_size")) g_settings.hud_size = atoi(val);  // (percent)
         else if (!strcmp(key, "dynamic_hud")) g_settings.dynamic_hud = atoi(val) != 0;
+        else if (!strcmp(key, "hud_hide_hearts")) g_settings.hud_hide_hearts = atoi(val) != 0;
+        else if (!strcmp(key, "hud_hide_stamina")) g_settings.hud_hide_stamina = atoi(val) != 0;
+        else if (!strcmp(key, "hud_hide_abilities")) g_settings.hud_hide_abilities = atoi(val) != 0;
+        else if (!strcmp(key, "hud_hide_minimap")) g_settings.hud_hide_minimap = atoi(val) != 0;
+        else if (!strcmp(key, "hud_hide_sensors")) g_settings.hud_hide_sensors = atoi(val) != 0;
+        else if (!strcmp(key, "hud_hide_enemy_bars")) g_settings.hud_hide_enemy_bars = atoi(val) != 0;
+        else if (!strcmp(key, "hud_hide_prompts")) g_settings.hud_hide_prompts = atoi(val) != 0;
         else if (!strcmp(key, "menu_speed")) g_settings.menu_speed = atoi(val);  // (percent)
         else if (!strcmp(key, "handheld_setup")) g_settings.handheld_setup = atoi(val) != 0;
         else if (!strcmp(key, "draw_distance")) {
@@ -961,6 +968,13 @@ bool settings_save_to(const char *path) {
     fprintf(f, "field_of_view = %d\n", g_settings.fov);
     fprintf(f, "hud_size = %d\n", g_settings.hud_size);
     fprintf(f, "dynamic_hud = %d\n", g_settings.dynamic_hud ? 1 : 0);
+    fprintf(f, "hud_hide_hearts = %d\n", g_settings.hud_hide_hearts ? 1 : 0);
+    fprintf(f, "hud_hide_stamina = %d\n", g_settings.hud_hide_stamina ? 1 : 0);
+    fprintf(f, "hud_hide_abilities = %d\n", g_settings.hud_hide_abilities ? 1 : 0);
+    fprintf(f, "hud_hide_minimap = %d\n", g_settings.hud_hide_minimap ? 1 : 0);
+    fprintf(f, "hud_hide_sensors = %d\n", g_settings.hud_hide_sensors ? 1 : 0);
+    fprintf(f, "hud_hide_enemy_bars = %d\n", g_settings.hud_hide_enemy_bars ? 1 : 0);
+    fprintf(f, "hud_hide_prompts = %d\n", g_settings.hud_hide_prompts ? 1 : 0);
     fprintf(f, "menu_speed = %d\n", g_settings.menu_speed);
     if (g_settings.handheld_setup) fprintf(f, "handheld_setup = 1\n");
     int dd = g_settings.draw_distance;

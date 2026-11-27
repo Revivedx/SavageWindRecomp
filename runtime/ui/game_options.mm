@@ -105,7 +105,7 @@ static_assert(sizeof(Entry) == 0x30);
 enum { KIND_TOGGLE = 0, KIND_CHOICE = 1, KIND_BUTTON = 2 };
 
 enum Page { P_MAIN, P_GAMEPLAY, P_VIDEO, P_COLOUR, P_AUDIO, P_CONTROLS, P_BINDS, P_LANGUAGE, P_ACCESS, P_VIDEO_ADV, P_HDR,
-            P_ACHIEVEMENTS, P_COUNT };
+            P_HUD, P_ACHIEVEMENTS, P_COUNT };
 // A_FIXED: a greyed row for an input that can never be rebound (Item.arg: 0 Esc, 1 F2); A_BIND: Item.arg is a binding slot (an input, or BIND_ACTION + an action); the next key, mouse button or controller button binds it
 enum Action { A_NONE, A_PAGE, A_BIND, A_BINDS_HEADER, A_RESET_BINDS, A_RESTART, A_QUIT, A_SIZE_LIST, A_FIXED, A_REPORT, A_SAVE_HDR_LOOK };
 static char g_report_dir[64];  // Problem report: the zip made this run (its row's description names it)
@@ -518,6 +518,28 @@ void build_items(void) {
     v.push_back(toggle(P_GAMEPLAY, "Dynamic HUD", "Hides the HUD while exploring and shows it for 5 seconds when Link takes damage.",
                        [](const Item &) { return (int)g_settings.dynamic_hud; },
                        [](const Item &, int x) { g_settings.dynamic_hud = x; }, 0));
+    v.push_back(button(P_GAMEPLAY, "Hide HUD elements", "Hide individual parts of the HUD such as hearts, stamina, abilities, sensors, minimap or enemy health bars.", "Open", A_PAGE, P_HUD));
+    v.push_back(toggle(P_HUD, "Hide hearts", "Hides the heart containers on the HUD.",
+                       [](const Item &) { return (int)g_settings.hud_hide_hearts; },
+                       [](const Item &, int x) { g_settings.hud_hide_hearts = x; }, 0));
+    v.push_back(toggle(P_HUD, "Hide stamina wheel", "Hides the stamina wheel.",
+                       [](const Item &) { return (int)g_settings.hud_hide_stamina; },
+                       [](const Item &, int x) { g_settings.hud_hide_stamina = x; }, 0));
+    v.push_back(toggle(P_HUD, "Hide champion abilities", "Hides the champion ability icons under the hearts.",
+                       [](const Item &) { return (int)g_settings.hud_hide_abilities; },
+                       [](const Item &, int x) { g_settings.hud_hide_abilities = x; }, 0));
+    v.push_back(toggle(P_HUD, "Hide minimap", "Hides the minimap during play while keeping the full map.",
+                       [](const Item &) { return (int)g_settings.hud_hide_minimap; },
+                       [](const Item &, int x) { g_settings.hud_hide_minimap = x; }, 0));
+    v.push_back(toggle(P_HUD, "Hide sensors & weather", "Hides the Sheikah Sensor, sound meter, temperature gauge, weather and clock.",
+                       [](const Item &) { return (int)g_settings.hud_hide_sensors; },
+                       [](const Item &, int x) { g_settings.hud_hide_sensors = x; }, 0));
+    v.push_back(toggle(P_HUD, "Hide enemy health bars", "Hides enemy health bars.",
+                       [](const Item &) { return (int)g_settings.hud_hide_enemy_bars; },
+                       [](const Item &, int x) { g_settings.hud_hide_enemy_bars = x; }, 0));
+    v.push_back(toggle(P_HUD, "Hide action prompts", "Hides the on-screen button prompts during play.",
+                       [](const Item &) { return (int)g_settings.hud_hide_prompts; },
+                       [](const Item &, int x) { g_settings.hud_hide_prompts = x; }, 0));
     v.push_back(choice(P_GAMEPLAY, "Menu cursor speed", "How fast the cursor and transitions move in menus, inventory, and the map.",
                        [](const Item &) { return N(k_menu_speed); },
                        [](const Item &, int x) {
@@ -2598,7 +2620,7 @@ extern "C" void rt_opt_back(void) {
     bool direct = g_ach_direct && g_cur_page == P_ACHIEVEMENTS;
     g_ach_direct = false;
     if (g_installed && g_cur_page != P_MAIN && !direct) {
-        g_next_page = g_cur_page == P_VIDEO_ADV ? P_VIDEO : g_cur_page == P_HDR ? P_VIDEO_ADV : P_MAIN;
+        g_next_page = g_cur_page == P_VIDEO_ADV ? P_VIDEO : g_cur_page == P_HDR ? P_VIDEO_ADV : g_cur_page == P_HUD ? P_GAMEPLAY : P_MAIN;
         g_reopen = g_switching = true;
     } else {  // (it closes: the next opening is on the first page, unless a button asks for another)
         g_reopen = g_switching = false;
