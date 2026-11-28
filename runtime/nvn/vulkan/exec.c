@@ -90,7 +90,7 @@ static uint64_t stat_upload_bytes;
 // vk_transient made each constant-buffer copy wait for the one before to leave for the GPU: 331 of vk_transient's 365
 // samples sat on it, ~4.5% of the render thread at the Castle (plain build, 1080p).
 static uint64_t upload_unflushed;
-static uint64_t stat_sets, stat_sets_reused;  // descriptor sets asked for / shared with an identical one
+uint64_t stat_sets, stat_sets_reused;  // descriptor sets asked for / shared with an identical one
 static struct { NvnTexture *t; TexBackend *img; float sx, sy; } scene_up;
 static NvnTexture *scene_depth;
 // SAVAGEWIND_VK_PROF=1: render-thread time per category in the fps log (exec = whole command lists, draw = draw(),
@@ -1039,10 +1039,9 @@ VkSpan vk_transient_copy(const void *data, uint64_t size, uint64_t align) {
 }
 
 // Per-draw constants that usually repeat the previous draw's (scale table, tint, driver constants): reuse that copy
-// while it's identical, within one submission. slot: one per kind of data.
-enum { DEDUPE_RSCALE_V, DEDUPE_RSCALE_F, DEDUPE_TINT, DEDUPE_DRV_V, DEDUPE_DRV_F, DEDUPE_DRV_C, DEDUPE_GMEM, DEDUPE_SLOTS };
+// while it's identical, within one submission. slot: one per kind of data (DEDUPE_*, exec/internal.h).
 // alloc: the span's size when more than the bytes compared and copied (the rest is never read)
-static VkSpan copy_dedupe_in(int slot, const void *data, uint64_t size, uint64_t alloc, uint64_t align) {
+VkSpan copy_dedupe_in(int slot, const void *data, uint64_t size, uint64_t alloc, uint64_t align) {
     static struct { uint64_t seq, size; uint8_t data[0x800]; VkSpan span; } last[DEDUPE_SLOTS];
     uint64_t seq = vk_pending_seq();
     if (size > sizeof last[0].data) return vk_transient_copy(data, size, align);
@@ -1052,7 +1051,7 @@ static VkSpan copy_dedupe_in(int slot, const void *data, uint64_t size, uint64_t
     last[slot].seq = seq; last[slot].size = size; memcpy(last[slot].data, data, size); last[slot].span = s;
     return s;
 }
-static VkSpan copy_dedupe(int slot, const void *data, uint64_t size, uint64_t align) {
+VkSpan copy_dedupe(int slot, const void *data, uint64_t size, uint64_t align) {
     return copy_dedupe_in(slot, data, size, 0, align);
 }
 
@@ -1159,7 +1158,7 @@ static VkSpan guest_copy_line(uint64_t addr, uint64_t size) {
     return s;
 }
 
-static VkSpan guest_copy(uint64_t addr, uint64_t size) {
+VkSpan guest_copy(uint64_t addr, uint64_t size) {
     if (size <= UINT32_MAX && (stage_cpu_opts() & 64)) return guest_copy_line(addr, size);
     uint64_t h = (addr * 0x9E3779B97F4A7C15ull) ^ (size * 0xC2B2AE3D27D4EB4Full);
     uint32_t set = (uint32_t)(h ^ (h >> 32)) & (GCOPY_SETS - 1);
@@ -2946,7 +2945,6 @@ static void clear(int index, int kind, const void *color, uint32_t mask, bool de
 }
 
 // ================================================================== programs
-#define MAX_BIND 96
 typedef struct Prog {
     ShaderInfo *vi, *fi;
     struct Prog *hdr;           // (hdr.c) the HDR tonemap variant of this program, made once; draws use it after scene_post
@@ -5071,13 +5069,7 @@ static void resolve_feedback(Prog *pr) {
 }
 
 // ================================================================== resource binding
-static VkDescriptorBufferInfo ubo_span(VkSpan s, uint64_t size) {
-    uint64_t max = g_vk.props.limits.maxUniformBufferRange;
-    return (VkDescriptorBufferInfo){s.buf, s.off, size > max ? max : size};
-}
-
 static bool gw_ubo_direct(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out);
-static bool ubo_direct(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out);
 
 // Shadow maps made bigger than the game's (Video > Shadow resolution, textures.c RS_SHADOW): the shaders that filter
 // them offset their taps by a texel size the game passes in a constant buffer (BOTW's deferred sun shadow passes:
@@ -5570,17 +5562,7 @@ static bool fxaa_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out
 
 // (a dispatch's constant buffers, copied: gsnap_cs_prepare) the address the compute shader is given for each, 0: its
 // own; and the buffer the copies are in
-static struct { uint64_t addr[16]; VkDescriptorBufferInfo bi; } gsnap_cs;
-
-// Constant buffer k of a stage (renderer.m bind_cbufs), copied into transient memory.
-// The bytes cbuf_info copies of constant buffer k (k >= 3) bound to the range r (r.addr set).
-static inline uint64_t cbuf_copy_size(const ShaderInfo *si, int k, Range r) {
-    uint64_t size = si->cbuf_size[k] ? si->cbuf_size[k] : 256;
-    if ((si->cbuf_dynamic & (1u << k)) && r.size) size = r.size > 0x10000 ? 0x10000 : r.size;
-    if (size > r.size && r.size) size = r.size;
-    if (size < 16) size = 16;
-    return size;
-}
+ExecGsnapCs gsnap_cs;
 
 // Ahead of a draw's preparation (cpuopts bit 64): the copy-table slot of every constant buffer the stage reads, asked for
 // at once. Each was read cold, one after the other, when its buffer's turn came (guest_copy: 0.36 ms a frame of the
@@ -5599,66 +5581,46 @@ static inline void cbuf_prefetch(int stage, const ShaderInfo *si) {
     }
 }
 
-static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32_t gx, uint32_t gy, uint32_t gz) {
-    static const uint8_t zeros[0x10000];
-    if (k == 0) {
-        uint32_t drv[0x800 / 4] = {0};
-        if (stage == 5) {
-            drv[0x200 / 4] = gx; drv[0x204 / 4] = gy; drv[0x208 / 4] = gz;
-            for (int i = 0; i < 16; i++) {
-                uint32_t *u = &drv[(0x210 + 16 * i) / 4];
-                uint64_t ua = gsnap_cs.addr[i] ? gsnap_cs.addr[i] : st.ubuf[5][i].addr;
-                u[0] = (uint32_t)ua; u[1] = (uint32_t)(ua >> 32); u[2] = (uint32_t)st.ubuf[5][i].size;
-                uint32_t *e = &drv[(0x310 + 16 * i) / 4];
-                e[0] = (uint32_t)st.sbuf[5][i].addr; e[1] = (uint32_t)(st.sbuf[5][i].addr >> 32); e[2] = (uint32_t)st.sbuf[5][i].size;
-            }
-        } else {
-            uint32_t base = 0x110 + 0x100 * (stage == 1 ? 4 : 0);
-            for (int i = 0; i < 16; i++) {
-                uint32_t *e = &drv[(base + 16 * i) / 4];
-                e[0] = (uint32_t)st.sbuf[stage][i].addr;
-                e[1] = (uint32_t)(st.sbuf[stage][i].addr >> 32);
-                e[2] = (uint32_t)st.sbuf[stage][i].size;
+// (Windows) before a stage's set is written: bind the guest pages a storing shader may write, and make sure the heap
+// import exists. The descriptor path (exec_desc.c) calls this first.
+#ifdef _WIN32
+void vk_exec_gmem_stage_prepare(int stage, ShaderInfo *si) {
+    if (si->uses_gmem) (void)gmem_info();
+    if (gmem_sparse && si->writes_gmem && stage >= 0 && stage < 6) {
+        bool tracked = false;
+        for (int i = 0; i < 16; i++) {
+            Range r = st.sbuf[stage][i];
+            if (!r.addr || !r.size || r.size > UINT64_MAX - r.addr) continue;
+            uint64_t end = r.addr + r.size;
+            if (r.addr >= HEAP_BASE + gmem_size || end <= HEAP_BASE) continue;
+            tracked = true;
+            uint64_t begin = r.addr < HEAP_BASE ? HEAP_BASE : r.addr;
+            if (end > HEAP_BASE + gmem_size) end = HEAP_BASE + gmem_size;
+            if (!plat_guest_commit_sparse_range(begin, end - begin))
+                FATAL("could not commit guest storage range for sparse GPU access (%#llx+%#llx)\n",
+                      (unsigned long long)begin, (unsigned long long)(end - begin));
+        }
+        if (!tracked) {
+            static bool warned;
+            if (!warned) {
+                LOG("[vk] shader writes guest memory without a tracked storage range; leaving nonresident heap pages unbound\n");
+                warned = true;
             }
         }
-        uint64_t size = si->cbuf_size[0] > sizeof drv ? sizeof drv : (si->cbuf_size[0] ? si->cbuf_size[0] : 256);
-        if (size < 0x500 && stage == 5) size = 0x500;
-        return ubo_span(copy_dedupe(stage == 5 ? DEDUPE_DRV_C : stage == 1 ? DEDUPE_DRV_F : DEDUPE_DRV_V, drv, size, 256), size);
     }
-    if (k == 1) {  // compiler constants stored after the shader code
-        NvnShaderStage *ss = &st.program->stages[stage];
-        uint64_t size = ss->const_size ? ss->const_size : 16;
-        if (size < si->cbuf_size[1]) size = si->cbuf_size[1];
-        VkDescriptorBufferInfo direct;
-        if (ubo_direct(ss->code_addr + ss->const_offset, size, &direct)) return direct;  // (constants: never rewritten)
-        return ubo_span(guest_copy(ss->code_addr + ss->const_offset, size), size);  // (constant: shared per submission)
-    }
-    int idx = k - 3;  // cbuf_base
-    Range r = (idx >= 0 && idx < 18) ? st.ubuf[stage][idx] : (Range){0, 0};
-    uint64_t size = si->cbuf_size[k] ? si->cbuf_size[k] : 256;
-    if (!r.addr) return ubo_span(vk_transient_copy(zeros, size, 256), size);
-    size = cbuf_copy_size(si, k, r);
-    // An address outside the game's memory ended the game in the copy below after two hours of play (#640: 0x5000000000
-    // on the render thread). Read as an unbound buffer, and logged: where the address comes from is still unknown.
-    if (r.addr < GUEST_LO || r.addr >= GUEST_HI || size > GUEST_HI - r.addr) {
-        static int nbad;
-        if (nbad++ < 16)
-            LOG("[vk] constant buffer %d of stage %d at %llx (%llu bytes) is outside the game's memory: read as zeros\n", k,
-                stage, (unsigned long long)r.addr, (unsigned long long)size);
-        return ubo_span(vk_transient_copy(zeros, size, 256), size);
-    }
-    VkDescriptorBufferInfo direct;
-    if (stage == 1 && k == 3 && drw.fxaa_off && fxaa_patch(r.addr, size, &direct)) return direct;  // (see fxaa_patch)
-    if (gw_ubo_direct(r.addr, size, &direct)) return direct;  // (written by a storing shader: read in place, see gw_note)
-    if (stage == 1 && drw.sdw_fix.s > 1 && sdw_patch(r.addr, size, &direct)) return direct;  // (texel size: see drw.sdw_fix)
-    if (stage == 0 && drw.up_fix.sx > 0 && up_patch(r.addr, size, &direct)) return direct;  // (drw.up_fix: texel grid)
-    if (stage == 1 && drw.up_fix.sx > 0 && up_patch_frag(r.addr, size, &direct)) return direct;  // (drw.up_fix: texel step)
-    if (stage == 0 && k == 3 && hud_patch(r.addr, size, &direct)) return direct;  // (a 16:9 HUD layer: see hud_patch)
-    if (ubo_direct(r.addr, size, &direct)) return direct;  // (an integrated GPU reads the game's memory itself)
-    // snapshot: later CPU writes must not leak in. Shared by the draws of one submission binding the same range:
-    // within a command list nothing writes guest memory (no inline UpdateUniformBuffer: that writes through below
-    // and drops the shared copies).
-    return ubo_span(guest_copy(r.addr, size), size);
+    if (gmem_sparse && si->writes_gmem) (void)gmem_info();
+}
+#endif
+
+// The in-place and patched constant buffers a draw binds (exec_desc.c cbuf_info), in the order the patches apply.
+bool vk_exec_cbuf_patch(int stage, int k, uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out) {
+    if (stage == 1 && k == 3 && drw.fxaa_off && fxaa_patch(addr, size, out)) return true;  // (see fxaa_patch)
+    if (gw_ubo_direct(addr, size, out)) return true;  // (written by a storing shader: read in place, see gw_note)
+    if (stage == 1 && drw.sdw_fix.s > 1 && sdw_patch(addr, size, out)) return true;  // (texel size: see drw.sdw_fix)
+    if (stage == 0 && drw.up_fix.sx > 0 && up_patch(addr, size, out)) return true;  // (drw.up_fix: texel grid)
+    if (stage == 1 && drw.up_fix.sx > 0 && up_patch_frag(addr, size, out)) return true;  // (drw.up_fix: texel step)
+    if (stage == 0 && k == 3 && hud_patch(addr, size, out)) return true;  // (a 16:9 HUD layer: see hud_patch)
+    return false;
 }
 
 // Global memory (shader LDG/STG, maxwell_gmem_base = HEAP_BASE): on Windows, sparse-bind committed guest pages
@@ -6216,7 +6178,7 @@ void backend_heap_set(uint64_t size) {
 void backend_heap_set(uint64_t size) { (void)size; }
 #endif
 
-static VkDescriptorBufferInfo gmem_info(void) {
+VkDescriptorBufferInfo gmem_info(void) {
     static int off = -1;
     if (off < 0) off = getenv("SAVAGEWIND_VK_NO_GMEM") != NULL || !g_vk.host_import;
     uint64_t want = (kernel_heap_size() + 0xFFFF) & ~0xFFFFull;
@@ -6293,7 +6255,7 @@ static VkDescriptorBufferInfo gmem_info(void) {
 }
 
 // The heap past GMEM_SPLIT (GMEM2_BUFFER_INDEX), or a small zeroed buffer when it is no larger than that
-static VkDescriptorBufferInfo gmem_info_hi(void) {
+VkDescriptorBufferInfo gmem_info_hi(void) {
     VkDescriptorBufferInfo lo = gmem_info();  // (makes the import first where there is one)
     if (gmem_buf && lo.buffer == gmem_buf && gmem_size > GMEM_SPLIT) {
         uint64_t range = gmem_size - GMEM_SPLIT, lim = g_vk.props.limits.maxStorageBufferRange;
@@ -6521,7 +6483,7 @@ static void ubo_check_done(bool report) {  // (the stats line) the ranges whose 
                     (unsigned long long)uboc_n, (unsigned long long)uboc_bad, (unsigned long long)uboc_lost,
                     (unsigned long long)uboc_sub_n, (unsigned long long)uboc_sub_bad);
 }
-static bool ubo_direct(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out) {
+bool ubo_direct(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out) {
     if (ubo_direct_on < 0) {
         const char *e = getenv("SAVAGEWIND_VK_UBO_DIRECT");
         bool igpu = g_vk.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
@@ -7439,7 +7401,7 @@ static struct {
     } info[2048];
     struct { NvnTexture *tex; uint64_t vh, frame; uint32_t gen; uint8_t type, has_view; VkImageView view; } view[1024];
 } texmemo;
-static void texture_info(int stage, ShaderInfo *si, int i, VkDescriptorImageInfo *out, float sc[2], uint32_t wh[2]) {
+void texture_info(int stage, ShaderInfo *si, int i, VkDescriptorImageInfo *out, float sc[2], uint32_t wh[2]) {
     ShaderTexture *st_ = &si->tex[i];
     int slot = ((int)st_->handle_offset - 0x20) / 8;
     uint64_t h = (slot >= 0 && slot < 32) ? st.tex[stage][slot] : 0;
@@ -7559,76 +7521,6 @@ static void texture_info_(int stage, ShaderInfo *si, int i, VkDescriptorImageInf
     if (!view) view = vk_dummy_view(st_->type), layout = VK_IMAGE_LAYOUT_GENERAL;
     if (!smp) smp = vk_default_sampler(true);
     *out = (VkDescriptorImageInfo){smp, view, layout};
-}
-
-// Descriptor sets of identical contents within one submission are one set (the open world draws many objects with
-// the same material textures and constants): saves the allocation and the update. SAVAGEWIND_VK_NO_SET_CACHE=1: off.
-// Entries are told apart by two independent 64-bit hashes of the contents (no stored key: comparing ~700-byte keys
-// from a 3 MB table cost more than the hashing).
-#define SETC_TAB 4096
-typedef struct { uint64_t seq, hash, hash2; VkDescriptorSetLayout layout; VkDescriptorSet set; uint32_t n; } SetEnt;
-static SetEnt *setc;
-
-// A 64x64 multiply folded to 64 bits (both halves of the product mixed in one mulq).
-static inline uint64_t mum64(uint64_t a, uint64_t b) {
-    unsigned __int128 r = (unsigned __int128)a * b;
-    return (uint64_t)r ^ (uint64_t)(r >> 64);
-}
-
-static VkDescriptorSet set_finish(VkDescriptorSetLayout layout, VkWriteDescriptorSet *w, int n) {
-    static int off = -1;
-    if (off < 0) off = getenv("SAVAGEWIND_VK_NO_SET_CACHE") != NULL;
-    stat_sets++;
-    SetEnt *e = NULL;
-    uint64_t seq = vk_pending_seq() + (setc_gen << 40), h = 0, h2 = 0;
-    bool fast = (stage_cpu_opts() & 16) != 0;
-    if (!off) {
-        h = (uint64_t)(uintptr_t)layout;
-        h2 = h ^ 0x6A09E667F3BCC909ull;
-        for (int i = 0; i < n; i++) {
-            uint64_t v[4];
-            v[0] = w[i].dstBinding | (uint64_t)w[i].descriptorType << 32;
-            if (w[i].pImageInfo) {
-                v[1] = (uint64_t)(uintptr_t)w[i].pImageInfo->sampler;
-                v[2] = (uint64_t)(uintptr_t)w[i].pImageInfo->imageView;
-                v[3] = w[i].pImageInfo->imageLayout;
-            } else {
-                v[1] = (uint64_t)(uintptr_t)w[i].pBufferInfo->buffer;
-                v[2] = w[i].pBufferInfo->offset;
-                v[3] = w[i].pBufferInfo->range;
-            }
-            if (fast) {
-                // (mask 16) the four words of a write are folded by two independent 64x64->128 multiplies (they run
-                // side by side), so a write adds one multiply to the chain through the hash instead of four multiply-shift
-                // steps for each of two hashes (llvm-mca, Zen 3: ~21 cycles a write before, ~6 now; a 10-write set was
-                // ~210 cycles, 0.5-0.64 ms a frame in the open world). The second hash is the same fold mixed another way,
-                // so the key is effectively 64 bits: a wrong hit needs a 2^-64 collision (~1e6 lookups a second).
-                uint64_t t = mum64(v[1] ^ 0xA0761D6478BD642Full, v[2] ^ 0xE7037ED1A0B428DBull) ^
-                             mum64(v[3] ^ 0x8EBC6AF09C88C6E3ull, v[0] ^ 0x589965CC75374CC3ull);
-                h = mum64(h ^ t, 0x9E3779B97F4A7C15ull);
-                h2 = (h2 ^ t) * 0xC2B2AE3D27D4EB4Full;
-            } else
-            for (int k = 0; k < 4; k++) {
-                h = (h ^ v[k]) * 0x9E3779B97F4A7C15ull; h ^= h >> 29;
-                h2 = (h2 ^ v[k]) * 0xC2B2AE3D27D4EB4Full; h2 ^= h2 >> 31;
-            }
-        }
-        h ^= h >> 32;
-        if (!setc) setc = calloc(SETC_TAB, sizeof *setc);
-        e = &setc[(h ^ (h >> 31)) & (SETC_TAB - 1)];
-        if (e->seq == seq && e->hash == h && e->hash2 == h2 && e->layout == layout && e->n == (uint32_t)n) {
-            stat_sets_reused++;
-            return e->set;
-        }
-    }
-    VkDescriptorSet ds = vk_alloc_set(layout);
-    for (int i = 0; i < n; i++) w[i].dstSet = ds;
-    if (n) rec_UpdateDescriptorSets((uint32_t)n, w);
-    if (e) {
-        e->seq = vk_pending_seq() + (setc_gen << 40);  // (the set lives in this submission's pools)
-        e->hash = h; e->hash2 = h2; e->layout = layout; e->set = ds; e->n = (uint32_t)n;
-    }
-    return ds;
 }
 
 // ---- (GPU overlap) the global memory the HUD's shaders read, copied at translation
@@ -7827,7 +7719,7 @@ static void gsnap_cs_prepare(const ShaderInfo *si) {  // (dispatch_compute, befo
 // didn't. (Where that reaches GPU data, the bound size only.) In every pass; SAVAGEWIND_VK_GSNAP=1: passes into the
 // final image only. SAVAGEWIND_VK_GSNAP_EXT=<KB>: the bytes after (16).
 #define GSNAP_N 4
-static VkDescriptorBufferInfo gsnap_info(int stage) {
+VkDescriptorBufferInfo gsnap_info(int stage) {
     if (stage == 5) return gsnap_cs.bi;  // (a compute shader's constant buffers: gsnap_cs_prepare)
     static struct { uint64_t seq; int n; Range r[GSNAP_N]; VkDescriptorBufferInfo bi; } cache[32];
     static int cpos;
@@ -7925,174 +7817,12 @@ static VkDescriptorBufferInfo gsnap_info(int stage) {
     return bi;
 }
 
-// Writes the descriptor set of one stage. gx..gz: compute group counts (driver constants).
-// pre_ii: texture descriptors already resolved by the caller (draw: fragment textures, needed earlier for the
-// viewport decision), or NULL.
-// dyn / ndyn: the offsets of its dynamic uniform buffers, by binding (ubo_dynamic_mark), appended.
-// The descriptor writes of one set: 11 KB, which made the frame of stage_set 15 KB, and a frame over one page is entered
-// through ___chkstk_ms on Windows, a call that probes every page, for each of the 8,900 sets a frame (0.09 ms of the
-// queue thread in a profile capture, with draw_'s own). With cpuopts bit 128 they live in static memory instead (the draw
-// path runs on one thread, like the other statics here); a call made while one is in use (not known to happen) takes
-// the stack copy.
-typedef struct {
-    VkWriteDescriptorSet w[MAX_BIND];
-    VkDescriptorBufferInfo bi[MAX_BIND];
-    VkDescriptorImageInfo ii[MAX_BIND];
-} PrepScratch;
-
-static inline __attribute__((always_inline)) VkDescriptorSet stage_set_prepare_in(PrepScratch *scratch, Prog *p, VkDescriptorSetLayout layout, uint32_t set, int stage, ShaderInfo *si, const float *rscale_row0,
-                                 const float tint[8], uint32_t gx, uint32_t gy, uint32_t gz, const VkDescriptorImageInfo *pre_ii,
-                                 uint32_t *dyn, int *ndyn) {
-#ifdef _WIN32
-    if (si->uses_gmem) (void)gmem_info();
-    if (gmem_sparse && si->writes_gmem && stage >= 0 && stage < 6) {
-        bool tracked = false;
-        for (int i = 0; i < 16; i++) {
-            Range r = st.sbuf[stage][i];
-            if (!r.addr || !r.size || r.size > UINT64_MAX - r.addr) continue;
-            uint64_t end = r.addr + r.size;
-            if (r.addr >= HEAP_BASE + gmem_size || end <= HEAP_BASE) continue;
-            tracked = true;
-            uint64_t begin = r.addr < HEAP_BASE ? HEAP_BASE : r.addr;
-            if (end > HEAP_BASE + gmem_size) end = HEAP_BASE + gmem_size;
-            if (!plat_guest_commit_sparse_range(begin, end - begin))
-                FATAL("could not commit guest storage range for sparse GPU access (%#llx+%#llx)\n",
-                      (unsigned long long)begin, (unsigned long long)(end - begin));
-        }
-        if (!tracked) {
-            static bool warned;
-            if (!warned) {
-                LOG("[vk] shader writes guest memory without a tracked storage range; leaving nonresident heap pages unbound\n");
-                warned = true;
-            }
-        }
-    }
-    if (gmem_sparse && si->writes_gmem) (void)gmem_info();
-#endif
-    struct { uint32_t binding, off; } dv[32];
-    int nd = 0;
-    VkWriteDescriptorSet *w = scratch->w;
-    VkDescriptorBufferInfo *bi = scratch->bi;
-    VkDescriptorImageInfo *ii = scratch->ii;
-    int n = 0;
-    int sg = stage == 1 ? 1 : 0;
-    const uint8_t *idxs = p->set_idx[set];
-    int nb = p->set_n[set];
-    for (int k = 0; k < nb; k++) {
-        VkBindingInfo *b = &p->binds[idxs[k]];
-        w[n] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = VK_NULL_HANDLE, .dstBinding = b->binding,
-                                      .descriptorCount = 1, .descriptorType = b->type};
-        if (b->type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER && b->binding >= 32) {
-            int ti = (int)b->binding - 32;
-            float sc[2]; uint32_t wh[2];
-            if (ti < si->ntex && pre_ii && ti < 64) { ii[n] = pre_ii[ti]; sc[0] = drw.tex_sc[sg][ti][0]; sc[1] = drw.tex_sc[sg][ti][1]; wh[0] = drw.tex_wh[sg][ti][0]; wh[1] = drw.tex_wh[sg][ti][1]; }
-            else if (ti < si->ntex) texture_info(stage, si, ti, &ii[n], sc, wh);
-            else if (b->binding == RT_MASK_BINDING) { ii[n] = rtr_mask_info(); sc[0] = sc[1] = 1; wh[0] = wh[1] = 0; }
-            else if (b->binding == RT_REFL_BINDING) { ii[n] = rtr_refl_info(); sc[0] = sc[1] = 1; wh[0] = wh[1] = 0; }
-            else if (b->binding == RT_RADD_BINDING) { ii[n] = rtr_radd_info(); sc[0] = sc[1] = 1; wh[0] = wh[1] = 0; }
-            else { ii[n] = (VkDescriptorImageInfo){vk_default_sampler(true), vk_dummy_view(TEXTYPE_2D), VK_IMAGE_LAYOUT_GENERAL}; sc[0] = sc[1] = 1; wh[0] = wh[1] = 0; }
-            if (ti < 64) {
-                drw.tex_sc[sg][ti][0] = sc[0]; drw.tex_sc[sg][ti][1] = sc[1];
-                drw.tex_wh[sg][ti][0] = wh[0]; drw.tex_wh[sg][ti][1] = wh[1];
-            }
-            w[n].pImageInfo = &ii[n];
-        } else if (b->type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER && b->binding == GMEM_BUFFER_INDEX && maxwell_gmem_bda) {
-            bi[n] = gmem_info();
-            w[n].pBufferInfo = &bi[n];
-        } else if (b->type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER && b->binding < 17) {
-            bi[n] = cbuf_info(stage, si, (int)b->binding, gx, gy, gz);
-            w[n].pBufferInfo = &bi[n];
-        } else if (b->type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC && nd < 32) {
-            bi[n] = cbuf_info(stage, si, (int)b->binding, gx, gy, gz);
-            int dk = nd++;  // (by binding: the order vkCmdBindDescriptorSets takes them in)
-            while (dk > 0 && dv[dk - 1].binding > b->binding) { dv[dk] = dv[dk - 1]; dk--; }
-            dv[dk].binding = b->binding;
-            dv[dk].off = (uint32_t)bi[n].offset;
-            bi[n].offset = 0;
-            w[n].pBufferInfo = &bi[n];
-        } else if (b->type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) {
-            bi[n] = b->binding == MVEC_HISTORY_BINDING ? mvec_history_info()
-                  : b->binding == RTR_CAP_BINDING      ? rtr_cap_info()
-                  : b->binding == GSNAP_BUFFER_INDEX   ? gsnap_info(stage)
-                  : b->binding == GMEM2_BUFFER_INDEX   ? gmem_info_hi()
-                                                       : gmem_info();
-            w[n].pBufferInfo = &bi[n];
-        } else {
-            continue;
-        }
-        n++;
-    }
-    if (p->has_rscale[set]) {
-        w[n] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = VK_NULL_HANDLE, .dstBinding = 18,
-                                      .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER};
-        if (!rscale_row0 && !si->ntex) {
-            static uint64_t id_seq;
-            static VkDescriptorBufferInfo id_bi;
-            uint64_t seq = vk_pending_seq();
-            if (id_seq != seq) {
-                // (room for the declared 65 rows, as copy_dedupe_in's alloc: the descriptor's range must stay in the
-                // buffer; only row 0 is read with no textures)
-                static const float rs1[4] = {1, 1, 0, 0};
-                VkSpan sp = vk_transient(sizeof(float[65][4]), 256);
-                memcpy(sp.ptr, rs1, sizeof rs1);
-                id_bi = ubo_span(sp, sizeof(float[65][4]));
-                id_seq = vk_pending_seq();
-            }
-            bi[n] = id_bi;
-        } else {
-            int rows = 1 + (si->ntex < 64 ? si->ntex : 64);
-            float rs[65][4];
-            if (rscale_row0) memcpy(rs[0], rscale_row0, 16);
-            else rs[0][0] = rs[0][1] = 1, rs[0][2] = rs[0][3] = 0;
-            for (int t = 0; t < si->ntex && t < 64; t++)
-                rs[1 + t][0] = drw.tex_sc[sg][t][0], rs[1 + t][1] = drw.tex_sc[sg][t][1], rs[1 + t][2] = rs[1 + t][3] = 0;
-            bi[n] = ubo_span(copy_dedupe_in(sg ? DEDUPE_RSCALE_F : DEDUPE_RSCALE_V, rs, (uint64_t)rows * 16, sizeof rs, 256), sizeof rs);
-        }
-        w[n].pBufferInfo = &bi[n];
-        n++;
-    }
-    if (p->has_tint[set]) {
-        w[n] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = VK_NULL_HANDLE, .dstBinding = 19,
-                                      .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER};
-        if (!tint) {
-            static uint64_t zero_seq;
-            static VkDescriptorBufferInfo zero_bi;
-            uint64_t seq = vk_pending_seq();
-            if (zero_seq != seq) {
-                float zero[8] = {0};
-                zero_bi = ubo_span(vk_transient_copy(zero, 32, 256), 32);
-                zero_seq = vk_pending_seq();
-            }
-            bi[n] = zero_bi;
-        } else {
-            bi[n] = ubo_span(copy_dedupe(DEDUPE_TINT, tint, 32, 256), 32);
-        }
-        w[n].pBufferInfo = &bi[n];
-        n++;
-    }
-    for (int i = 0; i < nd && dyn; i++) dyn[(*ndyn)++] = dv[i].off;
-    return set_finish(layout, w, n);
-}
-
-static __attribute__((noinline)) VkDescriptorSet stage_set_prepare_stack(Prog *p, VkDescriptorSetLayout layout, uint32_t set, int stage, ShaderInfo *si, const float *rscale_row0,
-                                 const float tint[8], uint32_t gx, uint32_t gy, uint32_t gz, const VkDescriptorImageInfo *pre_ii,
-                                 uint32_t *dyn, int *ndyn) {
-    PrepScratch scratch;
-    return stage_set_prepare_in(&scratch, p, layout, set, stage, si, rscale_row0, tint, gx, gy, gz, pre_ii, dyn, ndyn);
-}
-
+// Writes the descriptor set of one stage (exec_desc.c: vk_exec_stage_set).
 static VkDescriptorSet stage_set(Prog *p, VkDescriptorSetLayout layout, uint32_t set, int stage, ShaderInfo *si, const float *rscale_row0,
                                  const float tint[8], uint32_t gx, uint32_t gy, uint32_t gz, const VkDescriptorImageInfo *pre_ii,
                                  uint32_t *dyn, int *ndyn) {
-    static PrepScratch shared __attribute__((aligned(64)));
-    static bool busy;
-    if ((stage_cpu_opts() & 128) && !busy) {
-        busy = true;
-        VkDescriptorSet d = stage_set_prepare_in(&shared, p, layout, set, stage, si, rscale_row0, tint, gx, gy, gz, pre_ii, dyn, ndyn);
-        busy = false;
-        return d;
-    }
-    return stage_set_prepare_stack(p, layout, set, stage, si, rscale_row0, tint, gx, gy, gz, pre_ii, dyn, ndyn);
+    return vk_exec_stage_set(p->binds, p->set_idx[set], p->set_n[set], p->has_rscale[set], p->has_tint[set], layout,
+                             stage, si, rscale_row0, tint, gx, gy, gz, pre_ii, dyn, ndyn);
 }
 
 // STAGE_REUSE_TEST_BEGIN
