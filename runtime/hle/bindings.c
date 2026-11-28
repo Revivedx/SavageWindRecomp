@@ -313,7 +313,7 @@ void bind_set2(int dev, int slot, int host) {
     act_refresh();
 }
 
-// Bind `host` to `slot`; only legacy host slots swap. Actions, Walk, Tilt and gyro allow shared inputs.
+// Bind `host` to `slot`. Every input may share its key or button with any other: nothing swaps and nothing else moves.
 static void assign(int dev, int slot, int host) {
     if (cap_alt) {
         if (bind_slot_is_action(slot)) {
@@ -325,7 +325,7 @@ static void assign(int dev, int slot, int host) {
         result(1, dev, slot, -1);
         return;
     }
-    if (bind_slot_is_action(slot)) {  // an action may share its key with any other: nothing swaps
+    if (bind_slot_is_action(slot)) {
         act_set(dev, slot - BIND_ACTION, host);
         LOG("[input] %s action %d -> %s\n", dev == BIND_DEV_PAD ? "controller" : "keyboard", slot - BIND_ACTION,
             dev == BIND_DEV_PAD ? k_pad_ini[host] : bind_key_label(host));
@@ -333,18 +333,10 @@ static void assign(int dev, int slot, int host) {
         return;
     }
     int16_t *t = dev == BIND_DEV_PAD ? g_bind_pad : g_bind_key;
-    int other = -1;
-    for (int i = 0; i < BIND_KEY_COUNT; i++)
-        if (i != slot && (dev == BIND_DEV_KEY ? bind_key_same_context(i, slot) : (bind_pad_slot(i) && bind_key_same_context(i, slot))) && t[i] == host) {
-            other = i;
-            t[i] = t[slot];
-        }
     t[slot] = (int16_t)host;
-    LOG("[input] %s %s -> %s%s%s%s\n", dev == BIND_DEV_PAD ? "controller" : "keyboard", k_names[slot],
-        dev == BIND_DEV_PAD ? k_pad_ini[host] : bind_key_label(host), other >= 0 ? " (swapped with " : "",
-        other >= 0 ? k_names[other] : "", other >= 0 ? ")" : "");
-    if (other >= 0) LOG("[input]   %s -> %s\n", k_names[other], dev == BIND_DEV_PAD ? bind_pad_label(t[other], 0) : bind_key_label(t[other]));
-    result(other >= 0 ? 2 : 1, dev, slot, other);
+    LOG("[input] %s %s -> %s\n", dev == BIND_DEV_PAD ? "controller" : "keyboard", k_names[slot],
+        dev == BIND_DEV_PAD ? k_pad_ini[host] : bind_key_label(host));
+    result(1, dev, slot, -1);
     act_refresh();
 }
 
@@ -550,7 +542,7 @@ bool act_is_default(int id) {
 
 // The raw Switch input b (not a face button) is bound to something other than its defaults. In play the game reads
 // those slots for actions at their factory defaults, so Call horse moved with Magnesis: pull closer and Aim rune with
-// Menu: previous tab. The face buttons need none of this: in play act_gameplay_buttons builds them from the actions.
+// Menu: previous tab. The face buttons need none of this: in play act_play_keys / act_play_pads build them from the actions.
 static bool raw_moved(int b) {
     if (b < 0 || b >= BIND_PAD_COUNT || b == BIND_A || b == BIND_B || b == BIND_X || b == BIND_Y) return false;
     return g_bind_key[b] != k_def_key[b] || g_bind_key2[b] != 0 || g_bind_pad[b] != k_def_pad[b] ||
@@ -636,6 +628,37 @@ static void act_migrate(int dev, int slot) {
     act_refresh();
 }
 
+// In play the game's A / B / X / Y / L / R / ZL / ZR / stick-press bits are built from the actions, never from the menu
+// rows: a key given to "Menu: sort / sensor" must not press Attack, and rebinding Jump must not take Space away from the
+// other actions that default to the same Switch button. A bit is set by the default binding of an action (still on its
+// factory binding, so the game answers it from this bit) that reads that button. The menus keep using the menu rows.
+#define ACT_RAW_SLOTS ((1u << BIND_A) | (1u << BIND_B) | (1u << BIND_X) | (1u << BIND_Y) | (1u << BIND_LSTICK) | \
+                       (1u << BIND_RSTICK) | (1u << BIND_L) | (1u << BIND_R) | (1u << BIND_ZL) | (1u << BIND_ZR))
+uint64_t act_raw_slots(void) { return ACT_RAW_SLOTS; }
+// Only once the game has asked about an action (its hook is there); until then, and for game versions without the hook,
+// the menu rows keep driving every button as before.
+bool act_play_active(void) { return k_masks != NULL; }
+
+uint64_t act_play_keys(int (*held)(int scancode)) {
+    uint64_t out = 0;
+    for (int id = 0; id < ACT_COUNT; id++) {
+        int slot = act_switch_button(id), k = g_act_key[id];
+        if (slot < 0 || !(ACT_RAW_SLOTS >> slot & 1) || (a_custom >> id & 1)) continue;
+        if (k > 0 && held(k)) out |= 1ull << slot;
+    }
+    return out;
+}
+
+uint64_t act_play_pads(uint32_t host_buttons) {
+    uint64_t out = 0;
+    for (int id = 0; id < ACT_COUNT; id++) {
+        int slot = act_switch_button(id), k = g_act_pad[id];
+        if (slot < 0 || !(ACT_RAW_SLOTS >> slot & 1) || (a_custom >> id & 1)) continue;
+        if (k >= 0 && k < PADB_HOST_COUNT && (host_buttons >> k & 1)) out |= 1ull << slot;
+    }
+    return out;
+}
+
 int act_prompt_host(int dev, int sw) {
     const int16_t *actions = dev == BIND_DEV_PAD ? g_act_pad : g_act_key;
     int host = -1;
@@ -679,39 +702,6 @@ uint64_t act_scan_pad(uint64_t pad_buttons, uint32_t host_buttons) {
     if (!(a_explicit_pad >> 29 & 1) && (custom >> 13 & 1))
         out = (out & ~(1ull << 29)) | ((out >> 13 & 1ull) << 29);
     return out;
-}
-
-static bool act_held_host(int id, int (*held)(int scancode), uint32_t host) {
-    if (id < 0 || id >= ACT_COUNT) return false;
-    int k = g_act_key[id], k2 = g_act_key2[id], p = g_act_pad[id], p2 = g_act_pad2[id];
-    return (k > 0 && held && held(k)) || (k2 > 0 && held && held(k2)) ||
-           (p >= 0 && p < PADB_HOST_COUNT && (host >> p & 1)) ||
-           (p2 >= 0 && p2 < PADB_HOST_COUNT && (host >> p2 & 1));
-}
-
-// During gameplay, decouple in-game action buttons (Y/X/A/B) from raw menu rebinds
-// so that rebinding a menu slot (e.g. "Menu: sort / sensor") never hijacks actions in play.
-// Only the raw keyboard/pad mask is rewritten; script/console/cursor/auto-continue bits stay untouched.
-uint64_t act_gameplay_buttons(uint64_t raw, int (*held)(int scancode), uint32_t host) {
-    raw &= ~((1ull << BIND_Y) | (1ull << BIND_X) | (1ull << BIND_A) | (1ull << BIND_B));
-    if (act_held_host(3, held, host) || act_held_host(36, held, host)) raw |= 1ull << BIND_Y;
-    if (act_held_host(2, held, host)) raw |= 1ull << BIND_X;
-    if (act_held_host(0, held, host)) raw |= 1ull << BIND_A;
-    if (act_held_host(12, held, host) || act_held_host(14, held, host)) raw |= 1ull << BIND_B;
-    // ZL and ZR too, once Guard / lock on (13) or Bow (18) answers from its own bindings: the game also reads ZL and
-    // ZR as buttons, not only through those actions (the shield held up, the lock-on kept), so a moved Menu: previous
-    // tab 2 / next tab 2 went on guarding in play and Guard's own key did half of it (#1103). Factory defaults leave
-    // the raw input as it is: the two are the same key then.
-    uint64_t custom = a_custom;
-    if (custom >> 13 & 1) {
-        raw &= ~(1ull << BIND_ZL);
-        if (act_held_host(13, held, host)) raw |= 1ull << BIND_ZL;
-    }
-    if (custom >> 18 & 1) {
-        raw &= ~(1ull << BIND_ZR);
-        if (act_held_host(18, held, host)) raw |= 1ull << BIND_ZR;
-    }
-    return raw;
 }
 
 // Each side publishes its own half (the keyboard and the controller change at different times)

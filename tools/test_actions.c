@@ -514,15 +514,15 @@ static void captures_allow_shared_action_inputs(void) {
             for (int id = 0; id < ACT_COUNT; id++) act_set(dev, id, raw[BIND_A]);
             for (int id = 0; id < ACT_COUNT; id++) assert(actions[id] == raw[BIND_A]);
             assert(raw[BIND_B] == host);
-            // Raw Switch slots still swap with each other without displacing any shared host actions.
+            // Menu rows share inputs like actions: nothing swaps and no shared host action is displaced.
             int old_a = raw[BIND_A];
             bind_capture_begin(dev, BIND_A);
             assert(bind_capture_event(&e));
-            assert(raw[BIND_A] == host && raw[BIND_B] == old_a);
+            assert(raw[BIND_A] == host && raw[BIND_B] == host);
             for (int slot = BIND_WALK; slot <= BIND_GYRO_CENTER; slot++) assert(raw[slot] == host);
             for (int id = 0; id < ACT_COUNT; id++) assert(actions[id] == old_a);
             int other;
-            assert(bind_last_result(NULL, NULL, &other, NULL) == 2 && other == BIND_B);
+            assert(bind_last_result(NULL, NULL, &other, NULL) == 1 && other == -1);
         }
     }
     reset_bindings();
@@ -548,6 +548,63 @@ static void names_and_groups(void) {
                                       "D-pad Right", "D-pad Down"};
     for (int slot = 0; slot < BIND_PAD_COUNT; slot++)
         for (unsigned i = 0; i < sizeof raw / sizeof *raw; i++) assert(strcmp(bind_input_name(slot), raw[i]));
+}
+
+// In play the raw A/B/X/Y bits come only from actions still at their factory binding, so a menu row never presses an
+// action and a rebound action stops driving its old button, while the other actions on that button keep it.
+static void play_bits_ignore_menu_rows(void) {
+    reset_bindings();
+    act_masks(masks);
+    assert(act_play_active());
+    int hy = g_bind_key[BIND_Y], hx = g_bind_key[BIND_X];
+    key_down[hy] = 1;
+    assert(act_play_keys(held) >> BIND_Y & 1);                 // the factory key of Attack still gives raw Y
+    key_down[hy] = 0;
+
+    // "Menu: sort" moved to another key: Attack keeps its own key and the new key presses nothing in play
+    g_bind_key[BIND_Y] = SDL_SCANCODE_Q;
+    key_down[SDL_SCANCODE_Q] = 1;
+    assert(!(act_play_keys(held) >> BIND_Y & 1));
+    key_down[SDL_SCANCODE_Q] = 0;
+    key_down[hy] = 1;
+    assert(act_play_keys(held) >> BIND_Y & 1);
+    key_down[hy] = 0;
+    reset_bindings();
+
+    // Jump -> G: G is no longer raw X, the other X actions keep the factory X key. The factory binding of an action
+    // comes from the 1.9.0 table, so take another action whose factory key is X and let the live table agree.
+    reset_bindings();
+    int twin = -1;
+    for (int id = 0; id < ACT_COUNT && twin < 0; id++)
+        if (id != JUMP && g_act_key[id] == hx && act_is_default(id)) twin = id;
+    assert(twin >= 0);
+    uint32_t saved = masks[twin];
+    masks[twin] = masks[JUMP];
+    act_set(BIND_DEV_KEY, JUMP, SDL_SCANCODE_G);
+    key_down[SDL_SCANCODE_G] = 1;
+    assert(!(act_play_keys(held) >> BIND_X & 1));
+    key_down[SDL_SCANCODE_G] = 0;
+    key_down[hx] = 1;
+    assert(act_play_keys(held) >> BIND_X & 1);
+    key_down[hx] = 0;
+    masks[twin] = saved;
+    reset_bindings();
+
+    // The pad side does the same
+    uint32_t pad_y = 1u << g_act_pad[ATTACK];
+    assert(act_play_pads(pad_y) >> BIND_Y & 1);
+    g_bind_pad[BIND_Y] = SDL_GAMEPAD_BUTTON_START;
+    assert(act_play_pads(pad_y) >> BIND_Y & 1);
+    assert(!(act_play_pads(1u << SDL_GAMEPAD_BUTTON_START) >> BIND_Y & 1));
+    reset_bindings();
+
+    // D-pad / Plus / Minus are not isolated: they stay on their rows
+    assert(!(act_raw_slots() >> BIND_UP & 1) && !(act_raw_slots() >> BIND_PLUS & 1));
+
+    // Before the game asked about any action nothing is isolated
+    act_masks(NULL);
+    assert(!act_play_active());
+    act_masks(masks);
 }
 
 static void swapped_jump_sprint_masks_keep_keyboard_bindings(void) {
@@ -746,36 +803,6 @@ static void bow_and_guard_swapped_on_mouse_and_key_leaves_lock_on_on_the_guard_k
     act_reset();
 }
 
-// #1103: Menu: previous tab 2 (ZL) on another key leaves Guard / lock on on its own in play, the game's raw ZL too
-static void a_moved_menu_tab_leaves_guard_in_play(void) {
-    act_reset();
-    bind_reset(BIND_DEV_KEY);
-    const int GUARD = 13, BOW = 18;
-    uint64_t zl = 1ull << BIND_ZL, zr = 1ull << BIND_ZR;
-    int guard_key = g_act_key[GUARD];
-    key_down[guard_key] = 1;  // factory defaults: the raw input as it comes
-    assert(act_gameplay_buttons(zl, held, 0) == zl);
-    key_down[guard_key] = 0;
-    bind_settings_load("act_schema", "2");
-    bind_settings_load("bind_key_zl", "G");
-    assert(g_bind_key[BIND_ZL] == SDL_SCANCODE_G && g_act_key[GUARD] == guard_key);
-    // the menu's key gives the raw ZL (key_buttons): in play it no longer reaches the game
-    key_down[SDL_SCANCODE_G] = 1;
-    assert(!(act_gameplay_buttons(zl, held, 0) & zl));
-    key_down[SDL_SCANCODE_G] = 0;
-    key_down[guard_key] = 1;
-    assert(act_gameplay_buttons(0, held, 0) & zl);
-    key_down[guard_key] = 0;
-    // Bow on another key: ZR in play from it, not from Menu: next tab 2's
-    act_set(BIND_DEV_KEY, BOW, SDL_SCANCODE_H);
-    key_down[SDL_SCANCODE_H] = 1;
-    assert(act_gameplay_buttons(0, held, 0) & zr);
-    key_down[SDL_SCANCODE_H] = 0;
-    assert(!(act_gameplay_buttons(zr, held, 0) & zr));
-    act_reset();
-    bind_reset(BIND_DEV_KEY);
-}
-
 int main(void) {
     static const uint32_t k_masks_190[ACT_COUNT] = {
         0x1, 0x2, 0x8, 0x10, 0x8, 0x1, 0x8, 0x2, 0x8, 0x2, 0x8, 0x8, 0x2, 0x4, 0x2, 0x40, 0x1, 0x80, 0x20, 0x8, 0x2,
@@ -800,12 +827,12 @@ int main(void) {
     host_pad_slots();
     swap_ab_sets_the_xbox_convention();
     names_and_groups();
+    play_bits_ignore_menu_rows();
     a_conversation_answer_does_not_jump();
     guard_rebind_updates_hidden_lock_on();
     a_reset_leaves_the_hidden_lock_on_check_following_guard();
     bow_and_guard_swapped_on_mouse_and_key_leaves_lock_on_on_the_guard_key();
     a_moved_menu_input_leaves_its_actions();
-    a_moved_menu_tab_leaves_guard_in_play();
     puts("action bindings: default fallthrough, custom host bindings, schema migration, held / pressed, menus, shared keys, pad capture, contexts, A / B swap, reset and ini passed");
     return 0;
 }
