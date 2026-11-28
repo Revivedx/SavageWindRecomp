@@ -1173,8 +1173,12 @@ static void create_device(void) {
     VkPhysicalDeviceComputeShaderDerivativesFeaturesKHR deriv_on = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COMPUTE_SHADER_DERIVATIVES_FEATURES_KHR};
 #endif
+#ifndef _WIN32
+    VkPhysicalDeviceDescriptorBufferFeaturesEXT db_on = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT,
+                                                         .descriptorBuffer = VK_TRUE};
+#endif
     if (g_vk.props.vendorID == 0x1002 && fsr_api_present()) {
-        const char *got[4];
+        const char *got[5];
         int n_got = 0;
         bool coop = has_ext(ep, ne, VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME);
         if (coop) {
@@ -1217,6 +1221,22 @@ static void create_device(void) {
             ext[n_ext++] = VK_KHR_COMPUTE_SHADER_DERIVATIVES_EXTENSION_NAME;
             deriv_on.pNext = f.pNext, f.pNext = &deriv_on;
             got[n_got++] = "compute derivatives";
+        }
+#endif
+#ifndef _WIN32
+        // (fsr4-vk binds its descriptors from buffers, by address; it refuses a device without the extension)
+        bool db = has_ext(ep, ne, VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME) && f12_have.bufferDeviceAddress;
+        if (db) {
+            VkPhysicalDeviceDescriptorBufferFeaturesEXT q = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT};
+            VkPhysicalDeviceFeatures2 q2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &q};
+            vkGetPhysicalDeviceFeatures2(g_vk.phys, &q2);
+            db = q.descriptorBuffer;
+        }
+        if (db) {
+            ext[n_ext++] = VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME;
+            db_on.pNext = f.pNext, f.pNext = &db_on;
+            f12.bufferDeviceAddress = VK_TRUE;
+            got[n_got++] = "descriptor buffer";
         }
 #endif
         // (Vulkan 1.3 core, in the f13 above)

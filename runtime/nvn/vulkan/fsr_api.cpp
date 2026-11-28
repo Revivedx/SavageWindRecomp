@@ -14,7 +14,14 @@
 #endif
 #include <windows.h>
 #else
+#include <dlfcn.h>
+#include "../../paths.h"
 #define __declspec(x)  // (ffx_api.h marks its functions dllexport; only their types are used here)
+// Linux: AMD ships no library, so this loads fsr4-vk's amd_fidelityfx_upscaler_vk.so, which exports the FSR API itself (no loader) and holds FSR 4 only.
+// It differs from AMD's DLLs in what it takes: the device from the SDK's older backend description (make_context),
+// VK_EXT_descriptor_buffer on the device (device.c),
+// its inputs in SHADER_READ_ONLY_OPTIMAL as COMPUTE_READ, float colour, and an exposure image unless the context works out its own (fsr_api_dispatch)
+#define FSR_SO "amd_fidelityfx_upscaler_vk.so"
 #endif
 #include <FidelityFX/api/api/include/vk/ffx_api_vk.h>
 #include <FidelityFX/api/upscalers/include/ffx_upscale.h>
@@ -50,6 +57,30 @@ extern "C" bool fsr_api_present(void) {
         LOG("[fsr] amd_fidelityfx_loader_vk.dll lacks the FSR API's functions\n");
         return false;
     }
+    have = 1;
+#else
+    // (SAVAGEWIND_FSR4_LIB, else next to the executable, else in the data folder: an AppImage's own folder is read-only)
+    char path[1200] = "";
+    const char *env = getenv("SAVAGEWIND_FSR4_LIB");
+    if (env && *env) snprintf(path, sizeof path, "%s", env);
+    else if (!rt_resource(FSR_SO, NULL, path, sizeof path)) snprintf(path, sizeof path, "%s/" FSR_SO, rt_data_root());
+    FILE *f = fopen(path, "rb");
+    if (!f) return false;
+    fclose(f);
+    void *m = dlopen(path, RTLD_NOW | RTLD_LOCAL);
+    if (!m) {
+        LOG("[fsr] %s did not load (%s)\n", path, dlerror());
+        return false;
+    }
+    create_context = (PfnFfxCreateContext)dlsym(m, "ffxCreateContext");
+    destroy_context = (PfnFfxDestroyContext)dlsym(m, "ffxDestroyContext");
+    query = (PfnFfxQuery)dlsym(m, "ffxQuery");
+    dispatch = (PfnFfxDispatch)dlsym(m, "ffxDispatch");
+    if (!create_context || !destroy_context || !query || !dispatch) {
+        LOG("[fsr] %s lacks the FSR API's functions\n", path);
+        return false;
+    }
+    LOG("[fsr] loaded %s\n", path);
     have = 1;
 #endif
     return have;
@@ -143,11 +174,77 @@ static uint32_t ctx_rw, ctx_rh, ctx_ow, ctx_oh;
 
 extern "C" void vk_wait_idle_for_contexts(void);  // (device.c)
 
+#ifndef _WIN32
+// Images of the context's own (fsr4-vk): the exposure, a 1x1 R32F of 1 (it takes no frame without one unless the context has auto exposure),
+// and the scene as RGBA16F when the game's is a format fsr4-vk does not read (SDR: 10-bit)
+struct OwnImage { VkImage image; VkDeviceMemory mem; };
+static OwnImage own_exposure, own_colour;
+static VkDevice ctx_dev;
+static bool exposure_filled;
+static VkFormat ctx_format;
+static bool ctx_hdr;
+
+static void own_free(VkDevice dev, OwnImage *o) {
+    if (o->image) vkDestroyImage(dev, o->image, nullptr);
+    if (o->mem) vkFreeMemory(dev, o->mem, nullptr);
+    *o = {};
+}
+
+static bool own_make(const Fsr3Dispatch *d, VkFormat format, uint32_t w, uint32_t h, OwnImage *o) {
+    VkImageCreateInfo ci = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+    ci.imageType = VK_IMAGE_TYPE_2D, ci.format = format, ci.extent = {w, h, 1}, ci.mipLevels = 1, ci.arrayLayers = 1;
+    ci.samples = VK_SAMPLE_COUNT_1_BIT, ci.tiling = VK_IMAGE_TILING_OPTIMAL;
+    ci.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    if (vkCreateImage(d->dev, &ci, nullptr, &o->image) != VK_SUCCESS) return false;
+    VkMemoryRequirements mr;
+    vkGetImageMemoryRequirements(d->dev, o->image, &mr);
+    VkPhysicalDeviceMemoryProperties mp;
+    vkGetPhysicalDeviceMemoryProperties(d->phys, &mp);
+    VkMemoryAllocateInfo ai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    ai.allocationSize = mr.size, ai.memoryTypeIndex = UINT32_MAX;
+    for (uint32_t i = 0; i < mp.memoryTypeCount && ai.memoryTypeIndex == UINT32_MAX; i++)
+        if ((mr.memoryTypeBits & 1u << i) && (mp.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT))
+            ai.memoryTypeIndex = i;
+    if (ai.memoryTypeIndex == UINT32_MAX || vkAllocateMemory(d->dev, &ai, nullptr, &o->mem) != VK_SUCCESS ||
+        vkBindImageMemory(d->dev, o->image, o->mem, 0) != VK_SUCCESS) {
+        own_free(d->dev, o);
+        return false;
+    }
+    return true;
+}
+
+static void layout(VkCommandBuffer cb, VkImage image, VkImageLayout from, VkImageLayout to) {
+    VkImageMemoryBarrier b = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    b.srcAccessMask = b.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+    b.oldLayout = from, b.newLayout = to;
+    b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.image = image;
+    b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0,
+                         nullptr, 1, &b);
+}
+
+static bool reads_colour(VkFormat f) {
+    return f == VK_FORMAT_R16G16B16A16_SFLOAT || f == VK_FORMAT_B10G11R11_UFLOAT_PACK32;
+}
+// HDR's scene is linear light past 1 in RGBA16F (docs/hdr.md): an HDR context with auto exposure, as an LDR one is told the colours stay within 0..1.
+// SAVAGEWIND_FSR4_HDR=0: the LDR context with HDR too (testing)
+static bool hdr_scene(VkFormat f) {
+    static int on = -1;
+    if (on < 0) on = !getenv("SAVAGEWIND_FSR4_HDR") || atoi(getenv("SAVAGEWIND_FSR4_HDR")) != 0;
+    return on && f == VK_FORMAT_R16G16B16A16_SFLOAT;
+}
+#endif
+
 extern "C" void fsr_api_destroy(void) {
     if (!ctx) return;
     vk_wait_idle_for_contexts();
     destroy_context(&ctx, nullptr);
     ctx = nullptr;
+#ifndef _WIN32
+    own_free(ctx_dev, &own_exposure);
+    own_free(ctx_dev, &own_colour);
+#endif
 }
 
 // (the DLL's own messages: a line is logged once in a row, and at most 24 in a run)
@@ -155,7 +252,13 @@ static void message(uint32_t type, const wchar_t *msg) {
     static char last[512];
     static int logged;
     char buf[512];
+#ifdef _WIN32
     snprintf(buf, sizeof buf, "%ls", msg);
+#else
+    size_t n = 0;  // (%ls stops at the first character the C locale has no bytes for)
+    for (; msg && msg[n] && n < sizeof buf - 1; n++) buf[n] = msg[n] < 0x80 ? (char)msg[n] : '?';
+    buf[n] = 0;
+#endif
     if (!strcmp(buf, last) || logged >= 24) return;
     memcpy(last, buf, sizeof last);
     logged++;
@@ -182,6 +285,13 @@ static bool make_context(const Fsr3Dispatch *d, int major) {
     cd.flags = env_on("SAVAGEWIND_FSR3_DEBUG") ? FFX_UPSCALE_ENABLE_DEBUG_CHECKING : 0;
     if (debug_view()) cd.flags |= FFX_UPSCALE_ENABLE_DEBUG_VISUALIZATION;
     if (major == 4 && !linear_colour()) cd.flags |= FFX_UPSCALE_ENABLE_NON_LINEAR_COLORSPACE;
+#ifndef _WIN32
+    bool hdr = hdr_scene(d->color.format);
+    if (hdr) {
+        cd.flags &= ~(uint32_t)FFX_UPSCALE_ENABLE_NON_LINEAR_COLORSPACE;
+        cd.flags |= FFX_UPSCALE_ENABLE_HIGH_DYNAMIC_RANGE | FFX_UPSCALE_ENABLE_AUTO_EXPOSURE;
+    }
+#endif
     cd.maxRenderSize = {d->color.width, d->color.height};
     cd.maxUpscaleSize = {d->output.width, d->output.height};
     cd.fpMessage = message;
@@ -200,6 +310,12 @@ static bool make_context(const Fsr3Dispatch *d, int major) {
     // (FSR 3: the 3.1.6 asked for by id. FSR 4: no version asked for, so the DLL picks its newest, which may be a
     // driver's own newer build; AMD's docs: an override turns that choice off)
     if (major != 4) vd.header.pNext = &ov.header;
+#ifndef _WIN32
+    ffxCreateBackendVKDesc_DEPRECATED old_bd = {};
+    old_bd.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_VK_DEPRECATED;
+    old_bd.vkDevice = d->dev, old_bd.vkPhysicalDevice = d->phys, old_bd.vkDeviceProcAddr = device_proc;
+    (major != 4 ? ov.header.pNext : vd.header.pNext) = &old_bd.header;
+#endif
     ffxReturnCode_t e = create_context(&ctx, &cd.header, nullptr);
     if (e != FFX_API_RETURN_OK) {
         LOG("[fsr] FSR %s context %ux%u -> %ux%u: error %u\n", ver_name[major], d->color.width, d->color.height,
@@ -211,9 +327,24 @@ static bool make_context(const Fsr3Dispatch *d, int major) {
     pv.header.type = FFX_API_QUERY_DESC_TYPE_GET_PROVIDER_VERSION;
     const char *got = query(&ctx, &pv.header) == FFX_API_RETURN_OK && pv.versionName ? pv.versionName : "?";
     ctx_major = major;
+#ifndef _WIN32
+    ctx_dev = d->dev;
+    ctx_format = d->color.format, ctx_hdr = hdr, exposure_filled = false;
+    if ((!hdr && !own_make(d, VK_FORMAT_R32_SFLOAT, 1, 1, &own_exposure)) ||
+        (!reads_colour(d->color.format) &&
+         !own_make(d, VK_FORMAT_R16G16B16A16_SFLOAT, d->color.width, d->color.height, &own_colour))) {
+        LOG("[fsr] FSR %s context: no memory for its exposure or colour image\n", ver_name[major]);
+        fsr_api_destroy();
+        return false;
+    }
+#endif
     ctx_rw = d->color.width, ctx_rh = d->color.height, ctx_ow = d->output.width, ctx_oh = d->output.height;
     LOG("[fsr] AMD FSR API context %ux%u -> %ux%u (asked for %s, got %s)\n", ctx_rw, ctx_rh, ctx_ow, ctx_oh,
         major == 4 ? "the newest" : ver_name[major], got);
+#ifndef _WIN32
+    LOG("[fsr] fsr4-vk: %s colour%s\n", hdr ? "HDR, auto exposure," : "LDR, exposure 1,",
+        own_colour.image ? " (copied to RGBA16F)" : "");
+#endif
     return true;
 }
 
@@ -225,7 +356,12 @@ static FfxApiResource resource(const Fsr3Image *m, bool uav) {
     rd.width = m->width, rd.height = m->height, rd.depth = 1, rd.mipCount = 1;
     rd.flags = FFX_API_RESOURCE_FLAGS_NONE;
     rd.usage = uav ? FFX_API_RESOURCE_USAGE_UAV : FFX_API_RESOURCE_USAGE_READ_ONLY;
+#ifdef _WIN32
     return ffxApiGetResourceVK((void *)m->image, rd, FFX_API_RESOURCE_STATE_COMMON);
+#else
+    return ffxApiGetResourceVK((void *)m->image, rd, uav ? FFX_API_RESOURCE_STATE_UNORDERED_ACCESS
+                                                         : FFX_API_RESOURCE_STATE_COMPUTE_READ);
+#endif
 }
 
 static bool failed[5];  // (a version that failed once is not tried again this run)
@@ -233,6 +369,15 @@ extern "C" bool fsr_api_usable(int major) { return fsr_api_has(major) && !failed
 
 extern "C" bool fsr_api_dispatch(const Fsr3Dispatch *d, int major) {
     if (!fsr_api_usable(major)) return false;
+#ifndef _WIN32
+    // (a 10-bit integer scene cannot be copied to float by a blit: the built-in FSR 3.1 takes it)
+    if (!reads_colour(d->color.format) && d->color.format != VK_FORMAT_A2B10G10R10_UNORM_PACK32) {
+        LOG("[fsr] FSR %s: no path for the scene's format %d\n", ver_name[major], (int)d->color.format);
+        failed[major] = true;
+        return false;
+    }
+    if (ctx && d->color.format != ctx_format) fsr_api_destroy();  // (HDR turned on or off: another context)
+#endif
     if ((!ctx || ctx_major != major || d->color.width != ctx_rw || d->color.height != ctx_rh ||
          d->output.width != ctx_ow || d->output.height != ctx_oh) && !make_context(d, major)) {
         failed[major] = true;
@@ -242,6 +387,37 @@ extern "C" bool fsr_api_dispatch(const Fsr3Dispatch *d, int major) {
     dd.header.type = FFX_API_DISPATCH_DESC_TYPE_UPSCALE;
     dd.commandList = (void *)d->cb;
     dd.color = resource(&d->color, false);
+#ifndef _WIN32
+    const VkImageLayout G = VK_IMAGE_LAYOUT_GENERAL, R = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                        T = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    const VkImageSubresourceRange whole = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    if (own_colour.image) {
+        Fsr3Image c = {own_colour.image, VK_FORMAT_R16G16B16A16_SFLOAT, d->color.width, d->color.height};
+        VkImageBlit blit = {};
+        blit.srcSubresource = blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        blit.srcOffsets[1] = blit.dstOffsets[1] = {(int32_t)c.width, (int32_t)c.height, 1};
+        layout(d->cb, c.image, VK_IMAGE_LAYOUT_UNDEFINED, T);
+        vkCmdBlitImage(d->cb, d->color.image, G, c.image, T, 1, &blit, VK_FILTER_NEAREST);
+        layout(d->cb, c.image, T, R);
+        dd.color = resource(&c, false);
+    } else {
+        layout(d->cb, d->color.image, G, R);
+    }
+    if (own_exposure.image) {
+        if (!exposure_filled) {
+            const VkClearColorValue one = {{1.0f, 0.0f, 0.0f, 0.0f}};
+            layout(d->cb, own_exposure.image, VK_IMAGE_LAYOUT_UNDEFINED, T);
+            vkCmdClearColorImage(d->cb, own_exposure.image, T, &one, 1, &whole);
+            layout(d->cb, own_exposure.image, T, R);
+            exposure_filled = true;
+        }
+        Fsr3Image x = {own_exposure.image, VK_FORMAT_R32_SFLOAT, 1, 1};
+        dd.exposure = resource(&x, false);
+    }
+    layout(d->cb, d->depth.image, G, R);
+    layout(d->cb, d->motion.image, G, R);
+    layout(d->cb, d->reactive.image, G, R);
+#endif
     dd.depth = resource(&d->depth, false);
     dd.motionVectors = resource(&d->motion, false);
     dd.reactive = resource(&d->reactive, false);
@@ -260,9 +436,18 @@ extern "C" bool fsr_api_dispatch(const Fsr3Dispatch *d, int major) {
     dd.cameraFovAngleVertical = d->fov_y;
     dd.viewSpaceToMetersFactor = 1.0f;  // (BOTW's units are meters)
     if (major == 4 && !linear_colour()) dd.flags |= FFX_UPSCALE_FLAG_NON_LINEAR_COLOR_SRGB;
+#ifndef _WIN32
+    if (ctx_hdr) dd.flags &= ~(uint32_t)FFX_UPSCALE_FLAG_NON_LINEAR_COLOR_SRGB;
+#endif
     if (debug_view()) dd.flags |= FFX_UPSCALE_FLAG_DRAW_DEBUG_VIEW;
     vk_gpuprof_mark(d->cb, major == 4 ? "AMD FSR 4 upscale" : "AMD FSR API upscale");  // (SAVAGEWIND_GPUPROF_AT)
     ffxReturnCode_t e = dispatch(&ctx, &dd.header);
+#ifndef _WIN32
+    if (!own_colour.image) layout(d->cb, d->color.image, R, G);
+    layout(d->cb, d->depth.image, R, G);
+    layout(d->cb, d->motion.image, R, G);
+    layout(d->cb, d->reactive.image, R, G);
+#endif
     vk_gpuprof_mark(d->cb, "after the AMD FSR API upscale");
     if (e != FFX_API_RETURN_OK) {
         static int logged;

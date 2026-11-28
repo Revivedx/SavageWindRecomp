@@ -195,6 +195,10 @@ preset, Extreme shadows. Where the CPU is the limit (1080p on a fast card), they
 their anti-aliasing is the reason to use them there. DLSS and FSR 3 look best in Quality or Native mode; Ultra
 Performance is only offered on a 4K window.
 
+FSR 4 on Linux: AMD ships its FSR 4 libraries for Windows only. On Linux, Savage Wind loads fsr4-vk's
+`amd_fidelityfx_upscaler_vk.so` (github.com/Astyyyyy/fsr4-vk, GPL-3.0, not from AMD), which you build yourself and put
+next to the executable or in the data folder, or point `SAVAGEWIND_FSR4_LIB` at. Without it, FSR 4 is not offered.
+
 ### Does frame generation work everywhere?
 
 It works on Windows. Linux and the Steam Deck aren't tried yet. It adds a cost of its own, and on some systems it is
