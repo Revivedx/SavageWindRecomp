@@ -89,6 +89,51 @@ typedef struct {
     int dbg_n, dbg_draws;
 } ExecPass;
 
+// Feedback loops (a draw sampling a target its pass writes): the draw being resolved, the snapshots taken of targets
+// this frame, and the color slots the open pass leaves detached.
+typedef struct {
+    bool draw;               // the current draw samples a target it writes (its pipeline allows the loop)
+    NvnTexture *tex[4];      // its feedback views (resolve_feedback), read by texture_info and the pipeline key
+    VkImageView view[4];
+    bool any_type[4];        // the view fits every lookup type (a restricted view of the image itself)
+    int n;
+    NvnTexture *snap_tex[8];
+    TexBackend *snap_be[8];  // (the image snap_tex had when the snapshot was taken: compared, never followed)
+    bool snap_ok[8];
+    const char *snap_why[8];
+    uint64_t snap_wpass[8];  // (the pass the latest write into the slot's target was in, since its snapshot; 0: none)
+    uint8_t snap_mask;
+    bool snap_cleared[8];    // (the slot's target itself was cleared since its snapshot: its contents are another thing's)
+    bool det_no_next;        // (a clear begins this pass: everything attached)
+    uint8_t det_written;     // color slots the open pass drew into or cleared
+    uint8_t det_draw;        // (during resolve_feedback) the slots the draw's pass leaves out: not attachments then
+} ExecFeedback;
+
+// What the next pass barrier must cover, and the submission in progress: what was recorded since the last barrier
+// and since the last submit.
+typedef struct {
+    bool other;
+    VkImage img[64];
+    VkImageAspectFlags aspect[64];
+    int n;
+    bool vtx_hazard;
+    bool after_dispatch;        // nothing recorded since the last dispatch but its own commands (dispatch_compute)
+    uint32_t chunk_draws;       // draws and dispatches recorded since the last submission
+    bool chunk_hold;            // a shader that stores to guest memory was recorded since the last submission
+} ExecBarrier;
+
+// The draw in progress: what draw_ works out for it and its callees (texture_info, cbuf_info, hud_patch) read or fill.
+typedef struct {
+    float vp_sx, vp_sy, vp_ox, vp_oy;  // its viewport's scale and offset
+    float tex_sc[2][64][2];            // per stage and texture: the scale of the image bound
+    uint32_t tex_wh[2][64][2];
+    struct { uint32_t gw, gh; float s; } sdw_fix;  // (s 0: it samples no bigger shadow map)
+    struct { uint32_t gw, gh; float sx, sy; uint32_t tw, th, aw, ah; } up_fix;  // (sx 0: not such a draw)
+    bool fxaa_off;
+    bool hud_clip;  // it is a 16:9 layout's pane wholly off a 16:9 screen: not drawn (hud_patch)
+    bool hud_cut;   // a pause menu pane across a 16:9 screen's side: cut there, as the console's screen does (hud_patch)
+} ExecDraw;
+
 // Command buffer state a draw recorded last, so a draw records only what differs (see dyn_check).
 typedef struct {
     uint64_t epoch;
@@ -111,6 +156,9 @@ typedef struct {
 extern ExecState st;
 extern ExecDrawCache dc;
 extern ExecPass ps;
+extern ExecFeedback fbk;
+extern ExecBarrier barr;
+extern ExecDraw drw;
 
 // Generations that invalidate cached command-buffer state.
 extern uint64_t dyn_epoch;

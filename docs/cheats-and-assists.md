@@ -84,7 +84,7 @@ game is shipped with Savage Wind.
 | Weather | Holds the weather you pick (clear, cloudy, rain, heavy rain, snow, heavy snow, thunderstorm, thunder rain, rain in sunshine), or keeps out rain or thunderstorms. Automatic is the game's own. Cutscenes keep their weather. |
 | Free sprint out of combat | Sprinting on the ground takes no stamina while no enemy is fighting you. Once enemies start the battle music, sprinting costs stamina again until the music fades. Climbing, swimming, gliding and attacks cost stamina as usual. |
 | Item pickup multiplier | Multiplies the stackable items you pick up (materials, monster parts, arrows) by 2, 4 or 8, up to 999. |
-| Sure-footed horse | A running horse no longer stops dead and rears when it runs into something, even a small rock. It no longer stops at cliff edges either: mind where you ride. |
+| Improved horse controls | The horse answers the stick at once, small nudges included, and turns sharper at a canter and gallop without losing speed in the turn. The horse no longer stops dead and rears when it runs into something, even a small rock, at any pace. It doesn't stop at cliff edges either, even at a walk: mind where you ride. |
 | Show shrines and towers | Shows every shrine, tower, stable and ancient lab on the map, and makes the shrines, towers and labs travel destinations (a stable is shown but never travelled to). Nothing is saved and no tower is activated, so the map fog stays as it is. |
 
 ### Collectible hints on the map

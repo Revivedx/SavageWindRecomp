@@ -67,8 +67,10 @@ Settings g_settings = {
     .vsync = VSYNC_DEFAULT,
     .gpu = -1,
     .wide_view = true,
+    .rt_shadows = true, .rt_reflections = true, .rt_offscreen = true, .rt_samples = 2, .rt_distance = 2,  // (Video > Ray tracing itself: off)
     .stars = STARS_BRIGHTEST,  // (Video > Stars: the player test picked x8; the game's own barely show on PC)
     .hud_edges = false,
+    .cutscenes_16_9 = false,
     .hdr_peak_nits = 0,  // (not set yet: the first start reads the ICC peak, else 1000; then it is a normal setting)
     .hdr_game_nits = 203,  // (HGIG reference white)
     .hdr_ui_nits = 203,    // (the HUD/menu; HGIG reference white by default)
@@ -102,9 +104,13 @@ Settings g_settings = {
     .day_cycle_length = DAY_CYCLE_DEFAULT,
     .color_lut_strength = 100,
     .haze = 100,
+    .haze_low = -1,
     .bloom = true,
     .depth_of_field = true,
+    .map_zoom_blur = true,
+    .ambient_occlusion = true,
     .grass = true,
+    .grass_quads = true,
     .lens_flare = true,
     .fast_fma = true,
 };
@@ -447,6 +453,12 @@ void settings_load(void) {
         }
         else if (!strcmp(key, "game_fxaa")) g_settings.game_fxaa = atoi(val) != 0;
         else if (!strcmp(key, "wet_fix")) g_settings.wet_fix = atoi(val) != 0;
+        else if (!strcmp(key, "rt")) g_settings.rt = atoi(val) != 0;
+        else if (!strcmp(key, "rt_shadows")) g_settings.rt_shadows = atoi(val) != 0;
+        else if (!strcmp(key, "rt_reflections")) g_settings.rt_reflections = atoi(val) != 0;
+        else if (!strcmp(key, "rt_offscreen")) g_settings.rt_offscreen = atoi(val) != 0;
+        else if (!strcmp(key, "rt_samples")) { int x = atoi(val); g_settings.rt_samples = x < 0 ? 0 : x > 3 ? 3 : x; }
+        else if (!strcmp(key, "rt_distance")) { int x = atoi(val); g_settings.rt_distance = x < 0 ? 0 : x > 2 ? 2 : x; }
         else if (!strcmp(key, "stars")) {
             static const char *const names[STARS_COUNT] = {"original", "bright", "brighter", "brightest"};
             for (int i = 0; i < STARS_COUNT; i++)
@@ -525,6 +537,7 @@ void settings_load(void) {
         else if (!strcmp(key, "swmm_mods")) g_settings.swmm_mods = atoi(val) != 0;
         else if (!strcmp(key, "wide_view")) g_settings.wide_view = atoi(val) != 0;
         else if (!strcmp(key, "hud_edges")) g_settings.hud_edges = atoi(val) != 0;
+        else if (!strcmp(key, "cutscenes_16_9")) g_settings.cutscenes_16_9 = atoi(val) != 0;
         else if (!strcmp(key, "hdr")) {
             for (int i = 0; i < HDR_COUNT; i++)
                 if (!strcmp(val, k_hdr[i])) g_settings.hdr = i;
@@ -632,6 +645,13 @@ void settings_load(void) {
         else if (!strcmp(key, "field_of_view")) g_settings.fov = atoi(val);  // (percent)
         else if (!strcmp(key, "hud_size")) g_settings.hud_size = atoi(val);  // (percent)
         else if (!strcmp(key, "dynamic_hud")) g_settings.dynamic_hud = atoi(val) != 0;
+        else if (!strcmp(key, "hud_hide_hearts")) g_settings.hud_hide_hearts = atoi(val) != 0;
+        else if (!strcmp(key, "hud_hide_stamina")) g_settings.hud_hide_stamina = atoi(val) != 0;
+        else if (!strcmp(key, "hud_hide_abilities")) g_settings.hud_hide_abilities = atoi(val) != 0;
+        else if (!strcmp(key, "hud_hide_minimap")) g_settings.hud_hide_minimap = atoi(val) != 0;
+        else if (!strcmp(key, "hud_hide_sensors")) g_settings.hud_hide_sensors = atoi(val) != 0;
+        else if (!strcmp(key, "hud_hide_enemy_bars")) g_settings.hud_hide_enemy_bars = atoi(val) != 0;
+        else if (!strcmp(key, "hud_hide_prompts")) g_settings.hud_hide_prompts = atoi(val) != 0;
         else if (!strcmp(key, "menu_speed")) g_settings.menu_speed = atoi(val);  // (percent)
         else if (!strcmp(key, "handheld_setup")) g_settings.handheld_setup = atoi(val) != 0;
         else if (!strcmp(key, "draw_distance")) {
@@ -657,7 +677,8 @@ void settings_load(void) {
         else if (!strcmp(key, "item_multiplier")) g_settings.item_multiplier = atoi(val);
         else if (!strcmp(key, "free_sprint")) g_settings.free_sprint = atoi(val) != 0;
         else if (!strcmp(key, "show_all_places")) g_settings.show_all_places = atoi(val) != 0;
-        else if (!strcmp(key, "sure_footed")) g_settings.sure_footed = atoi(val) != 0;
+        else if (!strcmp(key, "map_clear_rate")) g_settings.map_clear_rate = atoi(val) != 0;
+        else if (!strcmp(key, "improved_horse")) g_settings.improved_horse = atoi(val) != 0;
         else if (!strcmp(key, "collectibles_map")) g_settings.collectibles_map = atoi(val) != 0;
         else if (!strcmp(key, "weather")) {
             g_settings.weather = 0;
@@ -681,15 +702,23 @@ void settings_load(void) {
         else if (!strcmp(key, "damage_dealt")) g_settings.damage_dealt = atoi(val);
         else if (!strcmp(key, "toggle_zl")) g_settings.toggle_zl = atoi(val) != 0;
         else if (!strcmp(key, "toggle_zr")) g_settings.toggle_zr = atoi(val) != 0;
+        else if (!strcmp(key, "toggle_sprint")) g_settings.toggle_sprint = atoi(val) != 0;
         else if (!strcmp(key, "menu_text_size")) g_settings.menu_text_size = atoi(val);
         else if (!strcmp(key, "menu_remember_pos")) g_settings.menu_remember_pos = atoi(val) != 0;
         else if (!strcmp(key, "haze")) {  // (percent; an older ini's 0-50 reads as 75: HAZE_MIN)
             int v = atoi(val);
             g_settings.haze = v < HAZE_MIN ? HAZE_MIN : v > HAZE_MAX ? HAZE_MAX : v;
         }
+        else if (!strcmp(key, "haze_low")) {  // (#915: below the menu's minimum, from this file only; -1 or none: unset)
+            int v = atoi(val);
+            g_settings.haze_low = v >= 0 && v < HAZE_MIN ? v : -1;
+        }
         else if (!strcmp(key, "bloom")) g_settings.bloom = atoi(val) != 0;
         else if (!strcmp(key, "depth_of_field")) g_settings.depth_of_field = atoi(val) != 0;
+        else if (!strcmp(key, "map_zoom_blur")) g_settings.map_zoom_blur = atoi(val) != 0;
+        else if (!strcmp(key, "ambient_occlusion")) g_settings.ambient_occlusion = atoi(val) != 0;
         else if (!strcmp(key, "grass")) g_settings.grass = atoi(val) != 0;
+        else if (!strcmp(key, "grass_quads")) g_settings.grass_quads = atoi(val) != 0;
         else if (!strcmp(key, "grass_distance")) {
             g_settings.grass_distance = GRASS_DIST_FOLLOW;
             for (int i = 0; i < GRASS_DIST_COUNT; i++)
@@ -861,6 +890,9 @@ bool settings_save_to(const char *path) {
     fprintf(f, "antialias = %s\n", g_settings.antialias == AA_TAA ? "taa" : g_settings.antialias == AA_SMAA ? "smaa" : "off");
     fprintf(f, "game_fxaa = %d\n", g_settings.game_fxaa ? 1 : 0);
     fprintf(f, "wet_fix = %d\n", g_settings.wet_fix ? 1 : 0);
+    fprintf(f, "rt = %d\nrt_shadows = %d\nrt_reflections = %d\nrt_offscreen = %d\nrt_samples = %d\nrt_distance = %d\n", g_settings.rt ? 1 : 0,
+            g_settings.rt_shadows ? 1 : 0, g_settings.rt_reflections ? 1 : 0, g_settings.rt_offscreen ? 1 : 0, g_settings.rt_samples,
+            g_settings.rt_distance);
     {
         static const char *const names[STARS_COUNT] = {"original", "bright", "brighter", "brightest"};
         fprintf(f, "stars = %s\n", names[g_settings.stars >= 0 && g_settings.stars < STARS_COUNT ? g_settings.stars : 0]);
@@ -920,6 +952,7 @@ bool settings_save_to(const char *path) {
     fprintf(f, "sharper_text = %s\n", g_settings.sharper_text == 4 ? "4x" : g_settings.sharper_text == 2 ? "2x" : "off");
     fprintf(f, "wide_view = %d\n", g_settings.wide_view);
     fprintf(f, "hud_edges = %d\n", g_settings.hud_edges);
+    fprintf(f, "cutscenes_16_9 = %d\n", g_settings.cutscenes_16_9);
     fprintf(f, "hdr = %s\n", k_hdr[g_settings.hdr >= 0 && g_settings.hdr < HDR_COUNT ? g_settings.hdr : HDR_AUTO]);
     fprintf(f, "sparse_heap = %s\n", k_sparse_heap[g_settings.sparse_heap >= 0 && g_settings.sparse_heap < SPARSE_HEAP_COUNT ?
                                                        g_settings.sparse_heap : SPARSE_HEAP_AUTO]);
@@ -955,6 +988,13 @@ bool settings_save_to(const char *path) {
     fprintf(f, "field_of_view = %d\n", g_settings.fov);
     fprintf(f, "hud_size = %d\n", g_settings.hud_size);
     fprintf(f, "dynamic_hud = %d\n", g_settings.dynamic_hud ? 1 : 0);
+    fprintf(f, "hud_hide_hearts = %d\n", g_settings.hud_hide_hearts ? 1 : 0);
+    fprintf(f, "hud_hide_stamina = %d\n", g_settings.hud_hide_stamina ? 1 : 0);
+    fprintf(f, "hud_hide_abilities = %d\n", g_settings.hud_hide_abilities ? 1 : 0);
+    fprintf(f, "hud_hide_minimap = %d\n", g_settings.hud_hide_minimap ? 1 : 0);
+    fprintf(f, "hud_hide_sensors = %d\n", g_settings.hud_hide_sensors ? 1 : 0);
+    fprintf(f, "hud_hide_enemy_bars = %d\n", g_settings.hud_hide_enemy_bars ? 1 : 0);
+    fprintf(f, "hud_hide_prompts = %d\n", g_settings.hud_hide_prompts ? 1 : 0);
     fprintf(f, "menu_speed = %d\n", g_settings.menu_speed);
     if (g_settings.handheld_setup) fprintf(f, "handheld_setup = 1\n");
     int dd = g_settings.draw_distance;
@@ -968,7 +1008,8 @@ bool settings_save_to(const char *path) {
     fprintf(f, "item_multiplier = %d\n", g_settings.item_multiplier);
     fprintf(f, "free_sprint = %d\n", g_settings.free_sprint);
     fprintf(f, "show_all_places = %d\n", g_settings.show_all_places);
-    fprintf(f, "sure_footed = %d\n", g_settings.sure_footed);
+    fprintf(f, "map_clear_rate = %d\n", g_settings.map_clear_rate);
+    fprintf(f, "improved_horse = %d\n", g_settings.improved_horse);
     fprintf(f, "collectibles_map = %d\n", g_settings.collectibles_map);
     int wx = g_settings.weather;
     fprintf(f, "weather = %s\n", g_weather_keys[wx >= 0 && wx < WEATHER_COUNT ? wx : 0]);
@@ -986,12 +1027,17 @@ bool settings_save_to(const char *path) {
     fprintf(f, "damage_dealt = %d\n", g_settings.damage_dealt);
     fprintf(f, "toggle_zl = %d\n", g_settings.toggle_zl ? 1 : 0);
     fprintf(f, "toggle_zr = %d\n", g_settings.toggle_zr ? 1 : 0);
+    fprintf(f, "toggle_sprint = %d\n", g_settings.toggle_sprint ? 1 : 0);
     fprintf(f, "menu_text_size = %d\n", g_settings.menu_text_size);
     fprintf(f, "menu_remember_pos = %d\n", g_settings.menu_remember_pos ? 1 : 0);
     fprintf(f, "haze = %d\n", g_settings.haze);
+    if (g_settings.haze_low >= 0) fprintf(f, "haze_low = %d\n", g_settings.haze_low);  // (only when the player wrote it)
     fprintf(f, "bloom = %d\n", g_settings.bloom ? 1 : 0);
     fprintf(f, "depth_of_field = %d\n", g_settings.depth_of_field ? 1 : 0);
+    fprintf(f, "map_zoom_blur = %d\n", g_settings.map_zoom_blur ? 1 : 0);
+    fprintf(f, "ambient_occlusion = %d\n", g_settings.ambient_occlusion ? 1 : 0);
     fprintf(f, "grass = %d\n", g_settings.grass ? 1 : 0);
+    fprintf(f, "grass_quads = %d\n", g_settings.grass_quads ? 1 : 0);
     int gd = g_settings.grass_distance;
     fprintf(f, "grass_distance = %s\n", k_grass_dist[gd >= 0 && gd < GRASS_DIST_COUNT ? gd : GRASS_DIST_FOLLOW]);
     fprintf(f, "lens_flare = %d\n", g_settings.lens_flare ? 1 : 0);

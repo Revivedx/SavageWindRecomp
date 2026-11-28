@@ -101,6 +101,8 @@ bool ach_wants_reread(const char *save_path);
 int ach_live_update(const AchSave *s, time_t now);
 void ach_live_start(void);  // achievements_live.c: the thread that reads them (ach_start starts it)
 void ach_live_stop(void);
+// A game data flag's object in the game's memory by the crc32 of its name (bool: value at +0xb bit 0; s32: at +0x18)
+bool ach_live_flag(uint32_t hash, uint64_t *obj, bool *s32);
 // Checks every achievement against the contents of the save at save_path (time `now`): the save's own achievements, and
 // when it is the play's save (the game opened it to write, or it is the one being played), toasts for what the save
 // being played until now hadn't. Returns how many toasts that queued.

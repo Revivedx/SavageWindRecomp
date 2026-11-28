@@ -4,6 +4,28 @@ What changed in each Savage Wind release. The `test` branch holds what the next 
 
 ## Next (on the `test` branch)
 
+- **The game's Options opens the F1 menu:** Pause > System > Options and the title menu's Options open the F1 menu on
+  a new Gameplay page. It has every setting of the game's own Options screen (camera inversion and sensitivity, jump
+  and cancel swap, motion aiming, minimap fixed to north, HUD mode, message window, amiibo, furigana) next to Savage
+  Wind's. The launch option `SAVAGEWIND_GAME_OPTIONS_SCREEN=1` brings back the game's own screen.
+- **Frame generation with Windows HDR on:** Video > Frame generation did nothing while Windows HDR was on. It now
+  works: the picture keeps the SDR tone mapping and is shown in HDR10.
+- **Dynamic HUD while aiming:** with Dynamic HUD on, the bow's reticle and the Camera rune's viewfinder show while you
+  aim.
+- **Button icons follow the keyboard:** with Button icons set to one controller, the icons still change to keys while
+  you use the keyboard.
+- **A Sheikah-style mouse pointer** in place of the Windows arrow, in the F1 menu, with a free mouse in play and in
+  Savage Wind Configuration.
+- **Toggle sprint** ([#1102](https://github.com/Revivedx/SavageWindRecomp/issues/1102)): F1 > Controls > Toggle
+  sprint. One press, and Link sprints until he stops.
+- **F5 caps the frame rate at 30** until you press it again, with a note at the top of the screen, for the physics
+  puzzles that still misbehave at high frame rates ([#994](https://github.com/Revivedx/SavageWindRecomp/issues/994),
+  [#425](https://github.com/Revivedx/SavageWindRecomp/issues/425)). It is not saved.
+- **PlayStation d-pad icons** are four arrow buttons ([#937](https://github.com/Revivedx/SavageWindRecomp/issues/937)).
+- **Less haze than the menu allows:** `haze_low = <0-74>` in `savagewind.ini` sets the haze below the menu's lowest
+  level of 75 % ([#915](https://github.com/Revivedx/SavageWindRecomp/issues/915)).
+- **Saving with achievements on** no longer slows down the game's saving thread: the save is checked on a thread of
+  its own ([#1022](https://github.com/Revivedx/SavageWindRecomp/issues/1022)).
 - **More memory for HD textures** ([#1135](https://github.com/Revivedx/SavageWindRecomp/pull/1135) by Zarigis): Mods >
   HD texture packs gives the game 6 GB of memory instead of its own 3 GB, so big HD texture packs load. It uses about
   3 GB more RAM, so it is off by default and needs 16 GB of RAM. Converting a texture pack made for 1.6.0 is SWMM+'s job.
@@ -32,6 +54,37 @@ What changed in each Savage Wind release. The `test` branch holds what the next 
   Chinese name could not be searched for at all. `luyu` now finds 鲈鱼, `kaoluyu` 烤鲈鱼, `bingleng` the frozen fish,
   and `yu` every name with 鱼 in it, on a controller or a keyboard. The readings are the Unicode Han Database's, not
   the game's (`runtime/pinyin.c`); the console's `give` command reads them the same way.
+- **Crash with Stasis at high frame rates** ([#1011](https://github.com/Revivedx/SavageWindRecomp/issues/1011), [#1184](https://github.com/Revivedx/SavageWindRecomp/pull/1184) by jfpaardoo): the last loads of
+  an actor's link in the check of its flags are guarded, as the others already were.
+- **Crash in Sharo Lun Shrine** ([#1130](https://github.com/Revivedx/SavageWindRecomp/issues/1130), [#1156](https://github.com/Revivedx/SavageWindRecomp/pull/1156) by jfpaardoo): a message sent to an enemy that
+  was already gone crashed the game (`accessing 0x5f0`).
+- **An incomplete DLC no longer crashes the start screen** ([#1180](https://github.com/Revivedx/SavageWindRecomp/issues/1180)): a DLC set up without its data is left
+  out, the game runs as without it, and the log says what is missing.
+- **More memory for HD textures, fixed** ([#1177](https://github.com/Revivedx/SavageWindRecomp/pull/1177) by Quorthon13, [#1188](https://github.com/Revivedx/SavageWindRecomp/pull/1188) by Zarigis): on NVIDIA the
+  horse's gallop wind and other particles drew as long lines, and with an HD texture pack the game crashed 12 to 60
+  minutes into a session. The game's heaps now take the HD texture pack's own sizes.
+- **No half-second stall opening a quick menu at 4K with ReShade** ([#1176](https://github.com/Revivedx/SavageWindRecomp/pull/1176) by ShizukaJiku).
+- **Rupee cheats stay after buying something** ([#1160](https://github.com/Revivedx/SavageWindRecomp/pull/1160) by jyy2luck).
+- **Button prompts stay on the controller** when you take a screenshot with Win+Shift+S or Print Screen
+  ([#1174](https://github.com/Revivedx/SavageWindRecomp/issues/1174), [#1185](https://github.com/Revivedx/SavageWindRecomp/pull/1185) by jfpaardoo).
+- **HUD at edges:** shop names and prices stay on the shop's panel ([#1126](https://github.com/Revivedx/SavageWindRecomp/issues/1126), [#1151](https://github.com/Revivedx/SavageWindRecomp/pull/1151) by jfpaardoo),
+  and the Camera rune's Save and Delete buttons stay together on 16:10 screens ([#895](https://github.com/Revivedx/SavageWindRecomp/issues/895), [#1157](https://github.com/Revivedx/SavageWindRecomp/pull/1157) by
+  jfpaardoo).
+- **The minimap at your screen's resolution** ([#1142](https://github.com/Revivedx/SavageWindRecomp/pull/1142) by Zarigis).
+- **Video > Cutscenes at 16:9** ([#838](https://github.com/Revivedx/SavageWindRecomp/issues/838), [#1159](https://github.com/Revivedx/SavageWindRecomp/pull/1159) by jfpaardoo): off by default; on, the game's own
+  cutscenes keep 16:9 with bars on wider or taller screens, while play and conversations fill them.
+- **Windbomb gliding at high frame rates** ([#1183](https://github.com/Revivedx/SavageWindRecomp/pull/1183) by Ninjune): the paraglider no longer loses a windbomb's
+  speed faster above 30 fps ([#425](https://github.com/Revivedx/SavageWindRecomp/issues/425)).
+- **Braking on horseback with the keyboard** ([#1154](https://github.com/Revivedx/SavageWindRecomp/issues/1154), [#1164](https://github.com/Revivedx/SavageWindRecomp/pull/1164) by jfpaardoo): S with A or D brakes.
+- **Video > Map zoom blur** ([#1143](https://github.com/Revivedx/SavageWindRecomp/pull/1143) by Zarigis): off, the world map is sharp the whole time.
+- **Video > Advanced options: Ground cover and Ambient occlusion** ([#1161](https://github.com/Revivedx/SavageWindRecomp/pull/1161), [#1162](https://github.com/Revivedx/SavageWindRecomp/pull/1162) by
+  jfpaardoo): the distant grass layer and the soft contact shadows, each on its own switch.
+- **Gameplay > Show the map completion rate** before the game is cleared ([#1179](https://github.com/Revivedx/SavageWindRecomp/pull/1179) by ashe27).
+- **Gameplay > Hide HUD elements** ([#1169](https://github.com/Revivedx/SavageWindRecomp/issues/1169), [#1186](https://github.com/Revivedx/SavageWindRecomp/pull/1186) by jfpaardoo): hearts, stamina, champion
+  abilities, minimap, sensors, enemy health bars and prompts, each on its own switch.
+- **Cheats > Improved horse controls** ([#1172](https://github.com/Revivedx/SavageWindRecomp/pull/1172) by Quorthon13) takes the place of Sure-footed horse: the horse
+  follows the stick at once and keeps its speed in sharp turns.
+- **F1 > Benchmark** ([#1163](https://github.com/Revivedx/SavageWindRecomp/pull/1163) by jfpaardoo): the performance routes, run from the menu.
 
 ## Alpha 6 (0.6.0-alpha.6) - 2026-11-15
 

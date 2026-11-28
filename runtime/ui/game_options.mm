@@ -24,6 +24,8 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <memory>
+#include <mutex>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -32,6 +34,7 @@
 
 #include "i18n.h"
 #include "binding_row_layout.h"
+#include "option_rows.h"
 
 extern "C" {
 #include "../achievements.h"
@@ -42,6 +45,7 @@ extern "C" {
 #include "../problem_report.h"
 #include "../motion.h"
 #include "../settings.h"
+bool rtr_supported(void);  // (nvn/vulkan/raytrace.h)
 #include "../gamelib.h"
 #include "../color_grade.h"
 #include "../dlss_fetch.h"
@@ -53,6 +57,7 @@ Cpu *kernel_current_cpu(void);
 void rt_request_reboot(int kind);           // runtime/main.c (1: start the game again)
 void menu_request_window_apply(void);       // menu.mm (fullscreen / window size, applied by the window loop)
 void menu_size_list_open(void);             // menu.mm (Window size's list, over the screen)
+void menu_open_page(int id);                // menu.mm (the F1 menu on a page: the game's Options and Achievements buttons)
 bool menu_size_list_up(void);
 bool renderer_gpu_rtx(void);                // vulkan/device.c, metal.m
 const char *vk_hdr_icc_description(void);   // runtime/nvn/vulkan/device.c
@@ -101,7 +106,7 @@ static_assert(sizeof(Entry) == 0x30);
 enum { KIND_TOGGLE = 0, KIND_CHOICE = 1, KIND_BUTTON = 2 };
 
 enum Page { P_MAIN, P_GAMEPLAY, P_VIDEO, P_COLOUR, P_AUDIO, P_CONTROLS, P_BINDS, P_LANGUAGE, P_ACCESS, P_VIDEO_ADV, P_HDR,
-            P_ACHIEVEMENTS, P_COUNT };
+            P_HUD, P_ACHIEVEMENTS, P_COUNT };
 // A_FIXED: a greyed row for an input that can never be rebound (Item.arg: 0 Esc, 1 F2); A_BIND: Item.arg is a binding slot (an input, or BIND_ACTION + an action); the next key, mouse button or controller button binds it
 enum Action { A_NONE, A_PAGE, A_BIND, A_BINDS_HEADER, A_RESET_BINDS, A_RESTART, A_QUIT, A_SIZE_LIST, A_FIXED, A_REPORT, A_SAVE_HDR_LOOK };
 static char g_report_dir[64];  // Problem report: the zip made this run (its row's description names it)
@@ -124,6 +129,12 @@ struct Item {
 };
 
 std::vector<Item> g_items;
+void build_items(void);
+// (built once, by whichever comes first: the game's Options screen on the game's thread, or the F1 menu)
+void ensure_items(void) {
+    static std::once_flag once;
+    std::call_once(once, [] { if (g_items.empty()) build_items(); });
+}
 std::vector<Entry> g_entries;
 std::vector<uint32_t> g_order[P_COUNT];
 std::vector<std::string> g_names;  // the entries' flag names (never a real game data flag)
@@ -478,6 +489,9 @@ void build_items(void) {
     v.push_back(toggle(P_VIDEO, "HUD at edges", "On windows taller than 16:9 with Fill wide screens, anchors the top and bottom HUD to the window edges.",
                        [](const Item &) { return (int)g_settings.hud_edges; },
                        [](const Item &, int x) { g_settings.hud_edges = x; }, 0));
+    v.push_back(toggle(P_VIDEO, "Cutscenes at 16:9", "Keeps in-engine cutscenes at 16:9 with bars instead of filling wider or taller screens.",
+                       [](const Item &) { return (int)g_settings.cutscenes_16_9; },
+                       [](const Item &, int x) { g_settings.cutscenes_16_9 = x; }, 0));
     v.push_back(choice(P_VIDEO, "Field of view", "How much the camera shows in play. Cutscenes keep their own.",
                        [](const Item &) { return N(k_fov); },
                        [](const Item &, int x) {
@@ -508,6 +522,28 @@ void build_items(void) {
     v.push_back(toggle(P_GAMEPLAY, "Dynamic HUD", "Hides the HUD while exploring and shows it for 5 seconds when Link takes damage.",
                        [](const Item &) { return (int)g_settings.dynamic_hud; },
                        [](const Item &, int x) { g_settings.dynamic_hud = x; }, 0));
+    v.push_back(button(P_GAMEPLAY, "Hide HUD elements", "Hide individual parts of the HUD such as hearts, stamina, abilities, sensors, minimap or enemy health bars.", "Open", A_PAGE, P_HUD));
+    v.push_back(toggle(P_HUD, "Hide hearts", "Hides the heart containers on the HUD.",
+                       [](const Item &) { return (int)g_settings.hud_hide_hearts; },
+                       [](const Item &, int x) { g_settings.hud_hide_hearts = x; }, 0));
+    v.push_back(toggle(P_HUD, "Hide stamina wheel", "Hides the stamina wheel.",
+                       [](const Item &) { return (int)g_settings.hud_hide_stamina; },
+                       [](const Item &, int x) { g_settings.hud_hide_stamina = x; }, 0));
+    v.push_back(toggle(P_HUD, "Hide champion abilities", "Hides the champion ability icons under the hearts.",
+                       [](const Item &) { return (int)g_settings.hud_hide_abilities; },
+                       [](const Item &, int x) { g_settings.hud_hide_abilities = x; }, 0));
+    v.push_back(toggle(P_HUD, "Hide minimap", "Hides the minimap during play while keeping the full map.",
+                       [](const Item &) { return (int)g_settings.hud_hide_minimap; },
+                       [](const Item &, int x) { g_settings.hud_hide_minimap = x; }, 0));
+    v.push_back(toggle(P_HUD, "Hide sensors & weather", "Hides the Sheikah Sensor, sound meter, temperature gauge, weather and clock.",
+                       [](const Item &) { return (int)g_settings.hud_hide_sensors; },
+                       [](const Item &, int x) { g_settings.hud_hide_sensors = x; }, 0));
+    v.push_back(toggle(P_HUD, "Hide enemy health bars", "Hides enemy health bars.",
+                       [](const Item &) { return (int)g_settings.hud_hide_enemy_bars; },
+                       [](const Item &, int x) { g_settings.hud_hide_enemy_bars = x; }, 0));
+    v.push_back(toggle(P_HUD, "Hide action prompts", "Hides the on-screen button prompts during play.",
+                       [](const Item &) { return (int)g_settings.hud_hide_prompts; },
+                       [](const Item &, int x) { g_settings.hud_hide_prompts = x; }, 0));
     v.push_back(choice(P_GAMEPLAY, "Menu cursor speed", "How fast the cursor and transitions move in menus, inventory, and the map.",
                        [](const Item &) { return N(k_menu_speed); },
                        [](const Item &, int x) {
@@ -948,6 +984,42 @@ void build_items(void) {
                        },
                        [](const Item &) { return g_settings.stars >= 0 && g_settings.stars < STARS_COUNT ? g_settings.stars : 0; },
                        [](const Item &, int x) { g_settings.stars = x; }, STARS_BRIGHTEST));
+    {   // Ray tracing (vulkan/raytrace.c): the switch and the effects from the next start (the game's passes' translations
+        // are made then), the samples and the distance at once. Greyed where the graphics card can't, and under the switch.
+        size_t first = v.size();
+        v.push_back(toggle(P_VIDEO_ADV, "Ray tracing", "Traces rays for the effects below. Needs a graphics card with ray tracing; heavy. From the next start.",
+                           [](const Item &) { return (int)g_settings.rt; }, [](const Item &, int x) { g_settings.rt = x; }, 0));
+        v.push_back(toggle(P_VIDEO_ADV, "Ray-traced shadows", "The sun's shadows traced: sharp where things touch, soft further away. From the next start.",
+                           [](const Item &) { return (int)g_settings.rt_shadows; }, [](const Item &, int x) { g_settings.rt_shadows = x; }, 1));
+        v.push_back(toggle(P_VIDEO_ADV, "Ray-traced reflections", "Water reflects the world around it, and Link. From the next start.",
+                           [](const Item &) { return (int)g_settings.rt_reflections; }, [](const Item &, int x) { g_settings.rt_reflections = x; }, 1));
+        v.push_back(toggle(P_VIDEO_ADV, "Off-screen reflections", "Also reflects what the camera saw before and no longer shows. About 170 MB of video memory. Turning it on: from the next start.",
+                           [](const Item &) { return (int)g_settings.rt_offscreen; }, [](const Item &, int x) { g_settings.rt_offscreen = x; }, 1));
+        v.push_back(choice(P_VIDEO_ADV, "Ray tracing samples", "Rays per pixel for the traced shadows. More: smoother edges, slower.",
+                           [](const Item &) { return 4; },
+                           [](const Item &, int x) {
+                               static const char *const n[4] = {"1", "2", "4", "8"};
+                               return n[x >= 0 && x < 4 ? x : 2];
+                           },
+                           [](const Item &) { return g_settings.rt_samples >= 0 && g_settings.rt_samples < 4 ? g_settings.rt_samples : 2; },
+                           [](const Item &, int x) { g_settings.rt_samples = x; }, 2));
+        v.push_back(choice(P_VIDEO_ADV, "Ray tracing distance", "How far the rays reach. Nearer: faster; distant shadows and reflections are lost.",
+                           [](const Item &) { return 3; },
+                           [](const Item &, int x) {
+                               static const char *const n[3] = {"Near", "Medium", "Far"};
+                               return tr(n[x >= 0 && x < 3 ? x : 2]);
+                           },
+                           [](const Item &) { return g_settings.rt_distance >= 0 && g_settings.rt_distance < 3 ? g_settings.rt_distance : 2; },
+                           [](const Item &, int x) { g_settings.rt_distance = x; }, 2));
+        v[first].value_off = [](const Item &, int) { return !rtr_supported(); };
+        for (size_t i = first; i < v.size(); i++) {
+            if (i > first) v[i].value_off = [](const Item &, int) { return !rtr_supported() || !g_settings.rt; };
+            static const char *descs[8];
+            descs[i - first] = v[i].desc;
+            v[i].arg = (int)(i - first);
+            v[i].desc_fn = [](const Item &it) { return tr(rtr_supported() ? descs[it.arg] : "Your graphics card doesn't support ray tracing."); };
+        }
+    }
     // Anisotropic filtering and sharpening (Vulkan: vulkan/textures.c sampler_aniso, vulkan/exec.c scene_post)
     v.push_back(choice(P_VIDEO_ADV, "Anisotropic filtering", "Sharper ground and paths at a distance. Off: as on the console.",
                        [](const Item &) { return N(k_aniso); },
@@ -983,6 +1055,9 @@ void build_items(void) {
             return tr("No net gain here: the upscaler's Dynamic mode would switch this off.");
         if (dynamic_fg_disabled())
             return tr("The upscaler's Dynamic mode switched this off: no net gain.");
+        if (frame_gen_hdr_sdr())  // (runtime/nvn/vulkan/device.c: its frames are 8-bit)
+            return tr("Twice the frames on screen. Adds a little delay. With HDR output, the picture is SDR's while this "
+                      "is on: HDR's brighter highlights need it off.");
         return tr("Twice the frames on screen. Adds a little delay.");
     };
     // DLSS's multi frame generation (3x, 4x where the GPU makes that many)
@@ -1020,9 +1095,18 @@ void build_items(void) {
     v.push_back(toggle(P_VIDEO_ADV, "Depth of field", "Blurs the far distance. Off: sharp out to the horizon.",
                        [](const Item &) { return (int)g_settings.depth_of_field; },
                        [](const Item &, int x) { g_settings.depth_of_field = x; }, 1));
+    v.push_back(toggle(P_VIDEO_ADV, "Map zoom blur", "Blurs the map for a moment when it opens and after each zoom. Off: sharp straight away.",
+                       [](const Item &) { return (int)g_settings.map_zoom_blur; },
+                       [](const Item &, int x) { g_settings.map_zoom_blur = x; }, 1));
+    v.push_back(toggle(P_VIDEO_ADV, "Ambient occlusion", "Soft contact shadows in corners and foliage. Off: cleaner, faster.",
+                       [](const Item &) { return (int)g_settings.ambient_occlusion; },
+                       [](const Item &, int x) { g_settings.ambient_occlusion = x; }, 1));
     v.push_back(toggle(P_VIDEO_ADV, "Grass", "Grass blades and ground cover. Off: bare terrain, faster.",
                        [](const Item &) { return (int)g_settings.grass; },
                        [](const Item &, int x) { g_settings.grass = x; }, 1));
+    v.push_back(toggle(P_VIDEO_ADV, "Ground cover", "Distant grass ground-cover layer. Off: keeps near grass blades only.",
+                       [](const Item &) { return (int)g_settings.grass_quads; },
+                       [](const Item &, int x) { g_settings.grass_quads = x; }, 1));
     v.push_back(choice(P_VIDEO_ADV, "Grass distance", "How far out grass blades are drawn. High reaches about 2.45x independently of Draw distance.",
                        [](const Item &) { return N(k_grass_dist); }, [](const Item &, int x) { return tr(k_grass_dist[x]); },
                        [](const Item &) { return g_settings.grass_distance >= 0 && g_settings.grass_distance < GRASS_DIST_COUNT ? g_settings.grass_distance : 0; },
@@ -1167,6 +1251,11 @@ void build_items(void) {
                        "Choose equipment to drop when its inventory is full, then receive the new item. Requires game version 1.9.0.",
                        [](const Item &) { return (int)g_settings.quick_replace; },
                        [](const Item &, int x) { g_settings.quick_replace = x; }, 0));
+
+    v.push_back(toggle(P_GAMEPLAY, "Show the map completion rate",
+                       "The map's completion percentage shows before the game is cleared.",
+                       [](const Item &) { return (int)g_settings.map_clear_rate; },
+                       [](const Item &, int x) { g_settings.map_clear_rate = x; }, 0));
 
     // Audio
     v.push_back(choice(P_AUDIO, "Volume", "The game's volume. 100% is its own level.",
@@ -1382,7 +1471,8 @@ void build_items(void) {
         return (const char *)buf;
     };
     v.push_back(choice(P_CONTROLS, "Button icons",
-                       "The buttons the game's prompts show. Automatic: the device you used last.",
+                       "The buttons the game's prompts show. Automatic: the device you used last. A controller's icons: "
+                       "those while you play with a controller, keys while you use the keyboard.",
                        [](const Item &) { return N(k_icons); },
                        [](const Item &, int x) { return tr(k_icons[x]); },
                        [](const Item &) { return g_settings.button_icons; },
@@ -1561,6 +1651,11 @@ void build_items(void) {
                        "Press ZR once in play to draw and hold your bow; press ZR again to shoot.",
                        [](const Item &) { return (int)g_settings.toggle_zr; },
                        [](const Item &, int x) { g_settings.toggle_zr = x; }, 0));
+    v.push_back(toggle(P_ACCESS, "Toggle sprint",
+                       "Press the sprint button once while moving and Link keeps sprinting until he stops or you press it "
+                       "again. Not on horseback.",
+                       [](const Item &) { return (int)g_settings.toggle_sprint; },
+                       [](const Item &, int x) { g_settings.toggle_sprint = x; }, 0));
     {
         static const int k_text_sizes[] = {80, 90, 100, 110, 120, 130, 140, 150};
         v.push_back(choice(P_ACCESS, "Overlay text size", "Scale of the text and controls in this F1 overlay.",
@@ -1592,7 +1687,7 @@ bool install(void) {
         g_installed = 0;
         return false;
     }
-    if (g_items.empty()) build_items();
+    ensure_items();
     g_entries.assign((const Entry *)(uintptr_t)ent, (const Entry *)(uintptr_t)ent + count);
     g_names.clear();
     g_names.reserve(g_items.size());
@@ -2125,6 +2220,63 @@ void quit_poll(void) {
 
 }  // namespace
 
+// ---- The F1 menu (runtime/ui/menu.mm): the rows of these pages it has none of its own for, through the same Items, so
+// both menus change a setting the same way (the game's Options screen gives way to the F1 menu: rt_pause_button)
+static const char *const k_f1_gameplay[] = {"Start at Continue", "Dialogue text speed", "Keep crouch after camera",
+                                            "Day/night cycle length", "Quick inventory sorting",
+                                            "Quick inventory dropping", "Quick inventory replacement",
+                                            "Show the map completion rate", "Discord Rich Presence"};
+static const char *const k_f1_controls[] = {"Button icons", "HUD button layout", "Prompts follow action bindings",
+                                            "Menus wrap around", "Motion source", "Motion sensitivity",
+                                            "Vertical motion sensitivity", "Invert motion", "Lean to turn",
+                                            "Shrine keyboard gyro", "Shrine mouse drag"};
+static const char *const k_f1_access[] = {"Colour vision", "Correction strength"};
+// (the assists: every player's, so the Gameplay page and not Cheats, which is developer mode only)
+static const char *const k_f1_assists[] = {"God mode", "Damage taken", "Infinite stamina", "Stamina drain",
+                                           "One-hit kill", "Damage dealt", "Weapon wear", "Infinite arrows"};
+
+static void f1_item_row(const Item &it) {
+    const char *desc = it.desc_fn ? it.desc_fn(it) : it.desc;
+    if (it.kind == KIND_TOGGLE) {
+        bool v = it.get(it) != 0;
+        if (opt_toggle(it.title, &v, it.def != 0, desc)) it.set(it, v), settings_save();
+    } else if (it.kind == KIND_CHOICE) {
+        int n = it.count(it), v = it.get(it);
+        if (n <= 0) return;
+        std::vector<std::string> text((size_t)n);
+        for (int i = 0; i < n; i++) text[(size_t)i] = it.label(it, i);
+        std::vector<const char *> names((size_t)n);
+        for (int i = 0; i < n; i++) names[(size_t)i] = text[(size_t)i].c_str();
+        bool changed;
+        if (it.value_off) {
+            std::unique_ptr<bool[]> avail(new bool[(size_t)n]);
+            for (int i = 0; i < n; i++) avail[(size_t)i] = !it.value_off(it, i);
+            int shown = -1;
+            changed = opt_choice_avail(it.title, &v, &shown, names.data(), avail.get(), n, it.def, desc, it.wrap);
+        } else {
+            changed = opt_choice_item(it.title, &v, names.data(), n, it.def, desc, it.wrap, true);
+        }
+        if (changed) it.set(it, v), settings_save();
+    }
+}
+
+// which: 0 Gameplay, 1 Controls, 2 Accessibility (colour vision), 3 Accessibility (the assists)
+void game_items_f1_rows(int which) {
+    ensure_items();
+    const char *const *titles = which == 0   ? k_f1_gameplay
+                                : which == 1 ? k_f1_controls
+                                : which == 2 ? k_f1_access
+                                             : k_f1_assists;
+    size_t n = which == 0   ? std::size(k_f1_gameplay)
+               : which == 1 ? std::size(k_f1_controls)
+               : which == 2 ? std::size(k_f1_access)
+                            : std::size(k_f1_assists);
+    int page = which == 0 ? P_GAMEPLAY : which == 1 ? P_CONTROLS : P_ACCESS;
+    for (size_t t = 0; t < n; t++)  // (in this list's order)
+        for (const Item &it : g_items)
+            if (it.page == page && !strcmp(it.title, titles[t])) { f1_item_row(it); break; }
+}
+
 // The game gets no A while the Achievements page is up (runtime/hle/input.c): A on a row would move the cursor onto
 // its button, and the achievements' rows only show what they say
 extern "C" bool game_options_hold_a(void) {
@@ -2524,7 +2676,7 @@ extern "C" void rt_opt_back(void) {
     bool direct = g_ach_direct && g_cur_page == P_ACHIEVEMENTS;
     g_ach_direct = false;
     if (g_installed && g_cur_page != P_MAIN && !direct) {
-        g_next_page = g_cur_page == P_VIDEO_ADV ? P_VIDEO : g_cur_page == P_HDR ? P_VIDEO_ADV : P_MAIN;
+        g_next_page = g_cur_page == P_VIDEO_ADV ? P_VIDEO : g_cur_page == P_HDR ? P_VIDEO_ADV : g_cur_page == P_HUD ? P_GAMEPLAY : P_MAIN;
         g_reopen = g_switching = true;
     } else {  // (it closes: the next opening is on the first page, unless a button asks for another)
         g_reopen = g_switching = false;
@@ -2734,6 +2886,16 @@ extern "C" void rt_pause_ach_text(uint64_t str) {
 
 // The System page's button handler (id = the button pressed): the id it goes on with
 extern "C" uint32_t rt_pause_button(uint32_t id) {
+    // Options and Achievements open the F1 menu on its Gameplay / Achievements page instead of this screen: it has every
+    // setting, the game's own options included (menu.mm tab_gameplay). An id the System page has no case for does
+    // nothing there (its switch takes 0x4d..0x53). SAVAGEWIND_GAME_OPTIONS_SCREEN=1: the screen as before.
+    static int screen = -1;
+    if (screen < 0) screen = getenv("SAVAGEWIND_GAME_OPTIONS_SCREEN") && atoi(getenv("SAVAGEWIND_GAME_OPTIONS_SCREEN"));
+    if (!screen && (id == PAUSE_OPTIONS_BUTTON || id == PAUSE_ACH_BUTTON)) {
+        menu_open_page(id == PAUSE_OPTIONS_BUTTON ? 14 : 13);
+        fprintf(stderr, "[options] pause menu %s: Savage Wind's menu\n", id == PAUSE_OPTIONS_BUTTON ? "Options" : "Achievements");
+        return 0;
+    }
     if (id != PAUSE_ACH_BUTTON) return id;
     g_next_page = P_ACHIEVEMENTS;
     g_switching = g_ach_direct = true;
@@ -2774,7 +2936,16 @@ extern "C" const char *rt_tr(const char *en) { return tr(en); }
 // button is Quit: 1 (the figure is chosen in the overlay's amiibo tab). The Achievements button reads as Options for this press, with
 // its page due.
 extern "C" int rt_title_event(uint32_t id) {
-    if (id == TITLE_ACH_BUTTON && g_title_ach && rd32(g_title_ach + 0x44) == TITLE_ACH_BUTTON) {  // (the only one)
+    // Options and Achievements: Savage Wind's menu on its Gameplay / Achievements page, as from the pause menu
+    // (rt_pause_button); 2: the title menu does nothing with the press
+    static int screen = -1;
+    if (screen < 0) screen = getenv("SAVAGEWIND_GAME_OPTIONS_SCREEN") && atoi(getenv("SAVAGEWIND_GAME_OPTIONS_SCREEN"));
+    bool ach = id == TITLE_ACH_BUTTON && g_title_ach && rd32(g_title_ach + 0x44) == TITLE_ACH_BUTTON;
+    if (!screen && (id == TITLE_OPTIONS_BUTTON || ach)) {
+        menu_open_page(ach ? 13 : 14);
+        return 2;
+    }
+    if (ach) {  // (the only one)
         g_next_page = P_ACHIEVEMENTS;
         g_switching = g_ach_direct = true;
         wr32(g_title_ach + 0x44, TITLE_OPTIONS_BUTTON);

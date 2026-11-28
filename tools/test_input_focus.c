@@ -15,6 +15,10 @@ uint64_t quick_drop_action_filter_buttons(uint64_t b) { return b; }
 int bind_pad_family(int type, int vendor, int product, const char *name, bool first) { (void)type, (void)vendor, (void)product, (void)name, (void)first; return 0; }
 
 GameSites g_site;
+const char *g_game_version;  // (no game: bow_drawn is false)
+uint64_t g_heap_max;
+void sheikah_cursor_use(SDL_Window *w) { (void)w; }
+int game_opt_get(int id) { (void)id; return 0; }  // (the game's defaults: no jump swap)
 Settings g_settings;
 int16_t g_bind_key[BIND_KEY_COUNT], g_bind_pad[BIND_KEY_COUNT];
 int16_t g_bind_key2[BIND_KEY_COUNT], g_bind_pad2[BIND_KEY_COUNT];  // (second bindings: none, as bindings.c act_init)
@@ -63,6 +67,7 @@ bool act_play_active(void) { return false; }
 uint64_t act_raw_slots(void) { return 0; }
 uint64_t act_play_keys(int (*held)(int)) { (void)held; return 0; }
 uint64_t act_play_pads(uint32_t host) { (void)host; return 0; }
+bool act_cycle_live(void) { return false; }
 void motion_script(float p, float r, float ps, float ys) { (void)p; (void)r; (void)ps; (void)ys; unexpected_helper(); }
 // (the control endpoint, the virtual gyro and the DSU poll: off here)
 bool control_enabled(void) { return false; }

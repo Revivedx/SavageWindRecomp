@@ -11,10 +11,13 @@
 GameSites g_site;
 
 static unsigned char world[0x600], manager[0x160];
-static unsigned char data_manager[0xc30], buffers[2][0x40], flags[2][0x28];
+static unsigned char data_manager[0xc30], buffers[2][0x40], flags[2][0x28], rupee_flags[2][0x28];
 static uint64_t vtable[8], flag_vtables[2][18], wrappers[2], arrays[2][1];
+static uint64_t rupee_vtables[2][18], rupee_arrays[2][1];
 static uint32_t calc_code[32];
-static const uint32_t getter_code[2][2] = {{0xbd401000, 0xd65f03c0}, {0xbd401800, 0xd65f03c0}};
+static const uint32_t getter_code[4][2] = {
+    {0xbd401000, 0xd65f03c0}, {0xbd401800, 0xd65f03c0}, {0xb9401000, 0xd65f03c0}, {0xb9401800, 0xd65f03c0}
+};
 static const unsigned value_offsets[2] = {0x10, 0x18};
 static uint64_t world_ptr, managers[1];
 static float game_time;
@@ -31,10 +34,13 @@ bool control_mem_peek(uint64_t addr, void *buf, size_t n) {
         return true;
     }
     if (addr == CALC && n == sizeof calc_code) { memcpy(buf, calc_code, n); return true; }
-    for (int i = 0; i < 2; i++)
+    for (int i = 0; i < 4; i++)
         if (addr == CALC + 0x1000 + 8 * i && n == 8) { memcpy(buf, getter_code[i], n); return true; }
+    if (addr == (uintptr_t)&world_ptr && n == sizeof world_ptr) { memcpy(buf, &world_ptr, n); return true; }
 #define READABLE(object) if (addr >= (uintptr_t)(object) && n <= sizeof(object) && \
     addr - (uintptr_t)(object) <= sizeof(object) - n) { memcpy(buf, (void *)(uintptr_t)addr, n); return true; }
+    READABLE(world)
+    READABLE(managers)
     READABLE(manager)
     READABLE(data_manager)
     READABLE(buffers)
@@ -43,6 +49,9 @@ bool control_mem_peek(uint64_t addr, void *buf, size_t n) {
     READABLE(flag_vtables)
     READABLE(wrappers)
     READABLE(arrays)
+    READABLE(rupee_flags)
+    READABLE(rupee_vtables)
+    READABLE(rupee_arrays)
 #undef READABLE
     return false;
 }
@@ -81,6 +90,26 @@ static void tick(float delta) {
     for (int i = 0; i < 2; i++) memcpy(flags[i] + value_offsets[i], &game_time, sizeof game_time);
     memcpy(manager + 0xb8, &game_time, sizeof game_time);
     test_warp_frame(++frame);
+}
+
+static void check_rupee_values(void) {
+    uint64_t values[2];
+    uint32_t hash = crc32_of("CurrentRupee"), count = 1;
+    for (int i = 0; i < 2; i++) {
+        rupee_arrays[i][0] = (uintptr_t)rupee_flags[i];
+        rupee_vtables[i][0x88 / 8] = CALC + 0x1000 + 8 * (i + 2);
+        uint64_t array = (uintptr_t)rupee_arrays[i], vtable = (uintptr_t)rupee_vtables[i];
+        memcpy(buffers[i] + 0x18, &count, sizeof count);
+        memcpy(buffers[i] + 0x20, &array, sizeof array);
+        memcpy(rupee_flags[i], &vtable, sizeof vtable);
+    }
+    uint64_t primary = (uintptr_t)rupee_flags[1];
+    memcpy(rupee_flags[1] + 0x1c, &hash, sizeof hash);
+    assert(!game_data_s32_values(hash, values));  // the proxy does not point to the primary yet
+    memcpy(rupee_flags[0] + 8, &primary, sizeof primary);
+    assert(game_data_s32_values(hash, values));
+    assert(values[0] == (uintptr_t)rupee_flags[0] + 0x10);
+    assert(values[1] == (uintptr_t)rupee_flags[1] + 0x18);
 }
 
 int main(int argc, char **argv) {
@@ -124,6 +153,7 @@ int main(int argc, char **argv) {
     }
     uint64_t primary = (uintptr_t)flags[1];
     memcpy(flags[0] + 8, &primary, sizeof primary);
+    check_rupee_values();
     tick(0);
     if (argc > 1) {
         expect(18, true);

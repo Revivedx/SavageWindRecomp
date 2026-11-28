@@ -32,6 +32,7 @@ static pthread_cond_t lcond = PTHREAD_COND_INITIALIZER;
 static bool running, stop_req;
 static LiveFlag *flags;
 static int n_flags;
+static pthread_mutex_t flock_ = PTHREAD_MUTEX_INITIALIZER;  // (flags[] swapped by find_flags; read by ach_live_flag)
 static uint64_t vt_bool, vt_s32;
 
 static uint32_t rd32(uint64_t a) { return *(volatile uint32_t *)(uintptr_t)a; }
@@ -83,8 +84,10 @@ static bool find_flags(void) {
         }
     if (!f || n < 1000) { free(f); return false; }
     qsort(f, (size_t)n, sizeof *f, by_hash);  // (the image in hash order: ach_save_get bisects it, 47k flags)
+    pthread_mutex_lock(&flock_);
     free(flags);
     flags = f, n_flags = n;
+    pthread_mutex_unlock(&flock_);
     LOG("[achievements] %d game data flags in memory, read every %d ms\n", n, LIVE_POLL_MS);
     return true;
 }
@@ -142,6 +145,24 @@ static void *live_thread(void *arg) {
     pthread_mutex_unlock(&llock);
     free(img);
     return NULL;
+}
+
+// One game data flag in the game's memory, by the crc32 of its name (runtime/game_flags.c: the game's own options):
+// its object and kind, checked to still be that flag. false: not found yet (the game is starting), or gone.
+bool ach_live_flag(uint32_t hash, uint64_t *obj, bool *s32) {
+    pthread_mutex_lock(&flock_);
+    int lo = 0, hi = n_flags - 1, at = -1;
+    while (lo <= hi) {
+        int mid = (lo + hi) / 2;
+        if (flags[mid].hash == hash) { at = mid; break; }
+        if (flags[mid].hash < hash) lo = mid + 1;
+        else hi = mid - 1;
+    }
+    LiveFlag f = at >= 0 ? flags[at] : (LiveFlag){0, 0, false};
+    pthread_mutex_unlock(&flock_);
+    if (at < 0 || rd64(f.obj) != (f.s32 ? vt_s32 : vt_bool) || rd32(f.obj + (f.s32 ? 0x1c : 0xc)) != hash) return false;
+    *obj = f.obj, *s32 = f.s32;
+    return true;
 }
 
 void ach_live_start(void) {

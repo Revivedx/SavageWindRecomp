@@ -290,6 +290,7 @@ void vk_key_normalize(const uint8_t *code, int stage, ShaderKey *k) {
         k->flip_y = k->depth_minus_one = false;
         k->shared_size = 0;
         k->mvec = 0;
+        k->rt_cap = 0;
     } else {
         uint32_t shared = k->shared_size;
         bool glsl = k->glsl;
@@ -449,6 +450,10 @@ static uint64_t xlate_id_as(const char *id, const uint8_t *code, size_t max_size
     uint64_t h = hash64(0xcbf29ce484222325ull, id, strlen(id));
     h = hash64(h, hd, sizeof *hd);
     h = hash64(h, code, hd->bin_size);
+    if (maxwell_rt_shadow_pass(code, max_size, stage)) h = hash64(h, maxwell_rt_shadow == 1 ? "rtsb1" : "rtsb2", 5);
+    if (maxwell_rt_comp_pass(code, max_size, stage)) h = hash64(h, "rtlb1", 5);
+    if (maxwell_rt_refl_pass(code, max_size, stage)) h = hash64(hash64(h, maxwell_rt_refl == 3 ? "rtrD5" : maxwell_rt_refl == 2 ? "rtrF5" : "rtrf5", 5), maxwell_rt_refl_max, sizeof maxwell_rt_refl_max);
+    if (maxwell_rt_radd_pass(code, max_size, stage)) h = hash64(hash64(h, "rtra3", 5), &maxwell_rt_radd, sizeof maxwell_rt_radd);
     if (maxwell_wet_lighting(code, max_size, stage)) h = hash64(h, "wet", 3);  // (Video > Wet grass fix: its own translation)
     if (maxwell_stars(code, max_size, stage)) {  // (Video > Stars: each level its own translation)
         float g[2] = {maxwell_star_gain, maxwell_star_size};

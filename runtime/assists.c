@@ -95,3 +95,8 @@ int rt_hero_soul(int which) {
     }
     return 0;
 }
+
+// The map's completion rate (tools/patches.py _map_clear_rate): the map screen asks the game whether the save has the
+// GameClear flag and hides its rate block when the answer is no. With the option on the answer is 1, so the rate shows
+// before the game is cleared.
+int rt_map_clear_rate(void) { return g_settings.map_clear_rate; }

@@ -105,8 +105,8 @@ VkDescriptorSet vk_alloc_set(VkDescriptorSetLayout layout);
 
 // ---- textures (textures.c)
 // Render-target scale groups (textures.c tex_scale_group): none, the 3D scene's (internal resolution), the final
-// image's (the window's resolution), shadow maps (Video > Shadow resolution), the map's terrain capture (the window's
-// height, without the HUD handling RS_OUT passes get)
+// image's (the window's resolution), shadow maps (Video > Shadow resolution), the map's and the minimap's terrain
+// captures (the window's height, without the HUD handling RS_OUT passes get)
 enum { RS_NONE = 0, RS_SCENE = 1, RS_OUT = 2, RS_SHADOW = 3, RS_MAP = 4 };
 
 // A texture's claim on the write watch (textures.c, SAVAGEWIND_VK_CPU_OPTS bit 32): token 0: none
@@ -203,7 +203,8 @@ VkFormat vk_view_format(TexBackend *b, VkFormat want);  // want, or the image's 
 // made RGBA16F so the tonemap can keep highlights above white; hdr.c records the float image the present copy reads,
 // and device.c presents that instead of the clipped 8-bit copy.
 bool vk_hdr_targets_wanted(void);   // HDR not Off: the game's linear 10-bit final image is made RGBA16F
-bool vk_hdr_game_enabled(void);     // the swapchain is HDR10
+bool vk_hdr_game_enabled(void);     // the game's HDR picture: the swapchain is HDR10 and frame generation is off
+bool vk_hdr_output(void);           // the swapchain is HDR10
 void vk_hdr_nits(float *peak, float *game, float *ui);
 // The live HDR tonemap parameters (hdr.c): 5 vec4s, the push constant block of the HDR tonemap program.
 // game/UI, peak/game, SDR pivot, hue | blowout, vanilla saturation, bloom, clamp | tone mapper, exposure,

@@ -20,6 +20,7 @@ void output_scale_screen(double sw, double sh, int iw, int ih, OutScale *o);
 bool upscaler_available(int u);
 bool fsr4_offered(void);  // AMD FSR 4 usable on this PC (an AMD Radeon and AMD's DLLs; held back or not)
 bool frame_gen_available(int fg);  // FG_*: Video > Frame generation's choices this GPU can run
+bool frame_gen_hdr_sdr(void);    // HDR output: frame generation shows the SDR picture in it (device.c)
 // Video > Frame generation multiplier: whether frame generation fg (FG_*) makes mult - 1 frames for each drawn here,
 // and the multiplier in use with it (the setting, or the most it makes below that)
 bool frame_gen_mult_available(int fg, int mult);

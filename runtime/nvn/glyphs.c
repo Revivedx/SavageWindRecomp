@@ -320,6 +320,40 @@ static void menu_button(Canvas *c, Box b, bool start, bool ps) {
     }
 }
 
+// A PlayStation d-pad (#937): four separate buttons, each a bar with a point toward the middle and an arrow pointing
+// out; the ones in mask filled (their arrow cut out), the rest outlined (their arrow too)
+static void dpad_ps(Canvas *c, Box b, int mask) {
+    float x = b.cx, y = b.cy, s = b.s, t = s * 0.03f;  // (thinner than the cross's: four small buttons)
+    float out = s * 0.48f, base = s * 0.2f, in = s * 0.08f, hw = s * 0.15f;  // (outer end, where the point starts, its tip)
+    static const int dirs[4] = {DIR_U, DIR_D, DIR_L, DIR_R};
+    static const float vx[4] = {0, 0, -1, 1}, vy[4] = {-1, 1, 0, 0};
+    for (int i = 0; i < 4; i++) {
+        float ux = vx[i], uy = vy[i], px = -uy, py = ux, mid = (out + base) / 2, half = (out - base) / 2;
+        Shape bar = ux ? box(x + ux * mid, y, half, hw, s * 0.03f) : box(x, y + uy * mid, hw, half, s * 0.03f);
+        Shape tip = tri(x + ux * in, y + uy * in, x + ux * base + px * hw, y + uy * base + py * hw,
+                        x + ux * base - px * hw, y + uy * base - py * hw);
+        bool on = mask & dirs[i];
+        if (on) {
+            fill(c, bar);
+            fill(c, tip);
+        } else {  // (the outline of bar and point as one shape)
+            Shape all = ring(box(x, y, out, out, 0), t);
+            int x0, y0, x1, y1;
+            bounds(c, &all, &x0, &y0, &x1, &y1);
+            for (int py_ = y0; py_ < y1; py_++)
+                for (int px_ = x0; px_ < x1; px_++) {
+                    float X = unit(c, px_), Y = unit(c, py_), d = fabsf(minf(sd(&bar, X, Y), sd(&tip, X, Y))) - t;
+                    c->a[py_ * c->n + px_] = maxf(c->a[py_ * c->n + px_], cover(c, d));
+                }
+        }
+        float m = mid + s * 0.01f, k = s * 0.065f;  // (the arrow: a small triangle in the bar, pointing out)
+        Shape arrow = tri(x + ux * (m + k), y + uy * (m + k), x + ux * (m - k * 0.6f) + px * k, y + uy * (m - k * 0.6f) + py * k,
+                          x + ux * (m - k * 0.6f) - px * k, y + uy * (m - k * 0.6f) - py * k);
+        if (on) cut(c, arrow);
+        else fill(c, ring(arrow, t * 0.6f));  // (an unlit button: its arrow outlined too, so the lit one stands out)
+    }
+}
+
 // A d-pad: the arms in mask filled, the rest outlined
 static void dpad(Canvas *c, Box b, int mask) {
     float x = b.cx, y = b.cy, L = b.s * 0.48f, w = b.s * 0.17f, t = b.s * 0.045f, r = b.s * 0.05f;
@@ -496,10 +530,10 @@ static void pad_button(Canvas *c, Box b, int host, int fam) {
     case SDL_GAMEPAD_BUTTON_BACK: menu_button(c, b, false, ps); return;
     case SDL_GAMEPAD_BUTTON_LEFT_STICK: round_label(c, b, num ? "L3" : "LS"); return;
     case SDL_GAMEPAD_BUTTON_RIGHT_STICK: round_label(c, b, num ? "R3" : "RS"); return;
-    case SDL_GAMEPAD_BUTTON_DPAD_UP: dpad(c, b, DIR_U); return;
-    case SDL_GAMEPAD_BUTTON_DPAD_DOWN: dpad(c, b, DIR_D); return;
-    case SDL_GAMEPAD_BUTTON_DPAD_LEFT: dpad(c, b, DIR_L); return;
-    case SDL_GAMEPAD_BUTTON_DPAD_RIGHT: dpad(c, b, DIR_R); return;
+    case SDL_GAMEPAD_BUTTON_DPAD_UP: (ps ? dpad_ps : dpad)(c, b, DIR_U); return;
+    case SDL_GAMEPAD_BUTTON_DPAD_DOWN: (ps ? dpad_ps : dpad)(c, b, DIR_D); return;
+    case SDL_GAMEPAD_BUTTON_DPAD_LEFT: (ps ? dpad_ps : dpad)(c, b, DIR_L); return;
+    case SDL_GAMEPAD_BUTTON_DPAD_RIGHT: (ps ? dpad_ps : dpad)(c, b, DIR_R); return;
     default: tab_label(c, b, bind_pad_label(host, fam)); return;
     }
 }
@@ -569,10 +603,12 @@ static void keys_icon(Canvas *c, Box b, const int *slots, int dirs) {
     keycap(c, b, NULL, dirs);  // (a mix: show the directions)
 }
 
+// Controls > Button icons: Keyboard always shows keys; a controller's choice (Xbox, PlayStation...) picks the icons the
+// controller shows, and keys still show while the keyboard and mouse are in use, as with Automatic
 static int resolve_kind(void) {
     int k = g_settings.button_icons;
+    if (k == ICONS_KEYBOARD || input_last_device() == DEVICE_KEYBOARD) return ICONS_KEYBOARD;
     if (k > ICONS_AUTO && k < ICONS_COUNT) return k;
-    if (input_last_device() == DEVICE_KEYBOARD) return ICONS_KEYBOARD;
     int f = input_pad_family();
     return f == 1 ? ICONS_XBOX : f == 2 ? ICONS_PLAYSTATION : f == 3 ? ICONS_STEAMDECK : ICONS_NINTENDO;
 }
@@ -858,7 +894,7 @@ static bool draw_glyph(Canvas *c, Box b, int code, int kind, int *copy) {
             int host = g_bind_pad[k_dpad_slot[dir_index(m.arg)]];
             if (host != k_dpad_host[dir_index(m.arg)]) { pad_button(c, b, host, fam); return true; }
         }
-        dpad(c, b, m.arg);
+        (fam == 2 ? dpad_ps : dpad)(c, b, m.arg);
         return true;
     default: return false;
     }

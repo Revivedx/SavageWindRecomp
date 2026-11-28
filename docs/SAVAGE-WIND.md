@@ -801,6 +801,27 @@ Pendiente:
        por la razón del frame (`rt_arrow_gravity`, 1 a 30 FPS, sin la cámara lenta, como en la consola). Prueba:
        `SAVAGEWIND_LOG_ARROW=1` y `SAVAGEWIND_SCRIPT_CLOCK=1` disparando con ZR a 30, 60 y 120: la velocidad en el
        tiempo es la misma.
+     - Decaimiento del planeador (experimental, activo por defecto; `SAVAGEWIND_GLIDE_DECAY=0` lo desactiva): la
+       actualización del planeador que comprueba el stick aplica su parámetro `OverSpeedDec` a la velocidad en `+0x181c`
+       y `+0x1824` una vez por actualización del juego, sin paso de tiempo. Hay **cuatro** sites simétricos (1.9.0): dos
+       `fsub` que restan (`+0x181c` en 0x7000c866f0, `+0x1824` en 0x7000c867b4) y dos `fadd` espejo que suman
+       (`+0x181c` en 0x7000c86718, `+0x1824` en 0x7000c867dc). Sin escalar, un sangrado medido de 0,002 por
+       actualización hace perder el impulso de un lanzamiento de windbomb entre 30 y 200 fps (cuantos más fps, antes).
+       La razón es direccional: un objetivo de planeo positivo toma la rama `fsub` (resta) y uno no positivo toma la
+       `fadd` (suma hacia cero); Por defecto una sola opción escala
+       **las cuatro** operaciones por `g_frame_ratio` (la razón del frame: 1 a 30 fps, menor por encima):
+       `rt_glide_overspeed_dec` para los `fsub` y `rt_glide_overspeed_add` para los `fadd`, con el mismo factor en
+       ambos. Con `SAVAGEWIND_GLIDE_DECAY=0` vuelve la operación del juego sin escalar (`v - dec` y `v + dec`) bit a bit
+       a cualquier FPS. A 30 fps (razón 1) los cuatro caminos dan el mismo resultado bit a bit que la consola, así que
+       ahí no cambia nada. **Validación disponible**: el entorno de las trazas fue Windows, NVIDIA GeForce RTX 5080
+       (controlador 621.14), 2560x1440, juego 1.9.0 y Savage Wind 0.6.0-alpha.6 (c9c9a0f). **Datos medidos en las
+       trazas**: a 30 fps (razón ~1,000) el decremento horizontal era 0,00200 por actualización (~0,060 por segundo
+       de juego; 36->30 m/s) y la retención de `a20bc` ~0,97/0,94/0,88 a 0,5/1/2 s de juego; antes del parche, a
+       ~200 fps (paso ~0,083, razón ~0,105) el mismo 0,00200 por actualización suponía ~0,55 por segundo de juego
+       (~9 veces más rápido; 52->10 m/s) y una retención de ~0,61 a 1 s y ~0,27 a 2 s. Ambas componentes `a181c` y
+       `a1824` decaían igual; `a20c8`=0,350, `a209c`=1,0 y `a1844`/`a1848` correctos en tiempo de juego. Esa
+       ejecución registró entre ~180 y ~360 fps (ajuste de 360). No hay constancia en las trazas de que el
+       interruptor `SAVAGEWIND_GLIDE_DECAY=0` se haya probado en el juego.
      - Micropasos del solver de Havok (#161): antes de cada paso de física el juego le da al solver
        round(delta frame x 6) micropasos (1.9.0 0x700156f930): 6 a 30 FPS, 3 a 60, 2 a 120, siempre la misma
        duración de micropaso. Con menos micropasos por paso el solver cede más ante lo que toca a Link: con un cuco
@@ -1174,7 +1195,7 @@ Pendiente:
      (`radv_src_access_flush` añade `AC_BARRIER_INV_L2`); con barreras por imagen no (`radv_image_is_l2_coherent`).
      Si desde la última barrera completa solo hubo pases (ni copias, ni dispatch, ni subidas, ni escrituras a la
      memoria del juego, ni lecturas de targets lineales: todo eso va tras una barrera completa, que marca
-     `bar_other`), la barrera del pase siguiente nombra las imágenes de esos pases (las de sus vistas de attachment,
+     `barr.other`), la barrera del pase siguiente nombra las imágenes de esos pases (las de sus vistas de attachment,
      tras `vk_view`) más una dependencia de ejecución para lo demás; una imagen diferida fuerza la completa.
      `SAVAGEWIND_VK_FULL_PASS_BARRIER=1` vuelve a la barrera completa. La validación de sincronización
      (`VK_LAYER_VALIDATE_SYNC=1` con `VK_LAYER_SYNCVAL_SHADER_ACCESSES_HEURISTIC=1`, mensajes con
@@ -1309,7 +1330,7 @@ Pendiente:
        del panel c3[33]): una capa cuya matriz el juego hizo sin sead (el cursor de selección) recibe la ensanchada;
        un panel de una capa de 40° que cubre todo el ancho 16:9 (fundidos, el negro de la carga, el fondo borroso de
        los menús) recibe la 16:9, que lo estira a la ventana; un panel entero fuera del 16:9 (partes del layout que en
-       la consola no se ven) no se dibuja (`hud_clip`). Los scissors parciales del target final se comprimen igual
+       la consola no se ven) no se dibuja (`drw.hud_clip`). Los scissors parciales del target final se comprimen igual
        (`scissor_rect`: la máscara del minimapa).
      - Menús: con el estado de pausa 2 (páginas del menú de pausa y mapa, `framepace_menu_ui`) se presenta el centro
        16:9 de la imagen con bandas (`OutScale.crop`), igual que en una pantalla 16:9; el menú rápido (estado 4) llena

@@ -45,6 +45,7 @@
 #include "imgui_impl_vulkan.h"
 #endif
 #include "imgui_impl_sdl3.h"
+#include "../sheikah_cursor.h"
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -1786,7 +1787,8 @@ static bool menu_tip(float s) {
         ImGui::SetWindowFontScale(1.0f);
         ImGui::SetItemDefaultFocus();
         if (ui_button(tr("OK"), UI_BTN_PRIMARY, s * 2, NULL, ImVec2(180 * s, 44 * s)) ||
-            (keys && (ImGui::IsKeyPressed(ImGuiKey_Enter, false) || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceDown, false)))) {
+            (keys && (ImGui::IsKeyPressed(ImGuiKey_Enter, false) || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceDown, false))) ||
+            (keys && getenv("SAVAGEWIND_LAUNCHER_TIP_GO"))) {  // (test: OK)
             g_settings.menu_tip_seen = true;
             settings_save();
             ImGui::CloseCurrentPopup();
@@ -2517,6 +2519,7 @@ extern "C" void launcher_run(const char *root, int mode) {
             ImGui_ImplVulkan_NewFrame();
 #endif
             ImGui_ImplSDL3_NewFrame();
+            if (ImGui::GetMouseCursor() == ImGuiMouseCursor_Arrow) sheikah_cursor_use(win);  // (not the system's arrow)
             // the backend (manual mode, no gamepads of its own) clears HasGamepad every frame, and ImGui then drops the
             // controller presses launcher_pad_event fed in and turns gamepad navigation off: set it again while a
             // controller is connected
@@ -2660,10 +2663,16 @@ extern "C" void launcher_run(const char *root, int mode) {
                 //  d-pad move)
                 if (!play_selected) ImGui::SetKeyboardFocusHere(), ImGui::SetNavCursorVisible(true), play_selected = true;
                 bool pressed = ui_button(tr("Play"), UI_BTN_PRIMARY, u, ICON_PLAY, ImVec2(0, 44 * u), ready);
+                {   // SAVAGEWIND_LAUNCHER_PRESS_PLAY=<frame> (test): Play pressed on that frame of the Home page
+                    static long press_at = getenv("SAVAGEWIND_LAUNCHER_PRESS_PLAY") ? atol(getenv("SAVAGEWIND_LAUNCHER_PRESS_PLAY")) : 0, home_frames;
+                    if (press_at && ready && ++home_frames == press_at) pressed = true;
+                }
                 ImGui::SetWindowFontScale(1);
                 ImGui::PopFont();
                 if (pressed) {  // first PLAY ever: how to reach our menu, then the game
-                    if (!g_settings.menu_tip_seen) ImGui::OpenPopup("##menutip");
+                    // (the note opens at the window's level, where menu_tip draws it: opened here, inside ##content,
+                    //  its id was the child's, so it never showed and Play did nothing until menu_tip_seen was set)
+                    if (!g_settings.menu_tip_seen) tip_then_play = true;
                     else play = true;
                 }
                 ImGui::SameLine(0, 10 * u);

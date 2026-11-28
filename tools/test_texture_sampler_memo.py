@@ -23,7 +23,7 @@ with tempfile.TemporaryDirectory(prefix="sw-sampler-") as folder:
     registration += section(objects, "static NvnSamplerDesc sampler_desc_from_builder(", "// An NVNsampler holds")
     registration += section(objects, "static void register_sampler(", "NvnDescPool *nvn_find_pool")
     (tmp/"registration.inc").write_text(registration, encoding="utf8")
-    (tmp/"lookup.inc").write_text(section(executor, "static void texture_info(int stage", "\nstatic void texture_info_("), encoding="utf8")
+    (tmp/"lookup.inc").write_text(section(executor, "// texture_info's memos:", "\nstatic void texture_info_("), encoding="utf8")
     exe = tmp/("memo.exe" if os.name == "nt" else "memo")
     subprocess.run([os.environ.get("CC", "clang"), "-std=gnu11", "-O2", "-Wall", "-Werror",
                     *shlex.split(os.environ.get("CPPFLAGS","")), "-I"+str(root/"runtime"), "-I"+str(tmp),

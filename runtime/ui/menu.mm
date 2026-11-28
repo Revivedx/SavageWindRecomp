@@ -25,6 +25,7 @@
 #include "imgui_internal.h"  // (NavCursorVisible)
 #include "osk.h"
 #include "console.h"
+#include "benchmark_ui.h"
 #ifdef SW_METAL
 #include "imgui_impl_metal.h"
 #else
@@ -37,6 +38,7 @@ extern "C" bool vk_feedback_once(void);  // runtime/nvn/vulkan/exec.c (Video > S
 
 extern "C" {
 #include "../amiibo.h"
+#include "../benchmark.h"
 #include "../bookmarks.h"
 #include "../collectibles.h"
 #include "../control.h"
@@ -45,6 +47,7 @@ extern "C" {
 #include "../hle.h"
 #include "../items.h"
 #include "../settings.h"
+bool rtr_supported(void);  // (nvn/vulkan/raytrace.h)
 #include "../gamelib.h"
 #include "../quick_inventory_sort.h"
 #include "../quick_drop.h"
@@ -56,6 +59,8 @@ extern "C" {
 #include "../window_size.h"
 extern "C" {
 #include "../language.h"
+#include "../framepace.h"
+#include "../game_flags.h"
 }
 #include "menu.h"
 void input_reset(void);
@@ -106,6 +111,10 @@ static void push(const QEvent &e) {
 bool menu_is_open(void) { return g_open.load(); }
 static void set_open(bool open);
 extern "C" void menu_test_close(void) { set_open(false); }  // (SAVAGEWIND_MENU_CLOSE_AT)
+// From the game's thread (the pause menu's Options and Achievements buttons: runtime/ui/game_options.mm
+// rt_pause_button): open the menu on that page; the presenting thread does it (menu_draws)
+static std::atomic<int> g_page_open_request{-1};
+extern "C" void menu_open_page(int id) { g_page_open_request.store(id); }
 extern "C" void menu_test_open(void) {
     set_open(true);
     if (getenv("SAVAGEWIND_MENU_TAB")) { extern int g_tab_request_ext; g_tab_request_ext = atoi(getenv("SAVAGEWIND_MENU_TAB")); }
@@ -258,6 +267,25 @@ static void console_paste(void) {
     SDL_free(clip);
 }
 
+// A short notice at the top of the screen for two seconds (F5's frame rate cap)
+static char g_notice[160];
+static std::atomic<uint64_t> g_notice_until{0};
+static void menu_notice(const char *text) {
+    snprintf(g_notice, sizeof g_notice, "%s", text);
+    g_notice_until.store(SDL_GetTicks() + 2000);
+}
+static void notice_draw(const ImGuiIO &io, float scale) {
+    if (SDL_GetTicks() >= g_notice_until.load()) return;
+    ImDrawList *dl = ImGui::GetForegroundDrawList();
+    ImFont *f = ImGui::GetFont();  // (the menu font, made the default font when the overlay starts)
+    float fs = 30 * scale, pad = 14 * scale;
+    ImVec2 ts = f->CalcTextSizeA(fs, FLT_MAX, 0, g_notice);
+    ImVec2 a(io.DisplaySize.x * 0.5f - ts.x * 0.5f - pad, 28 * scale), b(a.x + ts.x + 2 * pad, a.y + ts.y + pad);
+    dl->AddRectFilled(a, b, IM_COL32(0x13, 0x14, 0x17, 225), 8 * scale);
+    dl->AddRect(a, b, UI_BORDER, 8 * scale, 0, 1.5f * scale);
+    dl->AddText(f, fs, ImVec2(a.x + pad, a.y + pad * 0.5f), UI_TEXT, g_notice);
+}
+
 bool menu_handle_event(const SDL_Event *e) {
     static bool back_down, start_down;
     if (e->type == SDL_EVENT_WINDOW_FOCUS_LOST || e->type == SDL_EVENT_WINDOW_FOCUS_GAINED) {
@@ -305,6 +333,12 @@ bool menu_handle_event(const SDL_Event *e) {
     }
     // typing (a text field, the on-screen keyboard, the name entry): keys are text, not menu shortcuts
     bool typing = g_kbd.load() == 1 || console_is_open() || (g_open.load() && g_text_busy.load());
+    if (!g_open.load() && !console_is_open() && bench_active() &&
+        ((e->type == SDL_EVENT_KEY_DOWN && !e->key.repeat && e->key.scancode == SDL_SCANCODE_ESCAPE) ||
+         (e->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN && e->gbutton.button == g_bind_pad[BIND_B]))) {
+        bench_cancel();
+        return true;
+    }
     if (e->type == SDL_EVENT_KEY_UP && e->key.scancode == SDL_SCANCODE_ESCAPE)
         input_pc_escape(false);
     if (pc_cursor_enabled() && !capturing() && !typing && !game_options_input_hold() &&
@@ -345,6 +379,10 @@ bool menu_handle_event(const SDL_Event *e) {
                 return true;
             }
             if (!typing) set_open(!g_open.load());  // (Esc with the menu open goes to ImGui below: it cancels a field)
+            return true;
+        }
+        if (!e->key.repeat && e->key.scancode == SDL_SCANCODE_F5 && !typing) {  // 30 fps until F5 again (#994)
+            menu_notice(framepace_cap30_toggle() ? tr("30 fps until F5 again") : tr("Frame rate as set again"));
             return true;
         }
         if (!e->key.repeat && e->key.scancode == SDL_SCANCODE_F10 && !typing) {  // performance overlay: off, FPS, full
@@ -974,6 +1012,15 @@ static void tab_display(void) {
     }
     opt_toggle("Dynamic HUD", &g_settings.dynamic_hud, false,
                "Hides the HUD while exploring and shows it for 5 seconds when Link takes damage.");
+    opt_section("Hide HUD elements");
+    opt_toggle("Hide hearts", &g_settings.hud_hide_hearts, false, "Hides the heart containers on the HUD.");
+    opt_toggle("Hide stamina wheel", &g_settings.hud_hide_stamina, false, "Hides the stamina wheel.");
+    opt_toggle("Hide champion abilities", &g_settings.hud_hide_abilities, false, "Hides the champion ability icons under the hearts.");
+    opt_toggle("Hide minimap", &g_settings.hud_hide_minimap, false, "Hides the minimap during play while keeping the full map.");
+    opt_toggle("Hide sensors & weather", &g_settings.hud_hide_sensors, false,
+               "Hides the Sheikah Sensor, sound meter, temperature gauge, weather and clock.");
+    opt_toggle("Hide enemy health bars", &g_settings.hud_hide_enemy_bars, false, "Hides enemy health bars.");
+    opt_toggle("Hide action prompts", &g_settings.hud_hide_prompts, false, "Hides the on-screen button prompts during play.");
     {
         float tsz = (float)g_settings.menu_text_size;
         if (opt_slider("Overlay text size", &tsz, 80, 150, 5, 100, "%g%%",
@@ -1198,6 +1245,30 @@ static void tab_display(void) {
         static const char *const stars[STARS_COUNT] = {"Original", "Bright", "Brighter", "Brightest"};
         opt_choice("Stars", &g_settings.stars, stars, STARS_COUNT, STARS_BRIGHTEST,
                    "How bright the night sky's stars are. Original: as the game draws them. From the next start.", false);
+    }
+    {   // Ray tracing (vulkan/raytrace.c), as the game's Options screen's rows
+        bool can = rtr_supported();
+        const char *no = "Your graphics card doesn't support ray tracing.";
+        opt_section("Ray tracing");
+        if (!can) opt_disable_next();
+        opt_toggle("Ray tracing", &g_settings.rt, false,
+                   can ? "Traces rays for the effects below. Needs a graphics card with ray tracing; heavy. From the next start." : no);
+        bool sub = can && g_settings.rt;
+        if (!sub) opt_disable_next();
+        opt_toggle("Ray-traced shadows", &g_settings.rt_shadows, true,
+                   can ? "The sun's shadows traced: sharp where things touch, soft further away. From the next start." : no);
+        if (!sub) opt_disable_next();
+        opt_toggle("Ray-traced reflections", &g_settings.rt_reflections, true, can ? "Water reflects the world around it, and Link. From the next start." : no);
+        if (!sub) opt_disable_next();
+        opt_toggle("Off-screen reflections", &g_settings.rt_offscreen, true,
+                   can ? "Also reflects what the camera saw before and no longer shows. About 170 MB of video memory. Turning it on: from the next start." : no);
+        static const char *const samples[4] = {"1", "2", "4", "8"};
+        if (!sub) opt_disable_next();
+        opt_choice("Ray tracing samples", &g_settings.rt_samples, samples, 4, 2, can ? "Rays per pixel for the traced shadows. More: smoother edges, slower." : no, false);
+        static const char *const dist[3] = {"Near", "Medium", "Far"};
+        if (!sub) opt_disable_next();
+        opt_choice("Ray tracing distance", &g_settings.rt_distance, dist, 3, 2,
+                   can ? "How far the rays reach. Nearer: faster; distant shadows and reflections are lost." : no, false);
     }
 #endif
     {   // supersampling (nvn/output_scale.c): applies at once
@@ -1478,10 +1549,15 @@ static void tab_display(void) {
                "little faster, a flatter image.");
     opt_toggle("Depth of field", &g_settings.depth_of_field, true, "The game blurs the far distance a little. Off: sharp "
                "out to the horizon, a little faster.");
+    opt_toggle("Ambient occlusion", &g_settings.ambient_occlusion, true, "Soft contact shadows in corners and foliage. "
+               "Off: cleaner image, a little faster.");
     opt_toggle("Grass", &g_settings.grass, true, "Grass blades and ground cover. Off: bare terrain, faster.");
     {
         static const char *const gd_names[GRASS_DIST_COUNT] = {"Follow draw distance", "Potato", "Original", "Medium", "High"};
         opt_indent(1);
+        if (!g_settings.grass) opt_disable_next();
+        opt_toggle("Ground cover", &g_settings.grass_quads, true,
+                   "Distant grass ground-cover layer. Off: keeps near grass blades only.");
         if (!g_settings.grass) opt_disable_next();
         opt_choice("Grass distance", &g_settings.grass_distance, gd_names, GRASS_DIST_COUNT, GRASS_DIST_FOLLOW,
                    "How far out grass blades and ground cover are drawn. Follow draw distance matches Draw distance; "
@@ -1521,6 +1597,67 @@ static void tab_display(void) {
 #ifndef SW_METAL
     tab_colour();
 #endif
+    {   // (Accessibility > Colour vision of the game's Options screen: runtime/ui/game_options.mm)
+        void game_items_f1_rows(int which);
+        opt_section("Colour vision");
+        game_items_f1_rows(2);
+    }
+    opt_end();
+}
+
+// Gameplay: the game's own options (the console game's pause menu > System > Options: runtime/game_flags.c, in the
+// game's memory at once and in option.sav) and Savage Wind's gameplay settings. The game's Options button opens it
+// (runtime/ui/game_options.mm rt_pause_button).
+static bool gopt_toggle(const char *label, int id, const char *desc) {
+    bool v = game_opt_get(id) != 0;
+    if (!opt_toggle(label, &v, game_opt_default(id) != 0, desc)) return false;
+    game_opt_set(id, v);
+    return true;
+}
+
+static void tab_gameplay(void) {
+    void game_items_f1_rows(int which);
+    opt_begin("##gameplay", ImGui::GetFontSize() / 34);
+    opt_section("The game's options");
+    gopt_toggle("Invert vertical camera", GOPT_INVERT_Y, "Up on the stick or the mouse looks down, and down looks up.");
+    gopt_toggle("Invert horizontal camera", GOPT_INVERT_X, "Left on the stick or the mouse turns right, and right turns left.");
+    {
+        static const char *const names[] = {"Very slow", "Slow", "Normal", "Fast", "Very fast"};
+        int v = game_opt_get(GOPT_CAMERA_SPEED);
+        if (opt_choice("Camera sensitivity", &v, names, 5, game_opt_default(GOPT_CAMERA_SPEED),
+                       "How fast the camera turns with the stick.", false))
+            game_opt_set(GOPT_CAMERA_SPEED, v);
+    }
+    gopt_toggle("Swap jump and cancel", GOPT_JUMP_SWAP,
+                "Jump goes to the cancel button and cancel to the jump button (B and X on a Nintendo layout).");
+    gopt_toggle("Aim with motion controls", GOPT_MOTION_AIM,
+                "Tilting the controller aims the bow and the runes, on a controller with motion sensors.");
+    gopt_toggle("Fix minimap to north", GOPT_MINIMAP_NORTH, "The minimap keeps north up instead of turning with Link.");
+    {
+        static const char *const names[] = {"Normal", "Pro"};
+        int v = game_opt_get(GOPT_HUD_PRO);
+        if (opt_choice("HUD mode", &v, names, 2, game_opt_default(GOPT_HUD_PRO),
+                       "Pro leaves out the minimap, temperature, time, weather and noise: only the hearts, the stamina "
+                       "and what you hold."))
+            game_opt_set(GOPT_HUD_PRO, v);
+    }
+    {
+        static const char *const names[] = {"Regular", "Opaque"};
+        int v = game_opt_get(GOPT_MESSAGE_OPAQUE) - 1;
+        if (opt_choice("Message window", &v, names, 2, game_opt_default(GOPT_MESSAGE_OPAQUE) - 1,
+                       "Opaque: the text boxes hide what is behind them."))
+            game_opt_set(GOPT_MESSAGE_OPAQUE, v + 1);
+    }
+    gopt_toggle("Use amiibo", GOPT_AMIIBO, "The amiibo rune in the Sheikah Slate.");
+    const char *lang = language_text_folder();
+    if (lang && !strncmp(lang, "JP", 2))  // (furigana: the game offers it with Japanese text only)
+        gopt_toggle("Furigana", GOPT_RUBY, "Readings over the kanji in the game's Japanese text.");
+    if (opt_button("Restore the game's defaults", "Sets these options back to the game's own defaults."))
+        game_opt_defaults();
+    opt_section("Savage Wind");
+    game_items_f1_rows(0);
+    opt_section("Accessibility");  // (the Options screen's Accessibility assists: runtime/assists.c)
+    game_items_f1_rows(3);
     opt_end();
 }
 
@@ -1556,9 +1693,11 @@ static void tab_audio(void) {
 
 // Cheats: what hands the player things or changes the world (the game's own menus keep to options and assists, so
 // these are only here). The same as the developer console commands next to them (rupees: runtime/rupees.c;
-// weather: runtime/weather.c). Free sprint: runtime/free_sprint.c. Sure-footed horse, menu only: runtime/sure_footed.c.
-// The assists below are Options > Accessibility's own settings (runtime/assists.c), the same rows here; the hour is the
-// console's `time` (runtime/services/test_warp.c), the blood moon its `bloodmoon` (runtime/blood_moon.c).
+// weather: runtime/weather.c). Free sprint: runtime/free_sprint.c. Improved horse controls, menu only:
+// runtime/improved_horse.c and runtime/sure_footed.c.
+// The assists (God mode, damage, stamina, weapon wear, arrows: runtime/assists.c) are every player's, on the Gameplay
+// page (tab_gameplay), not here: Cheats is developer mode only. The hour is the console's `time`
+// (runtime/services/test_warp.c), the blood moon its `bloodmoon` (runtime/blood_moon.c).
 extern "C" bool rupees_set(int32_t count);
 extern "C" bool hearts_set(int32_t count);
 extern "C" void test_warp_set_hour(float hour);
@@ -1566,27 +1705,9 @@ extern "C" void test_warp_hold_hour(float hour);
 extern "C" float test_warp_hour(bool *held);
 #include "../blood_moon.h"
 
-// Damage taken, Damage dealt, Stamina drain (Accessibility's rows: game_options.mm k_damage, settings.h DAMAGE_CHOICES)
-static void cheats_percent(int which) {  // 0: Damage taken, 1: Damage dealt, 2: Stamina drain
-    static const int damage[] = DAMAGE_CHOICES;
-    static const char *const damage_names[] = {"25%", "50%", "75%", "100%", "150%", "200%", "300%", "400%"};
-    enum { ND = sizeof damage / sizeof damage[0] };
-    static_assert(sizeof damage_names / sizeof damage_names[0] == ND, "a name for each damage choice");
-    int &setting = which == 1 ? g_settings.damage_dealt : which == 2 ? g_settings.stamina_drain : g_settings.damage_taken;
-    int d = 3;
-    for (int i = 0; i < ND; i++) if (setting == damage[i]) d = i;
-    if (opt_choice(which == 1 ? "Damage dealt" : which == 2 ? "Stamina drain" : "Damage taken", &d, damage_names, ND, 3,
-                   which == 1   ? "How much damage enemies take. 100% is the game's own."
-                   : which == 2 ? "How fast stamina drains. 100% is the game's own."
-                                : "How much damage Link takes. 100% is the game's own.", false))
-        setting = damage[d];
-}
-
 // The cheat rows, in sections by what they change (tab_cheats adds the Map and Add items sections after them)
 static void cheats_options(void) {
     opt_section("Link");
-    opt_toggle("God mode", &g_settings.god_mode, false,
-               "Link takes no damage.");
     {
         static char heart_buf[16];
         if (opt_text("Set hearts", heart_buf, sizeof heart_buf, "",
@@ -1600,10 +1721,6 @@ static void cheats_options(void) {
                 heart_buf[0] = 0;
         }
     }
-    cheats_percent(0);
-    opt_toggle("Infinite stamina", &g_settings.infinite_stamina, false,
-               "The stamina wheel never runs out.");
-    cheats_percent(2);
     opt_toggle("Silent Link", &g_settings.silent_link, false,
                "Link stays quiet, so enemies do not hear him.");
     opt_toggle("Free sprint out of combat", &g_settings.free_sprint, false,
@@ -1628,34 +1745,6 @@ static void cheats_options(void) {
             opt_indent(-1);
         }
     }
-
-    opt_section("Combat");
-    opt_toggle("One-hit kill", &g_settings.one_hit_kill, false, "Enemies go down in one hit.");
-    cheats_percent(1);
-    {   // (Accessibility's row: game_options.mm k_wear)
-        static const int wear[] = {0, 12, 17, 20, 25, 33, 50, 100, 150, 200, 250, 300};
-        static const char *const wear_names[] = {"Fairy", NULL, NULL, NULL, NULL, NULL, "Peter Pan",
-                                                 "Hylian", "Hero", "Master", "Legend", "Dude, are you ok?"};
-        static const char *const wear_times[] = {"0x", "0.12x", "0.17x", "0.2x", "0.25x", "0.33x", "0.5x", "1x", "1.5x",
-                                                 "2x", "2.5x", "3x"};
-        enum { NW = sizeof wear / sizeof wear[0] };
-        static_assert(sizeof wear_names / sizeof wear_names[0] == NW && sizeof wear_times / sizeof wear_times[0] == NW,
-                      "a name and a factor for each wear choice");  // (i18n-skip)
-        // (each with how much it wears, as the game's Options page shows it: "Hero (1.5x)", not the name alone)
-        std::string labels[NW];
-        const char *label_ptrs[NW];
-        for (int i = 0; i < NW; i++) {
-            labels[i] = wear_names[i] ? std::string(tr(wear_names[i])) + " (" + wear_times[i] + ")" : wear_times[i];
-            label_ptrs[i] = labels[i].c_str();
-        }
-        int w = 7;
-        for (int i = 0; i < NW; i++) if (g_settings.weapon_wear == wear[i]) w = i;
-        if (opt_choice_item("Weapon wear", &w, label_ptrs, NW, 7,
-                            "How fast weapons, bows and shields wear out. Fairy: never. Hylian: the game's own.", false, true))
-            g_settings.weapon_wear = wear[w], g_settings.no_weapon_wear = wear[w] == 0;
-    }
-    opt_toggle("Infinite arrows", &g_settings.infinite_arrows, false,
-               "Shooting a bow uses up no arrows. You still need one to shoot.");
 
     opt_section("Rupees and pickups");
     opt_toggle("Infinite rupees", &g_settings.infinite_rupees, false,
@@ -1713,9 +1802,9 @@ static void cheats_options(void) {
     }
 
     opt_section("Travel");
-    opt_toggle("Sure-footed horse", &g_settings.sure_footed, false,
-               "A running horse no longer stops dead and rears when it runs into something."
-               " It no longer stops at cliff edges either.");
+    opt_toggle("Improved horse controls", &g_settings.improved_horse, false,
+               "The horse answers the stick at once, small nudges included, and turns sharper at a canter and gallop"
+               " without losing speed. It no longer stops dead and rears when it runs into something, or at cliff edges.");
 }
 
 // Case-insensitive: does s contain needle (an empty needle matches)
@@ -2142,12 +2231,23 @@ static void tab_about(void) {
                "Press ZL once in play to hold your shield or lock on; press ZL again to release.");
     opt_toggle("Toggle bow aim (ZR)", &g_settings.toggle_zr, false,
                "Press ZR once in play to draw and hold your bow; press ZR again to shoot.");
+    opt_toggle("Toggle sprint", &g_settings.toggle_sprint, false,
+               "Press the sprint button once while moving and Link keeps sprinting until he stops or you press it "
+               "again. Not on horseback.");
+    {   // (the rest of the game's Options screen's Controls page: runtime/ui/game_options.mm)
+        void game_items_f1_rows(int which);
+        opt_begin("##controls_more", ImGui::GetFontSize() / 34);
+        opt_section("Prompts and motion");
+        game_items_f1_rows(1);
+        opt_end();
+    }
     controls_bindings_draw(ImGui::GetFontSize() / 34);
     ImGui::Spacing();
     header("Menu");
     ImGui::TextUnformatted(tr("Open / close this menu:  F1, Esc, the controller's Home / Xbox / PlayStation button, or Back + Start"));
     ImGui::TextUnformatted(tr("Switch tabs:  L / R  (Q / E)        Back:  B  (Esc)"));
     ImGui::TextUnformatted(tr("Fullscreen:  F11 / Alt+Enter"));
+    ImGui::TextUnformatted(tr("30 fps for a physics puzzle, until pressed again:  F5"));
 }
 
 // Reboot (runtime/main.c): the game is gone - menu and name dialog close; the ImGui context stays.
@@ -2866,19 +2966,22 @@ static const char *page_name(int id) {
     case 2: return "Language";
     case 3: return "Saves";
     case 4: return "amiibo";
+    case 14: return "Gameplay";
     case 8: return "Controls";
     case 9: return "Quit";
     case 10: return "Cheats";
     case 11: return "Teleport";
     case 12: return "Mods";
     case 13: return "Achievements";
+    case 15: return "Benchmark";
     }
     return "";
 }
 
 // The settings group (Controls, Video, Audio, Language, amiibo): both sidebars show it under SETTINGS
 int menu_settings_pages(UiNavPage *out, int max) {
-    const UiNavPage pages[] = {{8, "Controls", ICON_GAMEPAD, 1, true}, {0, "Video", ICON_DESKTOP, 1, true},
+    const UiNavPage pages[] = {{14, "Gameplay", ICON_GEAR, 1, true}, {8, "Controls", ICON_GAMEPAD, 1, true},
+                               {0, "Video", ICON_DESKTOP, 1, true},
                                {1, "Audio", ICON_VOLUME, 1, true}, {2, "Language", ICON_GLOBE, 1, true},
                                {4, "amiibo", ICON_STAR, 1, true}};
     int n = 0;
@@ -2892,6 +2995,7 @@ static int game_pages(UiNavPage *out) {
     int n = 0;
     out[n++] = {12, "Mods", ICON_PUZZLE, 0, true};
     out[n++] = {13, "Achievements", ICON_TROPHY, 0, true};  // (runtime/ui/achievements_ui.mm)
+    out[n++] = {15, "Benchmark", ICON_SLIDERS, 0, true};    // (runtime/ui/benchmark_ui.mm)
     // (Cheats, Teleport: only when started with -dev or SAVAGEWIND_DEV=1: cheats are developer mode, as the
     // console's give, tp and time)
     if (control_enabled()) out[n++] = {10, "Cheats", ICON_MAGIC, 0, true}, out[n++] = {11, "Teleport", ICON_LOCATION, 0, true};
@@ -2914,11 +3018,18 @@ static void page_body(int id, float scale, bool in_game) {
     case 2: tab_language(in_game); break;
     case 3: saves_tab_draw(); break;
     case 4: tab_amiibo(); break;
+    case 14: tab_gameplay(); break;
     case 8: tab_about(); break;
     case 9: tab_quit(scale, in_game); break;
     case 10: tab_cheats(); break;
     case 11: tab_teleport(); break;
     case 13: ach_ui_tab(); break;
+    case 15: {
+        bool close = false;
+        bench_ui_tab(&close);
+        if (close) set_open(false);
+        break;
+    }
     case 12: {
         bool want_restart = false;
         mods_tab_draw(in_game, &want_restart);
@@ -3071,11 +3182,11 @@ extern "C" void rec_drain(void);  // (runtime/nvn/vulkan/record.c)
 
 // Native-style selector prompt. Draw-only: input still belongs to the game.
 static void quick_inventory_hint_draw(const ImGuiIO &io) {
-    int kind = g_settings.button_icons;
+    int kind = g_settings.button_icons;  // (as runtime/nvn/glyphs.c resolve_kind: keys while the keyboard is in use)
+    if (input_last_device() == DEVICE_KEYBOARD) kind = ICONS_KEYBOARD;
     if (kind <= ICONS_AUTO || kind >= ICONS_COUNT) {
         int family = input_pad_family();
-        kind = input_last_device() == DEVICE_KEYBOARD ? ICONS_KEYBOARD :
-            family == 1 ? ICONS_XBOX : family == 2 ? ICONS_PLAYSTATION : ICONS_NINTENDO;
+        kind = family == 1 ? ICONS_XBOX : family == 2 ? ICONS_PLAYSTATION : ICONS_NINTENDO;
     }
     bool keyboard = kind == ICONS_KEYBOARD;
     int family = kind == ICONS_XBOX ? 1 : kind == ICONS_PLAYSTATION ? 2 : 0;
@@ -3140,6 +3251,11 @@ static void quick_inventory_hint_draw(const ImGuiIO &io) {
 // menu_render (which decides again, and drains itself) must agree on it. The pointer's hover box, the console and the
 // gyro drag were missing here: their frames went to the command buffer while the recorder thread was still filling it.
 static bool menu_draws(bool *pointer_hover = NULL, float *pointer_box = NULL, bool *gyro_show = NULL, GyroScene *gyro = NULL) {
+    if (int page = g_page_open_request.exchange(-1); page >= 0) {
+        extern int g_tab_request_ext;
+        set_open(true);
+        g_tab_request_ext = page;
+    }
     float box[4];
     GyroScene gs;
     bool hover = pc_cursor_hover_box(pointer_box ? pointer_box : box);
@@ -3148,7 +3264,7 @@ static bool menu_draws(bool *pointer_hover = NULL, float *pointer_box = NULL, bo
     if (gyro_show) *gyro_show = gyro_on;
     return g_open.load() || g_kbd.load() == 1 || g_sizes.load() || console_is_open() || gyro_on || hover ||
            g_settings.perf_overlay != PERF_OFF || act_log_enabled() || quick_inventory_sort_hint() || quick_drop_hint_state() ||
-           collect_map_shown() || ach_ui_active();
+           collect_map_shown() || ach_ui_active() || bench_hud_visible() || SDL_GetTicks() < g_notice_until.load();
 }
 
 bool menu_render_needed(void) { return menu_draws(); }
@@ -3234,7 +3350,9 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
     }
 
     if (g_settings.perf_overlay != PERF_OFF) perf_overlay_draw(io, scale);
+    if (!open && !kbd && !sizes && !con && bench_hud_visible()) bench_ui_overlay(io.DisplaySize.x, io.DisplaySize.y, scale);
     ach_ui_toasts(io.DisplaySize.x, io.DisplaySize.y, scale);
+    notice_draw(io, scale);
     if (act_log_enabled()) act_overlay_draw(io, scale);
     if (!open && !kbd && !sizes && !con && (quick_inventory_sort_hint() || quick_drop_hint_state())) quick_inventory_hint_draw(io);
     if (!open && !kbd && !sizes && !con) collect_map_draw(io);

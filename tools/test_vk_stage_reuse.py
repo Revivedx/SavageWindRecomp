@@ -56,11 +56,13 @@ typedef struct {uint64_t code_addr; uint32_t const_offset, const_size;} NvnShade
 typedef struct {NvnShaderStage stages[6];} NvnProgram;
 static struct {Range ubuf[6][18], sbuf[6][16]; NvnProgram *program;} st;
 static uint64_t gcopy_gen=1, uub_serial, gw_gen;
-static struct {float s;} sdw_fix;
-static struct {float sx;} up_fix;
-static bool fxaa_off;
-static float tex_sc[2][64][2];
-static uint32_t tex_wh[2][64][2];
+static struct {
+    struct {float s;} sdw_fix;
+    struct {float sx;} up_fix;
+    bool fxaa_off;
+    float tex_sc[2][64][2];
+    uint32_t tex_wh[2][64][2];
+} drw;
 #define LOG(...) ((void)0)
 static _Atomic int stage_cpu_options=-1;
 #define CPU_OPTS_REUSE 3
@@ -174,7 +176,7 @@ int main(void) {
         case 5:pending_seq++;break;case 6:setc_gen++;break;
         case 7:images[0].imageView=(VkImageView)7;break;case 8:images[0].sampler=(VkSampler)8;break;
         case 9:images[0].imageLayout=VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;break;
-        case 10:row[0]++;break;case 11:tint[0]++;break;case 12:tex_sc[1][0][0]++;break;
+        case 10:row[0]++;break;case 11:tint[0]++;break;case 12:drw.tex_sc[1][0][0]++;break;
         case 13:si.ntex=0;break;case 14:p2.reuse_mask[1]|=1;st.sbuf[1][0].addr++;break;
         }
         before=calls;call(&p2,&si,images,row,tint,db,&nb);assert(calls>before);
@@ -200,10 +202,10 @@ int main(void) {
         assert(nb==1 && db[0]==768+trial*256);
     }
     for(int special=0;special<6;special++) {
-        if(special==0)sdw_fix.s=2;if(special==1)up_fix.sx=2;if(special==2)fxaa_off=true;
+        if(special==0)drw.sdw_fix.s=2;if(special==1)drw.up_fix.sx=2;if(special==2)drw.fxaa_off=true;
         if(special==3)si.uses_gmem=true;if(special==4)si.writes_gmem=true;if(special==5)p2.reuse_stage[1]=false;
         before=calls;call(&p2,&si,images,row,tint,db,&nb);assert(calls>before);
-        sdw_fix.s=up_fix.sx=0;fxaa_off=si.uses_gmem=si.writes_gmem=false;p2.reuse_stage[1]=true;
+        drw.sdw_fix.s=drw.up_fix.sx=0;drw.fxaa_off=si.uses_gmem=si.writes_gmem=false;p2.reuse_stage[1]=true;
     }
     free(setc);puts("PASS: material reuse, cross-program sharing, used-binding invalidation and 2000 differential cases");
 }

@@ -5,12 +5,13 @@
 #include "../runtime/nvn/output_scale.c"
 Settings g_settings = {.wide_view = true, .fov = 100, .render_scale = RSCALE_100};
 volatile int g_movie_playing;
-static bool title, loading, map, pause;
+static bool title, loading, map, pause, in_event, in_dialogue;
 bool framepace_menu_ui(void) { return pause; }
 bool framepace_map_ui(void) { return map; }
 bool framepace_title_ui(void) { return title; }
 bool framepace_loading_ui(void) { return loading; }
-bool framepace_in_event(void) { return false; }
+bool framepace_in_event(void) { return in_event; }
+bool framepace_dialogue_ui(void) { return in_dialogue; }
 bool fsr3_available(void) { return false; }
 bool fsr4_available(void) { return false; }
 static bool dlss_on;  // (the Render scale cases below)
@@ -18,6 +19,7 @@ bool vk_dlss_available(void) { return dlss_on; }
 bool xess_available(void) { return false; }
 bool xess_usable(void) { return false; }
 bool vk_dlssg_available(void) { return false; }
+bool vk_hdr_output(void) { return false; }  // (SDR swapchain: frame_gen_hdr_sdr is false)
 int vk_dlssg_max_mult(void) { return 2; }
 uint64_t plat_now_ns(void) { return 1000000000; }
 uint64_t renderer_present_count(void) { return 0; }
@@ -176,6 +178,20 @@ int main(void) {
     dlss_on = false, g_settings.upscaler = UPSCALE_OFF, g_settings.upscale_quality = UPQ_QUALITY;
     g_settings.render_scale = RSCALE_100;
 #endif
-    puts("PASS: taller map viewport, 16:9 fallback, disabled fill, title, loading, movies, ultrawide, dynamic floor and "
-         "render scale with DLSS");
+    // Cutscenes at 16:9: non-dialogue events keep 16:9 when enabled; play and dialogues still fill.
+    in_event = true; in_dialogue = false; g_settings.cutscenes_16_9 = false;
+    output_scale(2560, 1080, true, &o);
+    assert(o.shape > 1.3);
+    g_settings.cutscenes_16_9 = true;
+    output_scale(2560, 1080, true, &o);
+    near(o.shape, 1); near(o.vw, 1920); near(o.vx, 320);
+    output_scale(1280, 800, true, &o);
+    near(o.shape, 1); near(o.vh, 720); near(o.vy, 40);
+    in_dialogue = true;
+    output_scale(1280, 800, true, &o);
+    near(o.shape, .9);
+    in_event = false; in_dialogue = false; g_settings.cutscenes_16_9 = false;
+
+    puts("PASS: taller map viewport, 16:9 fallback, disabled fill, title, loading, movies, cutscenes 16:9, ultrawide, "
+         "dynamic floor and render scale with DLSS");
 }

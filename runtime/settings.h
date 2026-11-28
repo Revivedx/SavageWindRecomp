@@ -114,6 +114,12 @@ typedef struct {
     int antialias;       // AA_*: anti-aliasing of the game image before it is scaled to the window
     bool game_fxaa;      // the game's own FXAA, in its scene -> final image composite (vulkan/exec.c fxaa_patch)
     bool wet_fix;        // Video > Wet grass fix: tames the white glare of rain in sunshine (maxwell/translate.c maxwell_wet_lighting)
+    // Video > Ray tracing (nvn/vulkan/raytrace.c). rt and the two effects: from the next start, as the game's passes'
+    // translations are made then; the samples and the distance at once
+    bool rt, rt_shadows, rt_reflections;
+    bool rt_offscreen;   // the reflections' colour cache: what is off screen is reflected too (170 MB of video memory)
+    int rt_samples;      // the shadows' rays a pixel: 0..3 = 1, 2, 4, 8
+    int rt_distance;     // how far the rays go: 0 near, 1 medium, 2 far
     int stars;           // STARS_*: the night sky's stars, brighter and bigger (maxwell/translate.c maxwell_stars)
     int render_scale;    // 50%, 75%, 100% (RSCALE_100: the window's size), 125%, 150%, 200% (nvn/output_scale.c)
     int anisotropy;      // texture filtering: 0 the game's own, 1..4 = 2x, 4x, 8x, 16x (vulkan/textures.c)
@@ -165,7 +171,8 @@ typedef struct {
     int motion_source;   // MOTION_SOURCE_*: where the motion comes from (Automatic: the controller, then the fallbacks)
     bool motion_lean;    // leaning the controller left / right (a steering wheel) also turns the aim
     char motion_dsu_axes[32];  // DSU server axes as the game takes them ("pitch yaw roll"; a name per slot, - flips it)
-    int button_icons;    // ICONS_*: the game's button prompts show this device's buttons (Automatic: the one in use)
+    int button_icons;    // ICONS_*: the game's button prompts show this device's buttons (Automatic: the one in use;
+                         // a controller's: its icons with a controller, keys while the keyboard is in use)
     int button_layout;   // BUTTON_LAYOUT_*: where A, B, X and Y sit on the HUD's four-button diamond (Automatic: bindings)
     bool async_shaders;  // draw on while new shaders compile (no stutter; what needs them is skipped meanwhile; on by
                          // default since settings_version 4; off: every draw waits for its shaders, as before)
@@ -185,6 +192,7 @@ typedef struct {
     int sharper_text;    // the game's font sheets enlarged this many times (2 or 4; 0: off), runtime/nvn/text_upscale.c
     bool wide_view;      // a window that isn't 16:9 shows more of the world instead of bars (runtime/nvn/output_scale.c)
     bool hud_edges;      // on windows taller than 16:9 with wide_view, anchor HUD to the window edges
+    bool cutscenes_16_9; // keep in-engine cutscenes at 16:9 with bars on wider or taller windows (#838)
     int hdr;             // HDR_* (runtime/nvn/vulkan/device.c hdr_*)
     int hdr_white;       // nits of SDR white in HDR (0: what Windows gives SDR content on that monitor)
     int hdr_peak_nits;   // peak: scene roll-off and final cap for every element (0: not set yet; first start reads ICC)
@@ -217,12 +225,24 @@ typedef struct {
     bool handheld_setup; // a PC handheld's own settings were taken once (settings_load)
     int hud_size;        // the HUD's size in play, percent of the game's own (HUD_SIZE_CHOICES, runtime/nvn/hud_scale.h)
     bool dynamic_hud;    // hide the HUD while exploring; show it for 5 s when Link takes damage (vulkan/exec.c)
+    bool hud_hide_hearts;     // selectively hide HUD elements (ui_layout.c)
+    bool hud_hide_stamina;
+    bool hud_hide_abilities;
+    bool hud_hide_minimap;
+    bool hud_hide_sensors;
+    bool hud_hide_enemy_bars;
+    bool hud_hide_prompts;
     int menu_speed;      // menu cursor and UI animation speed, percent (MENU_SPEED_CHOICES, runtime/hle/framepace.c)
     int draw_distance;   // DRAWDIST_*: how far placed actors are kept (runtime/draw_distance.c)
     int haze;            // the air's haze, percent of the game's (services/fs.c haze_patch; from the next start)
-    bool bloom;          // the glow around bright light (off: its draws clear their images: vulkan/exec.c)
-    bool depth_of_field; // the distance blur over far pixels (off: its draw is skipped: vulkan/exec.c)
+    int haze_low;           // savagewind.ini only (#915): a haze below the menu's 75 %, 0-74 (the sky turns teal); -1 unset
+    bool bloom;             // the glow around bright light (off: its draws clear their images: vulkan/exec.c)
+    bool depth_of_field;    // the distance blur over far pixels (off: its draw is skipped: vulkan/exec.c)
+    bool ambient_occlusion; // quarter-res HBAO contact shadows (off: AO + blur cleared to 1.0: vulkan/exec.c)
+    bool map_zoom_blur;  // the blur the world map lays over itself as it opens and after each zoom (off: its blend
+                         // draws are skipped: vulkan/exec.c)
     bool grass;          // grass blades and crossed quads (off: draw_distance.c hides both layers)
+    bool grass_quads;    // distant ground-cover layer (crossed quads; off: keeps near grass blades only)
     int grass_distance;  // GRASS_DIST_*: independent grass draw distance (0: follow draw_distance)
     bool lens_flare;     // sun glare / lens flare (off: vulkan/exec.c skips sun occlusion queries)
     bool fast_fma;       // CPUs without FMA instructions (gamelib_compat): the game's fused multiply-adds rounded twice,
@@ -248,9 +268,11 @@ typedef struct {
     bool infinite_rupees;    // the wallet is kept at 9999 rupees (runtime/rupees.c)
     int item_multiplier;     // 1, 2, 4 or 8: multiply stackable item pickups (runtime/items.c)
     bool free_sprint;        // sprinting takes no stamina while no enemy is fighting Link (runtime/free_sprint.c)
-    bool sure_footed;        // a running horse doesn't stop dead and rear when it hits something (runtime/sure_footed.c)
+    bool improved_horse;     // the horse steers at once, keeps its speed through a turn, and doesn't stop dead and rear
+                             // when it hits something (runtime/improved_horse.c, runtime/sure_footed.c)
     bool collectibles_map;   // the Korok seeds and shrines not found yet on the game's map (runtime/collectibles_map.c)
     bool show_all_places;    // every shrine, tower, lab and stable on the map (runtime/place_display.c)
+    bool map_clear_rate;     // the map's completion percentage before the game is cleared (runtime/assists.c)
     int weather;             // WEATHER_COUNT: the game's, rain or thunderstorms kept out, or one weather held (weather.c)
     bool god_mode;           // Link takes no damage
     bool one_hit_kill;       // whatever else takes damage loses all its life at once
@@ -263,6 +285,7 @@ typedef struct {
     int damage_dealt;        // percent of the damage everything else takes (DAMAGE_CHOICES)
     bool toggle_zl;          // press ZL once in play to hold shield / focus; press again to release (hle/input.c)
     bool toggle_zr;          // press ZR once in play to draw / hold bow; press again to release (hle/input.c)
+    bool toggle_sprint;      // a sprint press while moving keeps sprinting until Link stops (hle/input.c, #1102)
     int menu_text_size;      // overlay text scale, percent (80..150, ui/menu.mm)
     bool menu_remember_pos;  // remember last focused option and scroll position when reopening the F1 overlay
     int text_language;   // index in g_text_languages (runtime/language.h), 0: the host's

@@ -27,6 +27,7 @@
 #include "../../ui/menu.h"
 #include "../../window_size.h"
 #include "mvec.h"
+#include "raytrace.h"
 #include "vk.h"
 #include "shaders.h"
 #include "vram.h"
@@ -1057,6 +1058,39 @@ static void create_device(void) {
         next_feature = xess_features;
     }
     VkPhysicalDeviceFeatures2 f = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = next_feature};
+    // Ray tracing (raytrace.c, SAVAGEWIND_RT=1): acceleration structures and ray queries, where the device has them
+    VkPhysicalDeviceAccelerationStructureFeaturesKHR as_on = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR, .accelerationStructure = VK_TRUE};
+    VkPhysicalDeviceRayQueryFeaturesKHR rq_on = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR,
+                                                 .rayQuery = VK_TRUE, .pNext = &as_on};
+    bool rtr = false;
+    {   // (looked at whether asked for or not: the options' rows are greyed where it can't run)
+        VkPhysicalDeviceAccelerationStructureFeaturesKHR as_have = {
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR};
+        VkPhysicalDeviceRayQueryFeaturesKHR rq_have = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR,
+                                                       .pNext = &as_have};
+        VkPhysicalDeviceFeatures2 q = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &rq_have};
+        bool names = has_ext(ep, ne, VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME) && has_ext(ep, ne, VK_KHR_RAY_QUERY_EXTENSION_NAME) &&
+                     has_ext(ep, ne, VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
+        if (names) vkGetPhysicalDeviceFeatures2(g_vk.phys, &q);
+        rtr = names && as_have.accelerationStructure && rq_have.rayQuery && f12_have.bufferDeviceAddress &&
+              have.features.vertexPipelineStoresAndAtomics && g_vk.props.limits.maxPushConstantsSize >= RTR_PUSH_OFF + RTR_PUSH;
+        rtr_set_supported(rtr);
+        if (!rtr_wanted()) rtr = false;
+        else if (rtr) {
+            ext[n_ext++] = VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME;
+            ext[n_ext++] = VK_KHR_RAY_QUERY_EXTENSION_NAME;
+            ext[n_ext++] = VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME;
+            f12.bufferDeviceAddress = VK_TRUE;
+            as_on.pNext = f.pNext;
+            f.pNext = &rq_on;
+        } else {
+            LOG("[rt] ray tracing asked for but not possible here: extensions %d, acceleration structure %d, "
+                "ray query %d, buffer addresses %d, vertex stores %d, push constants %u\n", names, as_have.accelerationStructure,
+                rq_have.rayQuery, f12_have.bufferDeviceAddress, have.features.vertexPipelineStoresAndAtomics,
+                g_vk.props.limits.maxPushConstantsSize);
+        }
+    }
     VkPhysicalDeviceFeatures *b = &f.features, *h = &have.features;
     b->independentBlend = h->independentBlend;
     b->dualSrcBlend = h->dualSrcBlend;
@@ -1220,6 +1254,7 @@ static void create_device(void) {
     VK_CHECK(vkCreateDevice(g_vk.phys, &di, NULL, &g_vk.dev));
     free(ep);  // (read up to here: extended dynamic state and the FSR 4 checks above, #488)
     vk13_load();
+    rtr_device_ready(rtr);
     fsr_api_probe(g_vk.dev, g_vk.phys);  // (logs what AMD's FSR DLLs offer this device; a no-op without them)
     xess_probe(g_vk.inst, g_vk.dev, g_vk.phys);  // (makes the XeSS context where libxess.dll is next to the game)
     if (g_settings.upscaler == UPSCALE_FSR4 && !fsr4_available()) {  // (a settings file from a PC with an AMD Radeon)
@@ -1765,7 +1800,11 @@ static bool hdr_wanted(float *white) {
     return on && g_cs_ext;
 }
 
-bool vk_hdr_game_enabled(void) { return g_hdr; }
+static int fg_mode(void);
+// The game's HDR picture: an HDR10 swapchain and frame generation off (its frames are 8-bit, so with it the game's
+// tonemap stays SDR's and the 8-bit image is presented in HDR10, its frames and the generated ones alike)
+bool vk_hdr_game_enabled(void) { return g_hdr && !fg_mode(); }
+bool vk_hdr_output(void) { return g_hdr; }  // (the swapchain is HDR10, frame generation or not)
 bool vk_hdr_targets_wanted(void) {  // (hdr.c: the final linear 10-bit image as RGBA16F)
     static int off = -1;
     if (off < 0) off = getenv("SAVAGEWIND_HDR_RT8") ? atoi(getenv("SAVAGEWIND_HDR_RT8")) != 0 : 0;  // (testing: the old 10-bit targets)
@@ -3043,13 +3082,13 @@ void vk_wait_idle_for_contexts(void) {
     vkDeviceWaitIdle(g_vk.dev);
 }
 
-static int fg_wanted(void) {
+// The frame generation the player chose (Video > Frame generation, or SAVAGEWIND_FG), whatever the menus: 0 when off
+static int fg_mode(void) {
     static int forced = -2;
     if (forced == -2) {
         const char *e = getenv("SAVAGEWIND_FG");
         forced = !e ? -1 : !strcmp(e, "dlss") ? FG_DLSS : !strcmp(e, "fsr3") ? FG_FSR3 : !strcmp(e, "off") ? FG_OFF : atoi(e);
     }
-    if (g_hdr) return 0;  // (frame generation's copies are 8-bit and would clip the HDR picture)
     int mode = forced >= 0 ? forced : g_settings.frame_gen;
     if (mode <= FG_OFF || mode >= FG_COUNT) return 0;
     // (Video > Advanced > Dynamic resolution measured no net gain from frame generation on this machine: leave it off
@@ -3060,6 +3099,12 @@ static int fg_wanted(void) {
         if (!warned++) LOG("[fg] NVIDIA DLSS Frame Generation can't run here: AMD FSR 3 instead\n");
         mode = FG_FSR3;
     }
+    return mode;
+}
+
+static int fg_wanted(void) {
+    int mode = fg_mode();
+    if (!mode) return 0;
     static int log = -1;
     static uint64_t n;
     if (log < 0) log = getenv("SAVAGEWIND_FG_LOG") != NULL;
@@ -3291,12 +3336,19 @@ static void present_locked(NvnTexture *t) {
     if (!held && boot_splash_active()) boot_splash_close();  // (the game's own frames from here on)
     // HDR: the game copied its float 10-bit image (linear, HUD included) into the 8-bit image it presents (hdr.c). Use
     // the float source instead, so the picture keeps the tonemap's highlights. The boot picture is SDR and has its own
-    // 8-bit pipeline, so HDR waits until it is gone.
+    // 8-bit pipeline, so HDR waits until it is gone. With frame generation on, the 8-bit image is presented in HDR10
+    // instead, in play and in the menus alike: the generated frames are 8-bit copies, and the game's frames between
+    // them must look the same (the float picture needs frame generation off).
     VkImage hsrc = VK_NULL_HANDLE;
     VkFormat hfmt = VK_FORMAT_UNDEFINED;
     uint32_t hw = 0, hh = 0;
-    bool hdr_src = g_hdr && !held && vk_hdr_source(b->image, &hsrc, &hfmt, &hw, &hh);
-    if (!hdr_src && g_hdr && !held && b->hdr_upgraded) {  // (a game that presents its float image directly)
+    bool fg_chosen = fg_mode() != 0;
+    if (g_hdr && fg_chosen) {
+        static int told;
+        if (!told++) LOG("[fg] HDR10 output with frame generation: the 8-bit picture is presented (as SDR's)\n");
+    }
+    bool hdr_src = g_hdr && !held && !fg_chosen && vk_hdr_source(b->image, &hsrc, &hfmt, &hw, &hh);
+    if (!hdr_src && g_hdr && !held && !fg_chosen && b->hdr_upgraded) {  // (a game that presents its float image directly)
         hdr_src = true;
         hsrc = b->image, hfmt = b->format, hw = b->width, hh = b->height;
     }
@@ -3318,11 +3370,11 @@ static void present_locked(NvnTexture *t) {
     if (hdr_src) {
         hdr_missing = 0;
         if (!hdr_found_told++) LOG("[hdr] presenting the game's float picture (HDR)\n");
-    } else if (g_hdr && !held && ++hdr_missing == 10) {
+    } else if (g_hdr && !held && !fg_chosen && ++hdr_missing == 10) {
         LOG("[hdr] HDR10 output, but the game's float picture was not found (the 8-bit copy is shown)\n");
     }
     // Frame generation: the frames between the last one and this (exec.c vk_fg_generate), presented first. Their
-    // copies are 8-bit and would clip the HDR picture, so it stays off while the game's float picture is presented.
+    // copies are 8-bit and would clip the HDR picture, so none while the game's float picture is presented (above).
     TexBackend *gens[3];
     int ngen;
     { SW_ZONE("present/frame_gen"); ngen = (held || hdr_src) ? 0 : vk_fg_generate(t, b, gens); }

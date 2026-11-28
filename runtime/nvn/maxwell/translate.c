@@ -59,6 +59,10 @@ typedef struct {
     const uint8_t *code;   // first instruction group
     size_t ninsts;         // number of 8-byte words to scan
     int stage;
+    bool rt_refl;          // one of the game's light composition passes with a cube reflection (maxwell_rt_refl_pass)
+    int rt_radd;           // ... or one without (maxwell_rt_radd_pass: 1; 2: the characters')
+    bool rt_shadow;        // one of the game's deferred sun shadow passes, with ray traced shadows on (maxwell_rt_shadow_pass)
+    bool rt_lb;            // one of the game's light composition passes, with the light buffer smoothed (maxwell_rt_comp_pass)
     bool wet;              // one of the game's wet lighting passes, with Video > Wet grass fix on (maxwell_wet_lighting)
     int stars;             // the night sky's stars (maxwell_stars): 1 their vertex shader, 2 their fragment shader
     const ShaderKey *key;
@@ -695,7 +699,10 @@ static void glsl_sample(Ctx *c, char *out, int slot, const char *const *co, cons
     if (lod_kind == 0) snprintf(e, sizeof e, "texture(t%d, %s%s)", slot, P, ex);
     else if (lod_kind == 1) snprintf(e, sizeof e, "textureLod(t%d, %s%s, %s)", slot, P, ex, lod);
     else snprintf(e, sizeof e, "texture(t%d, %s%s, %s)", slot, P, ex, lod);
-    if (t->shadow) sprintf(out, "vec4(%s)", e);
+    if (!t->shadow && c->rt_refl && type == TEXTYPE_CUBE) sprintf(out, "rt_rf(%s, %s)", e, lod_kind == 1 ? lod : "0.0f");
+    else if (t->shadow && c->rt_shadow && type == TEXTYPE_2D_ARRAY) sprintf(out, "vec4(rt_sh(%s))", e);
+    else if (!t->shadow && c->rt_lb && type == TEXTYPE_2D && !layer && lod_kind == 0 && !off) sprintf(out, "rt_lb(t%d, %s, %s)", slot, P, e);
+    else if (t->shadow) sprintf(out, "vec4(%s)", e);
     else strcpy(out, e);
 }
 
@@ -1781,9 +1788,10 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
                     sp(&c->body, "      if (ok) { uint wi = uint(ga >> 2); uint sh = uint(ga & %s) * 8u; uint gm = ~(0x%xu << sh), gv = (%s & 0x%xu) << sh; "
                        "%s }\n", size < 2 ? "3ul" : "2ul", size < 2 ? 0xFFu : 0xFFFFu, R(d),
                        size < 2 ? 0xFFu : 0xFFFFu,
-                       maxwell_gmem_split ? "if (wi < GSPLIT) { atomicAnd(gmem_.w[wi], gm); atomicOr(gmem_.w[wi], gv); } "
-                                            "else { atomicAnd(gmem2_.w[wi - GSPLIT], gm); atomicOr(gmem2_.w[wi - GSPLIT], gv); }"
-                                          : "atomicAnd(gmem_.w[wi], gm); atomicOr(gmem_.w[wi], gv);");
+                       maxwell_gmem_bda ? "atomicAnd(GW_(wi), gm); atomicOr(GW_(wi), gv);"
+                       : maxwell_gmem_split ? "if (wi < GSPLIT) { atomicAnd(gmem_.w[wi], gm); atomicOr(gmem_.w[wi], gv); } "
+                                              "else { atomicAnd(gmem2_.w[wi - GSPLIT], gm); atomicOr(gmem2_.w[wi - GSPLIT], gv); }"
+                                            : "atomicAnd(gmem_.w[wi], gm); atomicOr(gmem_.w[wi], gv);");
                 else
                     for (int k = 0; k < nw; k++)
                         sp(&c->body, "      if (ok) GST(uint(ga >> 2) + %du, %s);\n", k, R(d == RZ ? RZ : d + k));
@@ -2225,6 +2233,52 @@ static void glsl_body(Ctx *c, Str *s, const char *body, bool any_branch, bool db
 // off (glsl_finish) and the grass keeps its colour and a soft sheen. The passes are found by an FNV-1a hash of their
 // SPH and first code (0x200 bytes from the blob's 0x30), the game's own bytes, so no GPU, driver or translator change
 // moves the match; a game version whose passes differ doesn't match and keeps the game's look.
+// Ray traced sun shadows (shader.h maxwell_rt_shadow). The game works out the sun's shadow in three full-screen passes
+// at half the scene's size, each a material class, which look the cascades up (5 or 6 compared lookups each) and write
+// the result with the rest of what they compute (fades, the clouds' shadow) to the light buffer. Found like the wet
+// lighting passes, by their first bytes (1.9.0); their compared lookups of a 2D array then go through rt_sh.
+int maxwell_rt_shadow;
+bool maxwell_rt_shadow_pass(const uint8_t *blob, size_t max_size, int stage) {
+    if (!maxwell_rt_shadow || stage != STAGE_FRAGMENT || max_size < 0x230) return false;
+    uint64_t h = 1469598103934665603ull;
+    for (size_t i = 0x30; i < 0x230; i++) h = (h ^ blob[i]) * 0x100000001B3ull;
+    return h == 0x8c42c9bc921ed716ull || h == 0x6e5c0c0e4e68df7dull || h == 0x2a77d31aaea378c2ull;
+}
+
+// Ray traced reflections (shader.h maxwell_rt_refl). Three of the game's nine light composition passes (one a material
+// class; a8fb... is the water's) take their specular reflection from the environment cube, at a level of detail that
+// follows the surface's roughness. Found by their first bytes (1.9.0); their cube lookups go through rt_rf.
+int maxwell_rt_refl;
+char maxwell_rt_refl_max[16] = "0.95f";
+bool maxwell_rt_refl_pass(const uint8_t *blob, size_t max_size, int stage) {
+    if (!maxwell_rt_refl || stage != STAGE_FRAGMENT || max_size < 0x230) return false;
+    uint64_t h = 1469598103934665603ull;
+    for (size_t i = 0x30; i < 0x230; i++) h = (h ^ blob[i]) * 0x100000001B3ull;
+    // (and the three the game draws in their place while things are wet: maxwell_wet_lighting's)
+    return h == 0xf607b5ab4c2f0720ull || h == 0x83398146712c7a25ull || h == 0xa8fbe9863c41ff3bull ||
+           h == 0x970f06ddc0d6fa0aull || h == 0xb19a04739cefe2b2ull || h == 0xdae9df4164496f40ull;
+}
+
+int maxwell_rt_lb;
+bool maxwell_rt_comp_pass(const uint8_t *blob, size_t max_size, int stage) {
+    if (!maxwell_rt_lb || stage != STAGE_FRAGMENT || max_size < 0x230) return false;
+    uint64_t h = 1469598103934665603ull;
+    for (size_t i = 0x30; i < 0x230; i++) h = (h ^ blob[i]) * 0x100000001B3ull;
+    // (the nine, and the three drawn in the place of three of them while things are wet)
+    return h == 0xf607b5ab4c2f0720ull || h == 0x83398146712c7a25ull || h == 0xa8fbe9863c41ff3bull || h == 0xec9c39a52f0aac1eull ||
+           h == 0x885045460b17b7fbull || h == 0x966dae9aeabc743aull || h == 0x513a7bc28dd8faf8ull || h == 0xe107910420e44c9full ||
+           h == 0x93be9efe796c375bull || h == 0x970f06ddc0d6fa0aull || h == 0xb19a04739cefe2b2ull || h == 0xdae9df4164496f40ull;
+}
+
+float maxwell_rt_radd;
+int maxwell_rt_radd_pass(const uint8_t *blob, size_t max_size, int stage) {
+    if (!maxwell_rt_refl || maxwell_rt_radd <= 0 || stage != STAGE_FRAGMENT || max_size < 0x230) return 0;
+    uint64_t h = 1469598103934665603ull;
+    for (size_t i = 0x30; i < 0x230; i++) h = (h ^ blob[i]) * 0x100000001B3ull;
+    if (h == 0xec9c39a52f0aac1eull) return 2;
+    return h == 0x885045460b17b7fbull || h == 0x966dae9aeabc743aull || h == 0x513a7bc28dd8faf8ull || h == 0x93be9efe796c375bull;
+}
+
 bool maxwell_wet_fix;
 bool maxwell_wet_lighting(const uint8_t *blob, size_t max_size, int stage) {
     if (!maxwell_wet_fix || stage != STAGE_FRAGMENT || max_size < 0x230) return false;
@@ -2258,6 +2312,7 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
     glsl_rewrite(c, &body, c->body.buf ? c->body.buf : "");
     // motion vectors (key->mvec, key->mvec_rt): see shader.h
     bool mvec = stage == STAGE_VERTEX && key && key->mvec && !dbg;
+    bool rt_cap = stage == STAGE_VERTEX && key && key->rt_cap && !dbg;
     int mvec_rt = stage == STAGE_FRAGMENT && key && !dbg ? (key->mvec_rt & 0x3F) - 1 : -1;
     bool mvec_mask = mvec_rt >= 0 && (key->mvec_rt & 0x80);  // (the reactive mask: no vector, no mv_cur / mv_prev)
     bool mvec_still = mvec_rt >= 0 && !mvec_mask && (key->mvec_rt & 0x40);  // (zero: no mv_cur / mv_prev either)
@@ -2289,11 +2344,16 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
         // The heap in one storage buffer, or (maxwell_gmem_split: the device's maxStorageBufferRange is below the heap,
         // Mali-G610's 2 GB against 3 GB) in two, split at GMEM_SPLIT. GLD / GST read and write a word of it.
         bool split = maxwell_gmem_split && !maxwell_gmem_bda;
-        if (maxwell_gmem_bda)  // (the heap by address: GMemInfo holds it and its mapped size; emit_insn checks every access)
+        // (maxwell_gmem_bda) The heap by address: GMemInfo holds it and its mapped size, and emit_insn checks every
+        // access. Each word's address is made in 64 bits (GW_). As a 32-bit index into one array from the heap's start,
+        // a 6 GB heap (game_memory_mb) put words past 2-4 GB elsewhere on NVIDIA: particles read and wrote the wrong
+        // memory, and the horse's gallop wind drew as long lines.
+        if (maxwell_gmem_bda)
             sp(&s, "#extension GL_EXT_buffer_reference : require\n"
-                   "layout(buffer_reference, std430, buffer_reference_align = 4) %sbuffer GMem { uint w[]; };\n"
+                   "layout(buffer_reference, std430, buffer_reference_align = 4) %sbuffer GMem { uint v; };\n"
                    "layout(std140, set = %d, binding = %d) uniform GMemInfo { uint64_t gmem_addr; uint64_t gmem_size; };\n"
-                   "#define gmem_ GMem(gmem_addr)\n", c->uses_gmem_store ? "" : "readonly ", set, GMEM_BUFFER_INDEX);
+                   "#define GW_(i) GMem(gmem_addr + (uint64_t(i) << 2)).v\n", c->uses_gmem_store ? "" : "readonly ", set,
+               GMEM_BUFFER_INDEX);
         else
             sp(&s, "layout(std430, set = %d, binding = %d) %sbuffer GMem { uint w[]; } gmem_;\n", set, GMEM_BUFFER_INDEX,
                c->uses_gmem_store ? "" : "readonly ");
@@ -2301,6 +2361,7 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
             sp(&s, "layout(std430, set = %d, binding = %d) %sbuffer GMem2 { uint w[]; } gmem2_;\n", set, GMEM2_BUFFER_INDEX,
                c->uses_gmem_store ? "" : "readonly ");
         if (split) sp(&s, "#define GSPLIT 0x%xu\n#define GLD0(i) ((i) < GSPLIT ? gmem_.w[(i)] : gmem2_.w[(i) - GSPLIT])\n", (unsigned)(GMEM_SPLIT >> 2));
+        else if (maxwell_gmem_bda) sp(&s, "#define GLD0(i) GW_(i)\n");
         else sp(&s, "#define GLD0(i) gmem_.w[(i)]\n");
         if (stage == STAGE_COMPUTE && maxwell_gmem_snap) {
             // A compute shader reads its constant buffers through global memory, by the addresses the driver's block
@@ -2314,12 +2375,16 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
                (unsigned)(maxwell_gmem_size >> 2), (unsigned)(maxwell_gmem_size >> 2));
             if (split)
                 sp(&s, "#define GST(i, v) { uint gi_ = (i); if (gi_ < GSPLIT) gmem_.w[gi_] = (v); else gmem2_.w[gi_ - GSPLIT] = (v); }\n");
+            else if (maxwell_gmem_bda)
+                sp(&s, "#define GST(i, v) { GW_(i) = (v); }\n");
             else
                 sp(&s, "#define GST(i, v) { gmem_.w[(i)] = (v); }\n");
         } else if (c->uses_gmem_store || !maxwell_gmem_snap) {
             sp(&s, "#define GLD(i) GLD0(i)\n");
             if (split)
                 sp(&s, "#define GST(i, v) { uint gi_ = (i); if (gi_ < GSPLIT) gmem_.w[gi_] = (v); else gmem2_.w[gi_ - GSPLIT] = (v); }\n");
+            else if (maxwell_gmem_bda)
+                sp(&s, "#define GST(i, v) { GW_(i) = (v); }\n");
             else
                 sp(&s, "#define GST(i, v) { gmem_.w[(i)] = (v); }\n");
         } else {
@@ -2356,6 +2421,59 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
         default: sp(&s, "ivec3 tsize%d(int l) { return ivec3(textureSize(t%d, l), 1); }\n", i, i);
         }
     }
+    if (c->rt_radd && !dbg) sp(&s, "layout(set = %d, binding = %d) uniform sampler2D rt_radd;\n", set, RT_RADD_BINDING);
+    if (c->rt_radd == 2 && !dbg) sp(&s, "layout(set = %d, binding = %d) uniform sampler2D rt_refl;\n", set, RT_REFL_BINDING);
+    if (c->rt_refl && !dbg)
+        // (sharp lookups take the traced colour whole, blurred ones the cube's: a ray is one direction, and a rough
+        //  surface's reflection is many)
+        sp(&s, "layout(set = %d, binding = %d) uniform sampler2D rt_refl;\n"
+               "vec4 rt_rf(vec4 g, float lod) {\n"
+               // (the traced colour premultiplied by its trust, through a small tent: the water's normals change from
+               //  a pixel to the next and so do the rays; and never the whole of the lookup: the game's own soft
+               //  reflection of the sky and the land stays under it)
+               "  vec2 px_ = 1.0f / vec2(textureSize(rt_refl, 0)), u_ = gl_FragCoord.xy * 0.5f * px_;\n"
+               "  vec4 m = 0.25f * (texture(rt_refl, u_ + vec2(-0.75f, -0.75f) * px_) + texture(rt_refl, u_ + vec2(0.75f, -0.75f) * px_) +\n"
+               "                    texture(rt_refl, u_ + vec2(-0.75f, 0.75f) * px_) + texture(rt_refl, u_ + vec2(0.75f, 0.75f) * px_));\n"
+               "  m.rgb /= max(m.a, 1e-4f);\n"
+               "  m.a *= %s;\n"
+               "  if (%d != 0) return vec4(m.a > 0.01f ? m.rgb : vec3(1.0f, 0.0f, 1.0f), g.a);\n"  // (3, testing: the traced colour alone, magenta where there is none)
+               "  return vec4(mix(g.rgb, m.rgb, m.a * %s), g.a);\n}\n",
+           set, RT_REFL_BINDING, maxwell_rt_refl_max, maxwell_rt_refl == 3,
+           // (2, testing: whatever the level of detail; 3: the level of detail itself in red, the traced share in green)
+           maxwell_rt_refl == 2 ? "1.0f" : "clamp(1.75f - 0.5f * lod, 0.0f, 1.0f)");
+    if (c->rt_lb && !dbg)
+        sp(&s, "layout(set = %d, binding = %d) uniform sampler2D rt_mask;\n"
+               "vec4 rt_lb(sampler2D t, vec2 uv, vec4 g) {\n"
+               "  ivec2 ts = textureSize(t, 0);\n"
+               "  if (ts != textureSize(rt_mask, 0)) return g;\n"
+               // (in the half-size texture's texels, from its first texel's centre; the game's own lookup must be
+               //  one of the four around: a lookup of something else, or the other way up, stays as it is)
+               "  vec2 q = gl_FragCoord.xy * 0.5f - 0.5f;\n"
+               "  if (any(greaterThan(abs(uv * vec2(ts) - 0.5f - q), vec2(1.6f)))) return g;\n"
+               "  ivec2 b = ivec2(floor(q)), mx = ts - 1;\n"
+               "  vec2 f = q - vec2(b);\n"
+               "  ivec2 p00 = clamp(b, ivec2(0), mx), p10 = clamp(b + ivec2(1, 0), ivec2(0), mx);\n"
+               "  ivec2 p01 = clamp(b + ivec2(0, 1), ivec2(0), mx), p11 = clamp(b + ivec2(1, 1), ivec2(0), mx);\n"
+               "  vec2 m0 = texelFetch(rt_mask, p00, 0).ga, m1 = texelFetch(rt_mask, p10, 0).ga;\n"
+               "  vec2 m2 = texelFetch(rt_mask, p01, 0).ga, m3 = texelFetch(rt_mask, p11, 0).ga;\n"
+               "  if (min(min(m0.x, m1.x), min(m2.x, m3.x)) < 0.5f) return g;\n"
+               "  float lo = min(min(m0.y, m1.y), min(m2.y, m3.y)), hi = max(max(m0.y, m1.y), max(m2.y, m3.y));\n"
+               "  if (hi - lo > 0.02f * lo + 0.02f) return g;\n"
+               "  return mix(mix(texelFetch(t, p00, 0), texelFetch(t, p10, 0), f.x),\n"
+               "             mix(texelFetch(t, p01, 0), texelFetch(t, p11, 0), f.x), f.y);\n}\n",
+           set, RT_MASK_BINDING);
+    if (c->rt_shadow && !dbg)
+        sp(&s, "layout(set = %d, binding = %d) uniform sampler2D rt_mask;\n"
+               // (the mask through a 3x3 tent, four bilinear taps: .r the rays that reached the sun, .b those of them
+               //  that crossed an alpha-tested mesh, for which the cascades' answer g stands)
+               "float rt_sh(float g) {\n"
+               "  vec2 px_ = 1.0f / vec2(textureSize(rt_mask, 0)), c_ = gl_FragCoord.xy;\n"
+               "  vec4 m = 0.25f * (texture(rt_mask, (c_ + vec2(-0.5f, -0.5f)) * px_) + texture(rt_mask, (c_ + vec2(0.5f, -0.5f)) * px_) +\n"
+               "                    texture(rt_mask, (c_ + vec2(-0.5f, 0.5f)) * px_) + texture(rt_mask, (c_ + vec2(0.5f, 0.5f)) * px_));\n"
+               "  if (m.g < 0.5f) return g;\n"
+               "  float l = m.r - m.b * (1.0f - g);\n"
+               "  return %s;\n}\n",
+           set, RT_MASK_BINDING, maxwell_rt_shadow == 1 ? "l" : "min(g, l)");
     if (stage == STAGE_VERTEX) {
         for (int i = 0; i < 32; i++) {
             if (!(c->in_attr_mask & (1u << i))) continue;
@@ -2368,10 +2486,19 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
         sp(&s, "invariant gl_Position;\nprecise gl_Position;\n");
         for (int i = 0; i < 32; i++)
             if (c->out_attr_mask & (1u << i)) sp(&s, "layout(location = %d) out vec4 v%d;\n", i, i);
+        // Ray tracing capture (vulkan/raytrace.c): each vertex's position by its index; rc_m: a 3x4, row-major, and a
+        // translation, which take the game's clip position to the frame's ray tracing space (no division: under a
+        // perspective the 3x4 ignores clip z and scales by clip w, the view depth; z / w far away has no digits left
+        // to give it back). An instanced draw's instances follow each other, rc_stride vertices apart. Its push
+        // constants follow the motion program's.
+        if (rt_cap) sp(&s, "layout(std430, set = 0, binding = 62) writeonly buffer RtCap { vec4 rc_pos[]; };\n");
+        if (rt_cap && !mvec)
+            sp(&s, "layout(push_constant, std430) uniform MvPush { uint mflag; uint pb[14]; uint pbn[14]; float rc_m[16]; int rc_off; int rc_stride; int rc_inst0; };\n");
         if (mvec) {  // the history: the previous frame's copies of the game's constant buffers (mvec.c), at pb[cb - 3]
             sp(&s, "layout(std430, set = 0, binding = 63) readonly buffer MvHist { uvec4 ph[]; };\n");
             // (std430: uint arrays 4 bytes apart, as mvec.c packs them; a push constant block is std140 by default)
-            sp(&s, "layout(push_constant, std430) uniform MvPush { uint mflag; uint pb[14]; uint pbn[14]; };\n");
+            sp(&s, "layout(push_constant, std430) uniform MvPush { uint mflag; uint pb[14]; uint pbn[14];%s };\n",
+               rt_cap ? " float rc_m[16]; int rc_off; int rc_stride; int rc_inst0;" : "");
             sp(&s, "#define pcbr(n, off) ph[pb[n] + min((off) >> 4, pbn[n] - 1u)][((off) >> 2) & 3u]\n");
             sp(&s, "layout(location = 30) out vec4 mv_cur;\nlayout(location = 31) out vec4 mv_prev;\n");
         }
@@ -2419,6 +2546,13 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
     glsl_body(c, &s, body.buf ? body.buf : "", any_branch, dbg);
     free(body.buf);
     if (stage == STAGE_VERTEX) {
+        if (rt_cap)
+            sp(&s, "  { vec4 c_ = gl_Position;\n"
+                   "    vec3 q_ = vec3(dot(vec4(rc_m[0], rc_m[1], rc_m[2], rc_m[3]), c_), dot(vec4(rc_m[4], rc_m[5], rc_m[6], rc_m[7]), c_),\n"
+                   "                   dot(vec4(rc_m[8], rc_m[9], rc_m[10], rc_m[11]), c_)) + vec3(rc_m[12], rc_m[13], rc_m[14]);\n"
+                   // (never a NaN: a refit may not turn a triangle off or on)
+                   "    if (any(isnan(q_)) || any(isinf(q_))) q_ = vec3(0.0f);\n"
+                   "    rc_pos[min(uint(rc_off + gl_VertexIndex + (gl_InstanceIndex - rc_inst0) * rc_stride), uint(rc_pos.length() - 1))] = vec4(q_, 1.0f); }\n");
         if (key && key->flip_y) sp(&s, "  gl_Position.y = -gl_Position.y;\n");
         if (key && key->depth_minus_one) sp(&s, "  gl_Position.z = (gl_Position.z + gl_Position.w) * 0.5f;\n");
         // A point size of 0 or less: NVN, as OpenGL, draws the smallest point (1 pixel); Vulkan leaves it undefined,
@@ -2465,6 +2599,12 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
                    "    c0.rgb = mix(g, ltint[0].rgb * pow(l, ltint[1].w) + ltint[1].rgb * l, ltint[0].w); }\n");
         if (c->stars == 2 && !dbg)  // (Video > Stars: maxwell_stars)
             sp(&s, "  c0.a = min(c0.a * %.4ff, 1.0f); c0.rgb *= %.4ff;\n", maxwell_star_gain, maxwell_star_gain);
+        if (c->rt_radd && !dbg && (c->omap_target & 0x7) == 0x7)
+            // (2, the characters' class: by the specular mask, rt_radd's .a, in place of the gloss)
+            sp(&s, c->rt_radd == 2 ? "  { vec2 u_ = gl_FragCoord.xy / vec2(textureSize(rt_radd, 0) * 2);\n"
+                                     "    c0.rgb += %.3ff * texture(rt_refl, u_).rgb * texture(rt_radd, u_).a; }\n"
+                                   : "  c0.rgb += %.3ff * texture(rt_radd, gl_FragCoord.xy / vec2(textureSize(rt_radd, 0) * 2)).rgb;\n",
+               maxwell_rt_radd);
         if (c->wet && !dbg)  // (Video > Wet grass fix: maxwell_wet_lighting)
             sp(&s, "  c0.rgb -= 0.9f * max(min(c0.r, min(c0.g, c0.b)) - 0.5f, 0.0f);\n");
         if (c->omap_depth) {
@@ -2485,6 +2625,7 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
     info->msl = glsl_with_prelude(s.buf);
     free(s.buf);
     info->mvec = mvec || (mvec_rt >= 0 && !mvec_mask && !mvec_still);
+    info->rt_cap = rt_cap;
     info->mvec_mask = mvec_mask;
     info->mvec_still = mvec_still;
     info->attr_mask = c->in_attr_mask;
@@ -3081,6 +3222,10 @@ ShaderInfo *maxwell_translate(const uint8_t *blob, size_t max_size, int stage, c
     if (stage == STAGE_COMPUTE) code = blob;
     c->code = code;
     c->wet = maxwell_wet_lighting(blob, max_size, stage);
+    c->rt_shadow = maxwell_rt_shadow_pass(blob, max_size, stage);
+    c->rt_lb = maxwell_rt_comp_pass(blob, max_size, stage);
+    c->rt_refl = maxwell_rt_refl_pass(blob, max_size, stage);
+    c->rt_radd = maxwell_rt_radd_pass(blob, max_size, stage);
     c->stars = maxwell_stars(blob, max_size, stage);
     if (stage == STAGE_FRAGMENT) {
         c->omap_target = *(const uint32_t *)(sph + 0x48);

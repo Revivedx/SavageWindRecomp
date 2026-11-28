@@ -20,6 +20,8 @@ uint64_t plat_now_ns(void){return 1000000000;}
 void plat_accessibility_shortcuts(bool allow) { (void)allow; }
 #include "game_sites.h"
 GameSites g_site;  // (no game: runtime/hle/bindings.c finds no HUD prompt)
+const char *g_game_version;  // (no game: bow_drawn is false)
+uint64_t g_heap_max;
 Cpu *kernel_current_cpu(void){abort();}
 void vibration_update(SDL_Gamepad *p,bool f){(void)p;(void)f;abort();}
 void vibration_pad_closed(SDL_Gamepad *p){(void)p;}

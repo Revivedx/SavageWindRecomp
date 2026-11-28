@@ -78,6 +78,14 @@ static inline bool hud_combined_shape(const float *m, unsigned long long size, f
     return hud_combined_shape_at(m, size, shape, scale, false);
 }
 
+// Recover the 16:9 layout translation (x, y) from a combined projection * view matrix already reshaped for `shape`.
+static inline void hud_combined_layout_xy(const float *m, float shape, float *lx, float *ly) {
+    float m11 = 2.7474774f * fminf(shape, 1.0f);
+    float m00 = 2.7474774f / (16.0f / 9.0f) / fmaxf(shape, 1.0f);
+    *lx = m[3] / m00;
+    *ly = m[7] / m11;
+}
+
 // A matrix with the view already in it (4 x 4 rows, row 3 its w: text, the clock)
 static inline void hud_scale_matrix(float *m, float s, float ax, float ay) {
     for (int k = 0; k < 4; k++) {
