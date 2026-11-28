@@ -95,7 +95,7 @@ static uint64_t prof_exec, prof_draw, prof_sets, prof_vtx, prof_submit, prof_pre
 static uint64_t prof_program, prof_render_prep, prof_indices, prof_vertex_bind;
 static uint64_t prof_index_direct, prof_index_copy, prof_vertex_direct, prof_vertex_copy;
 static uint64_t prof_feedback_resolve, prof_scene_post, prof_snapshots, prof_gw_check, prof_begin_pass;
-static uint64_t prof_heap_range_checks, prof_heap_range_cached, prof_heap_range_check_ns;
+uint64_t prof_heap_range_checks, prof_heap_range_cached, prof_heap_range_check_ns;
 static VkQueryPool prof_qp;
 static uint64_t cum_exec, cum_wait, cum_draws, cum_submits;  // (profiling) never reset: hitch log
 static uint64_t cum_xwait;  // (profiling) the part of cum_wait spent inside backend_execute
@@ -107,7 +107,7 @@ uint64_t prof_up_ns = ~0ull;  // textures.c upload checks (~0: profiling off)
 #define PROF_ADD(v) do { if (prof) v += SDL_GetTicksNS() - prof_t0_; } while (0)
 // The per-draw timers (draw, pre, key, dyn, sets, tex, vtx) cost ~0.3 us a draw themselves: SAVAGEWIND_VK_PROF=2
 // keeps only the whole-list ones (exec, submit, gpu), for timing the draw path itself.
-static int profd;
+int profd;
 #define PROFD_T0() uint64_t prof_t0_ = profd ? SDL_GetTicksNS() : 0
 #define PROFD_ADD(v) do { if (profd) v += SDL_GetTicksNS() - prof_t0_; } while (0)
 static uint64_t cum_draws;  // draws so far (vk_pso_wait_needed)
@@ -160,8 +160,8 @@ static Sub subs[SUBS];
 static int cur_sub;
 uint64_t submit_seq;  // last submitted
 static pthread_mutex_t seq_lock = PTHREAD_MUTEX_INITIALIZER;
-static VkSemaphore gmem_sparse_timeline;
-static uint64_t gmem_sparse_bind_seq;
+VkSemaphore gmem_sparse_timeline;
+uint64_t gmem_sparse_bind_seq;
 static uint64_t deferred_seq;  // (seq_lock; renderer_wait_seq, GPU_OVERLAP) a fence the game was told is done whose
                                // submission wasn't waited for
 static uint64_t oneshot_seq;   // (seq_lock) the latest submission with a one-off readback: a wait on it is never deferred
