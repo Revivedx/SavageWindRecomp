@@ -4,6 +4,7 @@
 // and AMD's own build of the FSR 3.1 upscaler (3.1.6; SAVAGEWIND_FSR3_API=1 has Upscaler FSR 3 use it in place of
 // the built-in one, fsr3.cpp). Same inputs as fsr3.h's Fsr3Dispatch. Without the DLLs, or elsewhere, nothing is
 // available and the rest of the game is as before.
+// Linux: fsr4-vk's amd_fidelityfx_upscaler_vk.so stands in (FSR 4 only), from SAVAGEWIND_FSR4_LIB, the executable's folder or the data folder
 #pragma once
 #include <stdbool.h>
 #include <stdint.h>

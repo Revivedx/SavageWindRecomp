@@ -72,7 +72,7 @@ next to nothing.
   HDR10 on for XDR displays.
 - **Performance overlay**: CPU, memory and GPU load / memory come from Mach and IOAccelerator; temperatures are not
   shown (Apple Silicon has them only behind private interfaces).
-- **Upscalers**: FSR 1 and FSR 3 (built in). DLSS and FSR 4 are Windows-only, as on Linux.
+- **Upscalers**: FSR 1 and FSR 3 (built in). DLSS is Windows-only and FSR 4 needs Windows or Linux.
 
 What the renderer does differently on MoltenVK (`g_vk.moltenvk`, `runtime/nvn/vulkan`): a texture bound to two colour
 slots is attached once (Apple GPUs are tilers like Mali: both slots stored per tile in no set order), the fragment
