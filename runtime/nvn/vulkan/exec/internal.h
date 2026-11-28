@@ -5,6 +5,7 @@
 // state every later module needs.
 #pragma once
 
+#include <pthread.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -184,3 +185,68 @@ void dl_note(const char *fmt, ...);
 int rt_kind(uint32_t f);
 uint32_t level_extent(uint32_t v, uint32_t lv);
 void hc_cpu_wrote(uint64_t addr, uint64_t size);
+
+// ---- state exec.c shares with exec_memory.c
+// Ranges UpdateUniformBuffer wrote (exec.c uub_note), with the last update's count.
+#define UUB_MAX 64
+typedef struct { uint64_t lo, hi, serial; } UubEntry;
+extern UubEntry uubt[UUB_MAX];
+extern int nuub;
+extern uint64_t uub_serial;
+
+// A linear render target's readback (exec.c): what the guest-memory snapshot asks about.
+typedef struct { uint64_t addr, size, hash, serial; int pending; } LinearMem;
+typedef struct { uint64_t addr[16]; VkDescriptorBufferInfo bi; } ExecGsnapCs;
+extern ExecGsnapCs gsnap_cs;
+extern LinearMem linear_mem[64];
+extern int nlinear_mem;
+extern pthread_mutex_t readback_lock;
+
+// Transient copies shared by identical consecutive draws (exec.c, copy_dedupe).
+enum { DEDUPE_RSCALE_V, DEDUPE_RSCALE_F, DEDUPE_TINT, DEDUPE_DRV_V, DEDUPE_DRV_F, DEDUPE_DRV_C, DEDUPE_GMEM, DEDUPE_SLOTS };
+VkSpan copy_dedupe_in(int slot, const void *data, uint64_t size, uint64_t alloc, uint64_t align);
+VkSpan copy_dedupe(int slot, const void *data, uint64_t size, uint64_t align);
+static inline VkDescriptorBufferInfo ubo_span(VkSpan s, uint64_t size) {
+    uint64_t max = g_vk.props.limits.maxUniformBufferRange;
+    return (VkDescriptorBufferInfo){s.buf, s.off, size > max ? max : size};
+}
+
+extern uint64_t submit_seq;
+extern uint64_t vbuf_gen, ubuf_gen[6];
+extern uint64_t gcopy_gen;
+extern uint64_t stat_gw_waits, stat_gw_holds, stat_ubo_direct;
+extern bool hc_all_stale;
+extern uint64_t gmem_size;
+extern bool gmem_sparse;
+extern VkSemaphore gmem_sparse_timeline;
+extern uint64_t gmem_sparse_bind_seq;
+extern int profd;
+extern uint64_t prof_heap_range_checks, prof_heap_range_cached, prof_heap_range_check_ns;
+uint64_t hash_words(uint64_t h, const void *p, size_t n);
+void guest_copy_flush(void);
+bool gpu_overlap(void);
+uint64_t renderer_present_count(void);
+int vk_cpu_opts(void);
+
+// ---- entry points of the memory module split out of exec.c
+VkDescriptorBufferInfo gmem_info(void);
+VkDescriptorBufferInfo gmem_info_hi(void);
+int gsnap_mode(void);
+void gsnap_cs_prepare(const ShaderInfo *si);
+VkDescriptorBufferInfo gsnap_info(int stage);
+bool guest_fetch(uint64_t addr, uint64_t size, VkBuffer *buf, VkDeviceSize *off);
+void gw_check(const uint32_t cbufs[6], bool vertices, uint64_t iaddr, uint64_t isize);
+void gw_note(int stage);
+bool gw_ubo_direct(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out);
+extern uint32_t gw_gen;
+void hc_free(void);
+void hc_list_begin(void);
+void race_probe_note(uint64_t addr, uint64_t size, bool index);
+void race_probe_check(uint64_t seq);
+void race_probe_submit(uint64_t seq);
+void ubo_check_submit(uint64_t seq);
+void ubo_check_done(bool report);
+bool ubo_direct(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out);
+void vdyn_check(uint64_t seq);
+void vdyn_reset(void);
+void vk_mem_reset(void);
