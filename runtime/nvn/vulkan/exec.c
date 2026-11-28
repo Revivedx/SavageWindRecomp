@@ -5581,37 +5581,6 @@ static inline void cbuf_prefetch(int stage, const ShaderInfo *si) {
     }
 }
 
-// (Windows) before a stage's set is written: bind the guest pages a storing shader may write, and make sure the heap
-// import exists. The descriptor path (exec_desc.c) calls this first.
-#ifdef _WIN32
-void vk_exec_gmem_stage_prepare(int stage, ShaderInfo *si) {
-    if (si->uses_gmem) (void)gmem_info();
-    if (gmem_sparse && si->writes_gmem && stage >= 0 && stage < 6) {
-        bool tracked = false;
-        for (int i = 0; i < 16; i++) {
-            Range r = st.sbuf[stage][i];
-            if (!r.addr || !r.size || r.size > UINT64_MAX - r.addr) continue;
-            uint64_t end = r.addr + r.size;
-            if (r.addr >= HEAP_BASE + gmem_size || end <= HEAP_BASE) continue;
-            tracked = true;
-            uint64_t begin = r.addr < HEAP_BASE ? HEAP_BASE : r.addr;
-            if (end > HEAP_BASE + gmem_size) end = HEAP_BASE + gmem_size;
-            if (!plat_guest_commit_sparse_range(begin, end - begin))
-                FATAL("could not commit guest storage range for sparse GPU access (%#llx+%#llx)\n",
-                      (unsigned long long)begin, (unsigned long long)(end - begin));
-        }
-        if (!tracked) {
-            static bool warned;
-            if (!warned) {
-                LOG("[vk] shader writes guest memory without a tracked storage range; leaving nonresident heap pages unbound\n");
-                warned = true;
-            }
-        }
-    }
-    if (gmem_sparse && si->writes_gmem) (void)gmem_info();
-}
-#endif
-
 // The in-place and patched constant buffers a draw binds (exec_desc.c cbuf_info), in the order the patches apply.
 bool vk_exec_cbuf_patch(int stage, int k, uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out) {
     if (stage == 1 && k == 3 && drw.fxaa_off && fxaa_patch(addr, size, out)) return true;  // (see fxaa_patch)
@@ -6266,6 +6235,37 @@ VkDescriptorBufferInfo gmem_info_hi(void) {
     VkSpan z = vk_transient_copy(zero, sizeof zero, 256);
     return (VkDescriptorBufferInfo){z.buf, z.off, sizeof zero};
 }
+
+// (Windows) before a stage's set is written: bind the guest pages a storing shader may write, and make sure the heap
+// import exists. The descriptor path (exec_desc.c) calls this first.
+#ifdef _WIN32
+void vk_exec_gmem_stage_prepare(int stage, ShaderInfo *si) {
+    if (si->uses_gmem) (void)gmem_info();
+    if (gmem_sparse && si->writes_gmem && stage >= 0 && stage < 6) {
+        bool tracked = false;
+        for (int i = 0; i < 16; i++) {
+            Range r = st.sbuf[stage][i];
+            if (!r.addr || !r.size || r.size > UINT64_MAX - r.addr) continue;
+            uint64_t end = r.addr + r.size;
+            if (r.addr >= HEAP_BASE + gmem_size || end <= HEAP_BASE) continue;
+            tracked = true;
+            uint64_t begin = r.addr < HEAP_BASE ? HEAP_BASE : r.addr;
+            if (end > HEAP_BASE + gmem_size) end = HEAP_BASE + gmem_size;
+            if (!plat_guest_commit_sparse_range(begin, end - begin))
+                FATAL("could not commit guest storage range for sparse GPU access (%#llx+%#llx)\n",
+                      (unsigned long long)begin, (unsigned long long)(end - begin));
+        }
+        if (!tracked) {
+            static bool warned;
+            if (!warned) {
+                LOG("[vk] shader writes guest memory without a tracked storage range; leaving nonresident heap pages unbound\n");
+                warned = true;
+            }
+        }
+    }
+    if (gmem_sparse && si->writes_gmem) (void)gmem_info();
+}
+#endif
 
 // Vertex / index data read in place from the imported guest heap (renderer.m bind_guest does the same with
 // g_guest_buffer): no per-draw copy, no index scan for the copy size. The game fences its CPU writes as on the
